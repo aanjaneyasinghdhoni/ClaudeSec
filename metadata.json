@@ -1,5 +1,0 @@
-{
-  "name": "AI Agent Communication Visualizer",
-  "description": "A real-time observability dashboard for AI agents using OpenTelemetry traces to visualize communication flows, protocols, and security alerts.",
-  "requestFramePermissions": []
-}
