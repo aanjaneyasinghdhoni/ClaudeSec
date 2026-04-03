@@ -1,0 +1,9 @@
+@import "@xyflow/react/dist/style.css";
+@import "tailwindcss";
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-family: "Inter", sans-serif;
+}
