@@ -8,13 +8,14 @@ import {
   Shield, AlertTriangle, Activity, Terminal, Trash2,
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
-  Bell, BellOff,
+  Bell, BellOff, Upload,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
 import { AlertsTab } from './AlertsTab';
 import { OrchestrationTab } from './OrchestrationTab';
 import { CostTab } from './CostTab';
+import { ActivitySparkline } from './Sparkline';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -305,6 +306,10 @@ export default function App() {
   // ── Alert count ───────────────────────────────────────────────────────────
   const [alertCount, setAlertCount] = useState(0);
 
+  // ── Import ────────────────────────────────────────────────────────────────
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importStatus, setImportStatus] = useState<{ msg: string; ok: boolean } | null>(null);
+
   const seenIds      = useRef<Set<string>>(new Set());
   const prevWorkflows = useRef<Workflow[]>([]);
 
@@ -356,6 +361,34 @@ export default function App() {
       setNotifyEnabled(true);
       notifyEnabledRef.current = true;
     }
+  };
+
+  // ── Import handler ────────────────────────────────────────────────────────
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const body = JSON.parse(ev.target?.result as string);
+        const res = await fetch('/api/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setImportStatus({ msg: `Imported ${data.imported} spans`, ok: true });
+        } else {
+          setImportStatus({ msg: data.error ?? 'Import failed', ok: false });
+        }
+      } catch {
+        setImportStatus({ msg: 'Invalid JSON file', ok: false });
+      }
+      setTimeout(() => setImportStatus(null), 4000);
+      if (importInputRef.current) importInputRef.current.value = '';
+    };
+    reader.readAsText(file);
   };
 
   // Initial load
@@ -596,17 +629,29 @@ export default function App() {
 
       {/* ── Header ── */}
       <header className="h-14 border-b border-slate-800 bg-slate-900/50 backdrop-blur-md flex items-center justify-between px-6 z-10 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="p-1.5 bg-blue-500/20 rounded-lg">
-            <Shield className="w-5 h-5 text-blue-400" />
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-1.5 bg-blue-500/20 rounded-lg">
+              <Shield className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <h1 className="font-bold text-base tracking-tight leading-none">ClaudeSec</h1>
+              <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-0.5">
+                Local AI Agent Observatory
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-bold text-base tracking-tight leading-none">ClaudeSec</h1>
-            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-0.5">
-              Local AI Agent Observatory
-            </p>
+          {/* Activity sparkline */}
+          <div className="hidden lg:block pl-4 border-l border-slate-800">
+            <ActivitySparkline />
           </div>
         </div>
+        {/* Import status toast */}
+        {importStatus && (
+          <div className={`absolute top-16 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg text-xs font-medium z-50 shadow-lg ${importStatus.ok ? 'bg-green-900/80 text-green-200 border border-green-700/50' : 'bg-red-900/80 text-red-200 border border-red-700/50'}`}>
+            {importStatus.msg}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 rounded-full border border-slate-700">
             <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
@@ -623,6 +668,14 @@ export default function App() {
           >
             {notifyEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
           </button>
+          {/* Import button */}
+          <label
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors cursor-pointer"
+            title="Import ClaudeSec JSON export or raw OTLP"
+          >
+            <Upload className="w-3.5 h-3.5" /> Import
+            <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+          </label>
           <button
             onClick={() => window.open('/api/export', '_blank')}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
