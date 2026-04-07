@@ -172,6 +172,168 @@ function saveCustomRules() {
 loadCustomRules();
 
 // ---------------------------------------------------------------------------
+// Retention policy + DB health
+// ---------------------------------------------------------------------------
+
+function getMaxSpans(): number {
+  const env = Number(process.env.CLAUDESEC_MAX_SPANS);
+  if (env > 0) return env;
+  const cfg = Number(getConfig.get('retention.max_spans')?.value ?? 0);
+  return cfg > 0 ? cfg : 50_000;
+}
+
+function getRetentionDays(): number {
+  const env = Number(process.env.CLAUDESEC_RETENTION_DAYS);
+  if (env > 0) return env;
+  const cfg = Number(getConfig.get('retention.days')?.value ?? 0);
+  return cfg > 0 ? cfg : 30;
+}
+
+function pruneSpans(): { prunedByAge: number; prunedByCount: number } {
+  let prunedByAge = 0;
+  let prunedByCount = 0;
+
+  // Age-based pruning: remove sessions (and their spans/alerts) older than N days
+  const cutoffDays = getRetentionDays();
+  const cutoffDate = new Date(Date.now() - cutoffDays * 24 * 60 * 60 * 1000).toISOString();
+  const oldSessions = db.prepare(
+    `SELECT traceId FROM sessions WHERE createdAt < ?`
+  ).all(cutoffDate) as { traceId: string }[];
+
+  for (const { traceId } of oldSessions) {
+    const deleted = (db.prepare(`DELETE FROM spans WHERE traceId = ?`).run(traceId)).changes;
+    db.prepare(`DELETE FROM alerts WHERE traceId = ?`).run(traceId);
+    db.prepare(`DELETE FROM sessions WHERE traceId = ?`).run(traceId);
+    prunedByAge += deleted;
+  }
+
+  // Count-based pruning: keep only the most recent max_spans spans
+  const maxSpans = getMaxSpans();
+  const totalSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
+  if (totalSpans > maxSpans) {
+    const excess = totalSpans - maxSpans;
+    // Delete oldest spans by rowid
+    const result = db.prepare(
+      `DELETE FROM spans WHERE rowid IN (SELECT rowid FROM spans ORDER BY startNano ASC LIMIT ?)`
+    ).run(excess);
+    prunedByCount = result.changes;
+  }
+
+  return { prunedByAge, prunedByCount };
+}
+
+// ---------------------------------------------------------------------------
+// Behavioral anomaly detection
+// ---------------------------------------------------------------------------
+
+// Runs after each OTLP batch — checks for statistical anomalies per session
+function detectBehavioralAnomalies(traceId: string, harness: string): void {
+  const spans = db.prepare(`SELECT * FROM spans WHERE traceId = ?`).all(traceId) as SpanRecord[];
+  if (spans.length === 0) return;
+
+  const now = new Date().toISOString();
+
+  // 1. Token spike detection
+  //    Flag if a single span uses > 3× the session average input tokens
+  const tokenValues: number[] = [];
+  for (const span of spans) {
+    try {
+      const attrs = JSON.parse(span.attributes);
+      const ti = Number(attrs['gen_ai.usage.input_tokens'] ?? attrs['llm.usage.input_tokens'] ?? 0);
+      if (ti > 0) tokenValues.push(ti);
+    } catch {}
+  }
+  if (tokenValues.length >= 3) {
+    const avg = tokenValues.reduce((a, b) => a + b, 0) / tokenValues.length;
+    const latest = tokenValues[tokenValues.length - 1];
+    if (latest > avg * 4 && latest > 2000) {
+      const alreadyFlagged = db.prepare(
+        `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Token spike detected' AND ts > datetime('now', '-5 minutes')`
+      ).get(traceId);
+      if (!alreadyFlagged) {
+        insertAlert.run({
+          ts: now,
+          ruleLabel:   'Token spike detected',
+          severity:    'medium' as Severity,
+          spanId:      spans[spans.length - 1].spanId,
+          traceId,
+          harness,
+          spanName:    'behavioral-anomaly',
+          matchedText: `${latest} tokens (avg: ${Math.round(avg)})`,
+        });
+      }
+    }
+  }
+
+  // 2. Threat escalation — >= 3 threats in last 10 spans (concentrated threat burst)
+  const recentThreats = spans.slice(-10).filter(s => s.severity !== 'none').length;
+  if (recentThreats >= 3) {
+    const alreadyFlagged = db.prepare(
+      `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Threat burst detected' AND ts > datetime('now', '-10 minutes')`
+    ).get(traceId);
+    if (!alreadyFlagged) {
+      insertAlert.run({
+        ts: now,
+        ruleLabel:   'Threat burst detected',
+        severity:    'high' as Severity,
+        spanId:      spans[spans.length - 1].spanId,
+        traceId,
+        harness,
+        spanName:    'behavioral-anomaly',
+        matchedText: `${recentThreats} threats in last ${Math.min(spans.length, 10)} spans`,
+      });
+    }
+  }
+
+  // 3. Excessive tool calls — > 100 total tool calls in a session
+  let toolCallCount = 0;
+  for (const span of spans) {
+    try {
+      const attrs = JSON.parse(span.attributes);
+      if (attrs['gen_ai.tool.name'] || attrs['tool.name']) toolCallCount++;
+    } catch {}
+  }
+  if (toolCallCount > 100 && toolCallCount % 50 === 1) {
+    // Flag once per 50 excess tool calls to avoid flooding
+    const alreadyFlagged = db.prepare(
+      `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Excessive tool calls' AND ts > datetime('now', '-30 minutes')`
+    ).get(traceId);
+    if (!alreadyFlagged) {
+      insertAlert.run({
+        ts: now,
+        ruleLabel:   'Excessive tool calls',
+        severity:    'low' as Severity,
+        spanId:      spans[spans.length - 1].spanId,
+        traceId,
+        harness,
+        spanName:    'behavioral-anomaly',
+        matchedText: `${toolCallCount} tool calls in session`,
+      });
+    }
+  }
+
+  // 4. Off-hours activity — outside 06:00–23:59 local time
+  const hour = new Date().getHours();
+  if (hour < 6) {
+    const alreadyFlagged = db.prepare(
+      `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Off-hours agent activity' AND ts > datetime('now', '-60 minutes')`
+    ).get(traceId);
+    if (!alreadyFlagged) {
+      insertAlert.run({
+        ts: now,
+        ruleLabel:   'Off-hours agent activity',
+        severity:    'low' as Severity,
+        spanId:      spans[spans.length - 1].spanId,
+        traceId,
+        harness,
+        spanName:    'behavioral-anomaly',
+        matchedText: `Activity at ${String(hour).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} local time`,
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Webhook alert delivery
 // ---------------------------------------------------------------------------
 
@@ -542,6 +704,31 @@ async function startServer() {
       });
     });
 
+    // Behavioral anomaly detection — run per affected session
+    const affectedTraces = new Set<string>();
+    traceData.resourceSpans?.forEach(rs => {
+      rs.scopeSpans?.forEach(ss => {
+        ss.spans?.forEach(span => {
+          if (span.traceId) affectedTraces.add(span.traceId);
+        });
+      });
+    });
+
+    for (const traceId of affectedTraces) {
+      const traceHarness = (db.prepare('SELECT harness FROM spans WHERE traceId = ? LIMIT 1')
+        .get(traceId) as { harness: string } | undefined)?.harness ?? 'unknown';
+      detectBehavioralAnomalies(traceId, traceHarness);
+    }
+
+    // Retention pruning (async — don't block response)
+    setImmediate(() => {
+      const { prunedByAge, prunedByCount } = pruneSpans();
+      if (prunedByAge + prunedByCount > 0) {
+        console.log(`[ClaudeSec] Pruned ${prunedByAge} aged + ${prunedByCount} excess spans`);
+        io.emit('sessions-update');
+      }
+    });
+
     io.emit('graph-update', buildGraph());
     if (newSessions)   io.emit('sessions-update');
     if (alertsChanged) io.emit('alerts-update');
@@ -893,13 +1080,211 @@ async function startServer() {
     res.json({ agents, edges, tools, spawnTree });
   });
 
+  // ── DB stats + retention config ──────────────────────────────────────────
+  app.get('/api/db-stats', (_req, res) => {
+    const spansTotal    = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
+    const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
+    const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
+    const oldestSession = (db.prepare('SELECT MIN(createdAt) as d FROM sessions').get() as any).d as string | null;
+    const newestSession = (db.prepare('SELECT MAX(createdAt) as d FROM sessions').get() as any).d as string | null;
+    let dbSizeBytes = 0;
+    try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
+
+    res.json({
+      spansTotal,
+      sessionsTotal,
+      alertsTotal,
+      dbSizeBytes,
+      dbSizeHuman: dbSizeBytes > 1_048_576
+        ? `${(dbSizeBytes / 1_048_576).toFixed(1)} MB`
+        : `${(dbSizeBytes / 1024).toFixed(1)} KB`,
+      oldestSession,
+      newestSession,
+      retentionConfig: {
+        maxSpans:      getMaxSpans(),
+        retentionDays: getRetentionDays(),
+      },
+    });
+  });
+
+  app.post('/api/db-stats/prune', (_req, res) => {
+    const result = pruneSpans();
+    io.emit('sessions-update');
+    io.emit('graph-update', buildGraph());
+    res.json({ status: 'ok', ...result });
+  });
+
+  app.post('/api/db-stats/retention', (req, res) => {
+    const { maxSpans, retentionDays } = req.body as { maxSpans?: number; retentionDays?: number };
+    if (maxSpans !== undefined) {
+      if (maxSpans < 100) return res.status(400).json({ error: 'maxSpans must be >= 100' }) as any;
+      setConfig.run('retention.max_spans', String(maxSpans));
+    }
+    if (retentionDays !== undefined) {
+      if (retentionDays < 1) return res.status(400).json({ error: 'retentionDays must be >= 1' }) as any;
+      setConfig.run('retention.days', String(retentionDays));
+    }
+    res.json({ status: 'ok', maxSpans: getMaxSpans(), retentionDays: getRetentionDays() });
+  });
+
+  // ── Session HTML report ───────────────────────────────────────────────────
+  app.get('/api/sessions/:traceId/report', (req, res) => {
+    const { traceId } = req.params;
+    const session = db.prepare('SELECT * FROM sessions WHERE traceId = ?').get(traceId) as
+      { traceId: string; name: string; createdAt: string } | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' }) as any;
+
+    const spans   = db.prepare('SELECT * FROM spans WHERE traceId = ? ORDER BY startNano ASC').all(traceId) as SpanRecord[];
+    const alerts  = db.prepare("SELECT * FROM alerts WHERE traceId = ? ORDER BY id DESC").all(traceId) as any[];
+
+    const threatCounts = { high: 0, medium: 0, low: 0 };
+    spans.forEach(s => { if (s.severity in threatCounts) (threatCounts as any)[s.severity]++; });
+
+    let totalTokensIn = 0;
+    let totalTokensOut = 0;
+    const harnessSet = new Set<string>();
+    spans.forEach(s => {
+      harnessSet.add(s.harness);
+      try {
+        const a = JSON.parse(s.attributes);
+        totalTokensIn  += Number(a['gen_ai.usage.input_tokens']  ?? a['llm.usage.input_tokens']  ?? 0);
+        totalTokensOut += Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
+      } catch {}
+    });
+
+    const severityColor = (s: string) =>
+      s === 'high' ? '#ef4444' : s === 'medium' ? '#f97316' : s === 'low' ? '#eab308' : '#22c55e';
+    const severityBg   = (s: string) =>
+      s === 'high' ? '#450a0a' : s === 'medium' ? '#431407' : s === 'low' ? '#422006' : '#052e16';
+
+    const spansRows = spans.map(s => {
+      let attrs: Record<string, any> = {};
+      try { attrs = JSON.parse(s.attributes); } catch {}
+      const dur = (() => {
+        try { return `${Math.round(Number((BigInt(s.endNano) - BigInt(s.startNano)) / 1_000_000n))}ms`; }
+        catch { return '—'; }
+      })();
+      const toolName = attrs['gen_ai.tool.name'] ?? attrs['tool.name'] ?? '';
+      const rule     = attrs['claudesec.threat.rule'] ?? '';
+      return `
+        <tr style="border-bottom:1px solid #1e293b; ${s.severity !== 'none' ? `background:${severityBg(s.severity)}` : ''}">
+          <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#94a3b8">${s.spanId.slice(0, 8)}</td>
+          <td style="padding:6px 10px; font-size:12px; color:#e2e8f0">${s.name.replace(/</g, '&lt;')}</td>
+          <td style="padding:6px 10px; font-size:11px">
+            <span style="background:${severityBg(s.severity)};color:${severityColor(s.severity)};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:bold">
+              ${s.severity.toUpperCase()}
+            </span>
+          </td>
+          <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#64748b">${toolName}</td>
+          <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#64748b">${dur}</td>
+          <td style="padding:6px 10px; font-size:11px; color:#ef4444">${rule.replace(/</g, '&lt;')}</td>
+        </tr>`;
+    }).join('');
+
+    const alertRows = alerts.map((a: any) => `
+      <tr style="border-bottom:1px solid #1e293b">
+        <td style="padding:6px 10px; font-size:11px; color:#94a3b8; font-family:monospace">${new Date(a.ts).toLocaleTimeString()}</td>
+        <td style="padding:6px 10px">
+          <span style="background:${severityBg(a.severity)};color:${severityColor(a.severity)};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:bold">
+            ${a.severity.toUpperCase()}
+          </span>
+        </td>
+        <td style="padding:6px 10px; font-size:12px; color:#e2e8f0">${a.ruleLabel.replace(/</g, '&lt;')}</td>
+        <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#64748b; word-break:break-all">${a.matchedText.replace(/</g, '&lt;')}</td>
+        <td style="padding:6px 10px; font-size:11px; color:#64748b">${a.spanName.replace(/</g, '&lt;')}</td>
+      </tr>`).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClaudeSec Report — ${session.name.replace(/</g, '&lt;')}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;padding:32px;line-height:1.5}
+  h1{font-size:1.5rem;font-weight:800;margin-bottom:.25rem}
+  h2{font-size:1rem;font-weight:700;margin:24px 0 12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;font-size:.75rem}
+  .meta{color:#64748b;font-size:.8rem;margin-bottom:24px}
+  .cards{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;min-width:130px}
+  .card-val{font-size:1.6rem;font-weight:800;font-family:monospace}
+  .card-label{font-size:.65rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:4px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  thead tr{background:#1e293b;color:#64748b;font-size:.65rem;text-transform:uppercase;letter-spacing:.05em}
+  th{padding:8px 10px;text-align:left;font-weight:600}
+  tbody tr:hover{background:#1e293b44}
+  .table-wrap{background:#0f172a;border:1px solid #1e293b;border-radius:10px;overflow:hidden;margin-bottom:24px}
+  .badge{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:bold}
+  .footer{margin-top:32px;color:#334155;font-size:.7rem;text-align:center}
+  .harness-list{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}
+  .harness-badge{background:#1e293b;border:1px solid #334155;padding:4px 10px;border-radius:999px;font-size:.7rem;color:#94a3b8}
+</style>
+</head>
+<body>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+  <div style="width:36px;height:36px;background:#1d4ed822;border-radius:8px;display:flex;align-items:center;justify-content:center">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+  </div>
+  <div>
+    <h1>ClaudeSec Session Report</h1>
+    <p class="meta" style="margin:0">${session.name.replace(/</g, '&lt;')} · ${new Date(session.createdAt).toLocaleString()}</p>
+  </div>
+</div>
+
+<div class="harness-list">
+  ${[...harnessSet].map(h => `<span class="harness-badge">${h}</span>`).join('')}
+</div>
+
+<div class="cards">
+  <div class="card"><div class="card-val" style="color:#e2e8f0">${spans.length}</div><div class="card-label">Total Spans</div></div>
+  <div class="card"><div class="card-val" style="color:#ef4444">${threatCounts.high}</div><div class="card-label">HIGH Threats</div></div>
+  <div class="card"><div class="card-val" style="color:#f97316">${threatCounts.medium}</div><div class="card-label">MEDIUM Threats</div></div>
+  <div class="card"><div class="card-val" style="color:#eab308">${threatCounts.low}</div><div class="card-label">LOW Threats</div></div>
+  <div class="card"><div class="card-val" style="color:#3b82f6">${totalTokensIn.toLocaleString()}</div><div class="card-label">Input Tokens</div></div>
+  <div class="card"><div class="card-val" style="color:#a855f7">${totalTokensOut.toLocaleString()}</div><div class="card-label">Output Tokens</div></div>
+</div>
+
+${alerts.length > 0 ? `
+<h2>Security Alerts (${alerts.length})</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Time</th><th>Severity</th><th>Rule</th><th>Matched Text</th><th>Span</th></tr></thead>
+<tbody>${alertRows}</tbody>
+</table>
+</div>` : ''}
+
+<h2>Spans (${spans.length})</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Span ID</th><th>Name</th><th>Severity</th><th>Tool</th><th>Duration</th><th>Threat Rule</th></tr></thead>
+<tbody>${spansRows}</tbody>
+</table>
+</div>
+
+<div class="footer">
+  Generated by <strong>ClaudeSec</strong> v1.0.0 &nbsp;·&nbsp;
+  <a href="https://github.com/aanjaneyasinghdhoni/ClaudeSec" style="color:#3b82f6;text-decoration:none">github.com/aanjaneyasinghdhoni/ClaudeSec</a>
+  &nbsp;·&nbsp; ${new Date().toUTCString()}
+</div>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="claudesec-${traceId.slice(0, 8)}-${Date.now()}.html"`);
+    res.send(html);
+  });
+
   // ── Health check ────────────────────────────────────────────────────────
   app.get('/api/health', (_req, res) => {
     const spansTotal    = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
     const threatsTotal  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c as number;
     const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
     const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
-    const dbStats       = fs.statSync('spans.db');
+    let dbSizeBytes = 0;
+    try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
     res.json({
       status:      'ok',
       version:     '1.0.0',
@@ -908,9 +1293,13 @@ async function startServer() {
       threatsTotal,
       sessionsTotal,
       alertsTotal,
-      dbSizeBytes: dbStats.size,
+      dbSizeBytes,
       webhookConfigured: !!getWebhookUrl(),
       webhookThreshold:  getWebhookThreshold(),
+      retention: {
+        maxSpans:      getMaxSpans(),
+        retentionDays: getRetentionDays(),
+      },
     });
   });
 

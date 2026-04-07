@@ -1,0 +1,14 @@
+node_modules
+dist
+spans.db
+rules.json
+.env
+.env.*
+*.log
+.git
+.gitignore
+.claude
+*.md
+plan.html
+docs/
+openapi.yaml

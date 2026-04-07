@@ -713,6 +713,16 @@ export default function App() {
                         >
                           <Edit2 className="w-2.5 h-2.5" />
                         </button>
+                        <a
+                          href={`/api/sessions/${encodeURIComponent(s.traceId)}/report`}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="shrink-0 opacity-0 group-hover:opacity-100 hover:text-blue-400 transition-opacity"
+                          title="Download HTML report"
+                        >
+                          <FileText className="w-2.5 h-2.5" />
+                        </a>
                       </>
                     )}
                   </div>
