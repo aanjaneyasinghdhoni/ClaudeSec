@@ -1,5 +1,8 @@
 # AI Agent Observability Visualizer
 
+[![CI](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml/badge.svg)](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A real-time dashboard that turns OpenTelemetry traces from AI agents into a live communication graph with built-in security threat detection.
 
 ---
