@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing } from 'lucide-react';
+import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing, History } from 'lucide-react';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
+import { WebhookDeliverySection } from './WebhookDeliverySection';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -477,6 +478,14 @@ export function SettingsTab(): React.ReactElement {
             Fired alerts appear in the Alerts tab.
           </p>
           <ThresholdRulesSection />
+        </Section>
+
+        <Section icon={<History className="w-4 h-4" />} title="Webhook Delivery Log" defaultOpen={false}>
+          <p className="text-[10px] text-slate-500 mb-1 leading-relaxed">
+            Every webhook attempt is logged here. Failed deliveries auto-retry up to 3×
+            with exponential backoff. Manually retry or clear history below.
+          </p>
+          <WebhookDeliverySection />
         </Section>
 
       </div>

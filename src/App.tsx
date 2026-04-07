@@ -24,6 +24,7 @@ import { GraphSearch } from './GraphSearch';
 import { SpanAttributes } from './SpanAttributes';
 import { GraphReplay, type ReplayState } from './GraphReplay';
 import { ComparePanel } from './ComparePanel';
+import { SearchTab } from './SearchTab';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search';
 
 interface Workflow {
   id: string;
@@ -96,6 +97,15 @@ interface Session {
   threatCount: number;
   maxSeverityRank: number;
   harnesses: string | null;
+  healthScore?: number;
+}
+
+interface TickerSpan {
+  spanId: string;
+  name: string;
+  harness: string;
+  severity: Severity;
+  ts: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +364,11 @@ export default function App() {
   });
   const replayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Live span ticker (s57) ────────────────────────────────────────────────
+  const [tickerSpans, setTickerSpans] = useState<TickerSpan[]>([]);
+  const tickerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [tickerQuiet, setTickerQuiet] = useState(false);
+
   // ── Graph search (s46) ────────────────────────────────────────────────────
   const [graphSearchOpen,  setGraphSearchOpen]  = useState(false);
   const [graphSearchQuery, setGraphSearchQuery] = useState('');
@@ -497,13 +512,22 @@ export default function App() {
       }
     };
 
+    const handleSpanAdded = (span: TickerSpan) => {
+      setTickerSpans(prev => [span, ...prev].slice(0, 5));
+      setTickerQuiet(false);
+      if (tickerTimeoutRef.current) clearTimeout(tickerTimeoutRef.current);
+      tickerTimeoutRef.current = setTimeout(() => setTickerQuiet(true), 10_000);
+    };
+
     socket.on('graph-update', handleGraphUpdate);
     socket.on('sessions-update', fetchSessions);
     socket.on('alerts-update', fetchAlertCount);
+    socket.on('span-added', handleSpanAdded);
     return () => {
       socket.off('graph-update', handleGraphUpdate);
       socket.off('sessions-update', fetchSessions);
       socket.off('alerts-update', fetchAlertCount);
+      socket.off('span-added', handleSpanAdded);
     };
   }, [setNodes, setEdges]);
 
@@ -951,6 +975,18 @@ export default function App() {
                   >
                     {isPinned && !isActive && <Star className="w-2 h-2 text-yellow-400 shrink-0" />}
                     {!isPinned && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: sevCol }} />}
+                    {s.healthScore !== undefined && !isActive && (
+                      <span
+                        className={`shrink-0 text-[8px] font-mono font-bold px-1 rounded ${
+                          s.healthScore >= 80 ? 'text-green-400 bg-green-900/30'
+                            : s.healthScore >= 50 ? 'text-yellow-400 bg-yellow-900/30'
+                            : 'text-red-400 bg-red-900/30'
+                        }`}
+                        title={`Health score: ${s.healthScore}/100`}
+                      >
+                        {s.healthScore}
+                      </span>
+                    )}
                     {isEditing ? (
                       <form
                         className="flex-1 flex items-center gap-1"
@@ -1253,6 +1289,14 @@ export default function App() {
               <Flame className="w-3.5 h-3.5" /> Heatmap
             </button>
             <button
+              onClick={() => setActiveTab('search')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'search' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Search className="w-3.5 h-3.5" /> Search
+            </button>
+            <button
               onClick={() => setActiveTab('settings')}
               className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ml-auto ${
                 activeTab === 'settings' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
@@ -1544,18 +1588,51 @@ export default function App() {
 
           {/* Heatmap view */}
           {activeTab === 'heatmap' && <HeatmapTab />}
+
+          {/* Search view */}
+          {activeTab === 'search' && <SearchTab />}
         </div>
       </div>
 
       {/* ── Footer ── */}
-      <footer className="h-7 border-t border-slate-800 bg-slate-900/80 px-4 flex items-center justify-between z-10 shrink-0">
-        <div className="flex items-center gap-1.5">
+      <footer className="h-7 border-t border-slate-800 bg-slate-900/80 px-4 flex items-center justify-between z-10 shrink-0 gap-3 overflow-hidden">
+        <div className="flex items-center gap-1.5 shrink-0">
           <Terminal className="w-3 h-3 text-slate-600" />
-          <span className="text-[9px] text-slate-600 font-mono">
-            OTLP → http://localhost:3000/v1/traces · {sessions.length} sessions
+          <span className="text-[9px] text-slate-600 font-mono hidden sm:inline">
+            OTLP → localhost:3000/v1/traces · {sessions.length} sessions
           </span>
         </div>
-        <span className="text-[9px] text-slate-600 font-mono">v0.5.0</span>
+
+        {/* Live span ticker */}
+        <div className="flex items-center gap-2 flex-1 overflow-hidden min-w-0">
+          {tickerSpans.length > 0 && !tickerQuiet ? (
+            <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />
+              <div className="flex items-center gap-1 overflow-hidden min-w-0">
+                {tickerSpans.slice(0, 3).map((sp, i) => (
+                  <span key={sp.spanId} className={`flex items-center gap-1 text-[9px] font-mono ${i > 0 ? 'opacity-50' : ''} shrink-0`}>
+                    <span
+                      className="w-1.5 h-1.5 rounded-full inline-block"
+                      style={{ background: HARNESS_COLORS[sp.harness] ?? '#64748b' }}
+                    />
+                    <span className={
+                      sp.severity === 'high' ? 'text-red-400' :
+                      sp.severity === 'medium' ? 'text-orange-400' :
+                      sp.severity === 'low' ? 'text-yellow-400' : 'text-slate-400'
+                    }>
+                      {sp.name.length > 24 ? sp.name.slice(0, 24) + '…' : sp.name}
+                    </span>
+                    {i < Math.min(tickerSpans.length, 3) - 1 && <span className="text-slate-700">·</span>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <span className="text-[9px] text-slate-700 font-mono italic">quiet</span>
+          )}
+        </div>
+
+        <span className="text-[9px] text-slate-600 font-mono shrink-0">v0.5.0</span>
       </footer>
 
       {/* ── Session Compare Panel (s49) ── */}
