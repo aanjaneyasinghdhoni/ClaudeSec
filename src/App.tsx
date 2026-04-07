@@ -4,15 +4,17 @@ import {
   addEdge, Panel, MarkerType, type Node, type Edge,
 } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
-import { io } from 'socket.io-client';
 import {
   Shield, AlertTriangle, Activity, Terminal, Trash2,
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
+  Bell, BellOff,
 } from 'lucide-react';
+import { socket } from './socket';
+import { RulesTab } from './RulesTab';
+import { AlertsTab } from './AlertsTab';
+import { OrchestrationTab } from './OrchestrationTab';
 import { motion, AnimatePresence } from 'motion/react';
-
-const socket = io();
 
 // ---------------------------------------------------------------------------
 // Dagre layout
@@ -59,7 +61,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules';
 
 interface Workflow {
   id: string;
@@ -294,6 +296,14 @@ export default function App() {
   const [filterMode, setFilterMode]         = useState<FilterMode>('all');
   const [harnessFilter, setHarnessFilter]   = useState<string | null>(null);
 
+  // ── Notification state ────────────────────────────────────────────────────
+  const [notifyEnabled, setNotifyEnabled] = useState(false);
+  const notifyEnabledRef = useRef(false);
+  const seenHighIds = useRef<Set<string>>(new Set());
+
+  // ── Alert count ───────────────────────────────────────────────────────────
+  const [alertCount, setAlertCount] = useState(0);
+
   const seenIds      = useRef<Set<string>>(new Set());
   const prevWorkflows = useRef<Workflow[]>([]);
 
@@ -327,6 +337,26 @@ export default function App() {
   const fetchSessions = () =>
     fetch('/api/sessions').then(r => r.json()).then(({ sessions: s }) => setSessions(s ?? []));
 
+  const fetchAlertCount = () =>
+    fetch('/api/alerts?limit=1')
+      .then(r => r.json())
+      .then(({ total }: { total: number }) => setAlertCount(total ?? 0))
+      .catch(() => {});
+
+  const requestNotifications = async () => {
+    if (!('Notification' in window)) return;
+    if (notifyEnabled) {
+      setNotifyEnabled(false);
+      notifyEnabledRef.current = false;
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      setNotifyEnabled(true);
+      notifyEnabledRef.current = true;
+    }
+  };
+
   // Initial load
   useEffect(() => {
     fetch('/api/graph')
@@ -337,21 +367,45 @@ export default function App() {
         syncWorkflows(n);
       });
     fetchSessions();
+    fetchAlertCount();
   }, []);
 
   useEffect(() => { prevWorkflows.current = workflows; }, [workflows]);
 
   // Socket events
   useEffect(() => {
-    socket.on('graph-update', ({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
+    const handleGraphUpdate = ({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
       setNodes(applyDagreLayout(n, e));
       setEdges(e);
       syncWorkflows(n);
-    });
+
+      // Desktop notifications for new HIGH severity spans
+      if (notifyEnabledRef.current) {
+        const highSpans = n.filter(
+          node => (node.data as any).severity === 'high' && !seenHighIds.current.has(node.id),
+        );
+        highSpans.forEach(node => {
+          const label = String(node.data.label ?? '');
+          const rule  = String((node.data as any).attributes?.['claudesec.threat.rule'] ?? '');
+          new Notification('ClaudeSec — HIGH Alert', {
+            body: `${label}${rule ? ': ' + rule : ''}`,
+            tag:  node.id,
+          });
+          seenHighIds.current.add(node.id);
+        });
+        // Also mark already-known high spans so we don't re-fire on later updates
+        n.filter(node => (node.data as any).severity === 'high')
+          .forEach(node => seenHighIds.current.add(node.id));
+      }
+    };
+
+    socket.on('graph-update', handleGraphUpdate);
     socket.on('sessions-update', fetchSessions);
+    socket.on('alerts-update', fetchAlertCount);
     return () => {
-      socket.off('graph-update');
-      socket.off('sessions-update');
+      socket.off('graph-update', handleGraphUpdate);
+      socket.off('sessions-update', fetchSessions);
+      socket.off('alerts-update', fetchAlertCount);
     };
   }, [setNodes, setEdges]);
 
@@ -365,10 +419,12 @@ export default function App() {
     setWorkflows([]);
     setSessions([]);
     seenIds.current.clear();
+    seenHighIds.current.clear();
     setSearch('');
     setFilterMode('all');
     setHarnessFilter(null);
     setActiveSession(null);
+    setAlertCount(0);
   };
 
   const startRename = (s: Session) => {
@@ -555,6 +611,17 @@ export default function App() {
             <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
             <span className="text-[11px] font-medium text-slate-300">Live</span>
           </div>
+          <button
+            onClick={requestNotifications}
+            className={`p-1.5 rounded-lg transition-colors border ${
+              notifyEnabled
+                ? 'bg-green-900/30 border-green-700/50 text-green-400 hover:bg-green-900/50'
+                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+            }`}
+            title={notifyEnabled ? 'Notifications enabled — click to disable' : 'Enable desktop notifications for HIGH alerts'}
+          >
+            {notifyEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+          </button>
           <button
             onClick={() => window.open('/api/export', '_blank')}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
@@ -807,23 +874,51 @@ export default function App() {
 
           {/* Tab switcher */}
           <div className="flex border-b border-slate-800 bg-slate-900/30 shrink-0">
-            {(['graph', 'timeline'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                  activeTab === tab
-                    ? 'border-blue-500 text-blue-400'
-                    : 'border-transparent text-slate-500 hover:text-slate-300'
-                }`}
-              >
-                {tab === 'graph'
-                  ? <Activity className="w-3.5 h-3.5" />
-                  : <Clock    className="w-3.5 h-3.5" />
-                }
-                {tab === 'graph' ? 'Graph' : 'Timeline'}
-              </button>
-            ))}
+            <button
+              onClick={() => setActiveTab('graph')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'graph' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" /> Graph
+            </button>
+            <button
+              onClick={() => setActiveTab('timeline')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'timeline' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" /> Timeline
+            </button>
+            <button
+              onClick={() => setActiveTab('orchestration')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'orchestration' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Cpu className="w-3.5 h-3.5" /> Orchestration
+            </button>
+            <button
+              onClick={() => setActiveTab('alerts')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors relative ${
+                activeTab === 'alerts' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" /> Alerts
+              {alertCount > 0 && (
+                <span className="absolute -top-0.5 right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none">
+                  {alertCount > 99 ? '99+' : alertCount}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('rules')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'rules' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5" /> Rules
+            </button>
           </div>
 
           {/* Graph view */}
@@ -1008,6 +1103,15 @@ export default function App() {
               selectedId={timelineSelected ?? undefined}
             />
           )}
+
+          {/* Orchestration view */}
+          {activeTab === 'orchestration' && <OrchestrationTab />}
+
+          {/* Alerts view */}
+          {activeTab === 'alerts' && <AlertsTab />}
+
+          {/* Rules view */}
+          {activeTab === 'rules' && <RulesTab />}
         </div>
       </div>
 

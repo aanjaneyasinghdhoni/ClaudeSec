@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
@@ -36,6 +37,15 @@ interface TraceData {
 }
 
 type Severity = 'none' | 'low' | 'medium' | 'high';
+
+interface CustomRule {
+  id: string;
+  pattern: string;
+  flags: string;
+  severity: Severity;
+  label: string;
+  createdAt: string;
+}
 
 interface SpanRecord {
   spanId: string;
@@ -101,6 +111,52 @@ const deleteAllSessions = db.prepare(`DELETE FROM sessions`);
 const getAllSpans        = db.prepare(`SELECT * FROM spans`);
 
 // ---------------------------------------------------------------------------
+// Alerts table
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    ruleLabel   TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    spanId      TEXT NOT NULL,
+    traceId     TEXT NOT NULL,
+    harness     TEXT NOT NULL DEFAULT 'unknown',
+    spanName    TEXT NOT NULL,
+    matchedText TEXT NOT NULL DEFAULT ''
+  );
+`);
+
+const insertAlert = db.prepare(`
+  INSERT INTO alerts (ts, ruleLabel, severity, spanId, traceId, harness, spanName, matchedText)
+  VALUES (@ts, @ruleLabel, @severity, @spanId, @traceId, @harness, @spanName, @matchedText)
+`);
+
+const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
+
+// ---------------------------------------------------------------------------
+// Custom rules persistence
+// ---------------------------------------------------------------------------
+
+const RULES_FILE = path.join(__dirname, 'rules.json');
+let customRules: CustomRule[] = [];
+
+function loadCustomRules() {
+  try {
+    if (fs.existsSync(RULES_FILE)) {
+      customRules = JSON.parse(fs.readFileSync(RULES_FILE, 'utf-8'));
+    }
+  } catch { customRules = []; }
+}
+
+function saveCustomRules() {
+  fs.writeFileSync(RULES_FILE, JSON.stringify(customRules, null, 2));
+}
+
+loadCustomRules();
+
+// ---------------------------------------------------------------------------
 // Security detection
 // ---------------------------------------------------------------------------
 
@@ -137,13 +193,29 @@ const SEVERITY_RULES: { pattern: RegExp; severity: Severity; label: string }[] =
   { pattern: /sudo\s+/i,                                 severity: 'low',    label: 'Sudo usage' },
   { pattern: /npm\s+install\s+--global/i,                severity: 'low',    label: 'Global npm package install' },
   { pattern: /pip\s+install/i,                           severity: 'low',    label: 'Python package install' },
+  // Supply-chain / advanced
+  { pattern: /pip\s+install\s+.*--index-url/i,           severity: 'high',   label: 'Supply-chain: custom PyPI index' },
+  { pattern: /npm\s+install.*--registry/i,               severity: 'high',   label: 'Supply-chain: custom npm registry' },
+  { pattern: /git\s+clone\s+.*&&\s*(ba)?sh/i,            severity: 'high',   label: 'Clone-and-execute' },
+  { pattern: /\/dev\/tcp\//i,                             severity: 'high',   label: 'Bash TCP reverse shell' },
+  { pattern: /python[23]?\s+-c\s+["']import/i,           severity: 'medium', label: 'Python one-liner execution' },
 ];
 
-function detectSeverity(text: string): { severity: Severity; matchedLabel: string } {
-  for (const rule of SEVERITY_RULES) {
-    if (rule.pattern.test(text)) return { severity: rule.severity, matchedLabel: rule.label };
+function detectSeverity(text: string): { severity: Severity; matchedLabel: string; matchedText: string } {
+  // Check custom rules first
+  for (const rule of customRules) {
+    try {
+      const re = new RegExp(rule.pattern, rule.flags);
+      const m = re.exec(text);
+      if (m) return { severity: rule.severity, matchedLabel: rule.label, matchedText: m[0].slice(0, 100) };
+    } catch { /* invalid regex — skip */ }
   }
-  return { severity: 'none', matchedLabel: '' };
+  // Built-in rules
+  for (const rule of SEVERITY_RULES) {
+    const m = rule.pattern.exec(text);
+    if (m) return { severity: rule.severity, matchedLabel: rule.label, matchedText: m[0].slice(0, 100) };
+  }
+  return { severity: 'none', matchedLabel: '', matchedText: '' };
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +307,8 @@ async function startServer() {
   // ── OTLP ingestion ──────────────────────────────────────────────────────
   app.post('/v1/traces', (req, res) => {
     const traceData: TraceData = req.body;
-    let newSessions = false;
+    let newSessions   = false;
+    let alertsChanged = false;
 
     traceData.resourceSpans?.forEach(rs => {
       const serviceName = String(
@@ -258,7 +331,7 @@ async function startServer() {
           });
 
           const searchText = JSON.stringify(attrs) + ' ' + span.name;
-          const { severity, matchedLabel } = detectSeverity(searchText);
+          const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
           if (matchedLabel) attrs['claudesec.threat.rule'] = matchedLabel;
 
           const traceId  = span.traceId  || 'unknown';
@@ -284,12 +357,27 @@ async function startServer() {
             startNano:  String(span.startTimeUnixNano ?? '0'),
             endNano:    String(span.endTimeUnixNano   ?? '0'),
           } satisfies SpanRecord);
+
+          if (matchedLabel) {
+            insertAlert.run({
+              ts:          new Date().toISOString(),
+              ruleLabel:   matchedLabel,
+              severity,
+              spanId:      span.spanId,
+              traceId,
+              harness:     harness.id,
+              spanName:    span.name,
+              matchedText,
+            });
+            alertsChanged = true;
+          }
         });
       });
     });
 
     io.emit('graph-update', buildGraph());
-    if (newSessions) io.emit('sessions-update');
+    if (newSessions)   io.emit('sessions-update');
+    if (alertsChanged) io.emit('alerts-update');
     res.status(200).json({ status: 'ok' });
   });
 
@@ -389,9 +477,163 @@ async function startServer() {
   app.post('/api/reset', (_req, res) => {
     deleteAllSpans.run();
     deleteAllSessions.run();
+    deleteAllAlerts.run();
     io.emit('graph-update', buildGraph());
     io.emit('sessions-update');
+    io.emit('alerts-update');
     res.json({ status: 'ok' });
+  });
+
+  // ── Rules CRUD ───────────────────────────────────────────────────────────
+  app.get('/api/rules', (_req, res) => {
+    const builtIn = SEVERITY_RULES.map((r, i) => ({
+      id:       `builtin-${i}`,
+      pattern:  r.pattern.source,
+      flags:    r.pattern.flags,
+      severity: r.severity,
+      label:    r.label,
+      builtin:  true,
+    }));
+    res.json({ builtIn, custom: customRules });
+  });
+
+  app.post('/api/rules', (req, res) => {
+    const { pattern, severity, label } = req.body as { pattern?: string; severity?: string; label?: string };
+    if (!pattern || !severity || !label) {
+      return res.status(400).json({ error: 'pattern, severity, and label are required' }) as any;
+    }
+    const validSeverities: Severity[] = ['low', 'medium', 'high'];
+    if (!validSeverities.includes(severity as Severity)) {
+      return res.status(400).json({ error: 'severity must be low, medium, or high' }) as any;
+    }
+    try { new RegExp(pattern); } catch {
+      return res.status(400).json({ error: 'invalid regex pattern' }) as any;
+    }
+    const rule: CustomRule = {
+      id:        `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      pattern,
+      flags:     'i',
+      severity:  severity as Severity,
+      label,
+      createdAt: new Date().toISOString(),
+    };
+    customRules.push(rule);
+    saveCustomRules();
+    io.emit('rules-update');
+    res.status(201).json(rule);
+  });
+
+  app.delete('/api/rules/:id', (req, res) => {
+    const idx = customRules.findIndex(r => r.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'rule not found' }) as any;
+    customRules.splice(idx, 1);
+    saveCustomRules();
+    io.emit('rules-update');
+    res.json({ status: 'ok' });
+  });
+
+  // ── Alerts ───────────────────────────────────────────────────────────────
+  app.get('/api/alerts', (req, res) => {
+    const limit    = Math.min(Number(req.query.limit ?? 200), 1000);
+    const severity = req.query.severity ? String(req.query.severity) : null;
+
+    let sql    = 'SELECT * FROM alerts';
+    const params: unknown[] = [];
+    if (severity && severity !== 'all') {
+      sql += ' WHERE severity = ?';
+      params.push(severity);
+    }
+    sql += ' ORDER BY id DESC LIMIT ?';
+    params.push(limit);
+
+    const alerts = db.prepare(sql).all(...params);
+    const total  = (db.prepare(severity && severity !== 'all'
+      ? 'SELECT COUNT(*) as c FROM alerts WHERE severity = ?'
+      : 'SELECT COUNT(*) as c FROM alerts').get(...(severity && severity !== 'all' ? [severity] : [])) as any).c;
+
+    res.json({ alerts, total });
+  });
+
+  app.get('/api/alerts/export', (_req, res) => {
+    const alerts = db.prepare('SELECT * FROM alerts ORDER BY id DESC').all();
+    res.setHeader('Content-Disposition', `attachment; filename="claudesec-alerts-${Date.now()}.json"`);
+    res.json({ exportedAt: new Date().toISOString(), alerts });
+  });
+
+  app.delete('/api/alerts', (_req, res) => {
+    deleteAllAlerts.run();
+    io.emit('alerts-update');
+    res.json({ status: 'ok' });
+  });
+
+  // ── Orchestration ────────────────────────────────────────────────────────
+  app.get('/api/orchestration', (_req, res) => {
+    const allSpans = getAllSpans.all() as SpanRecord[];
+
+    // Per-harness stats
+    const agentMap = new Map<string, { harness: string; spanCount: number; threatCount: number; tools: Set<string> }>();
+    for (const span of allSpans) {
+      if (!agentMap.has(span.harness)) {
+        agentMap.set(span.harness, { harness: span.harness, spanCount: 0, threatCount: 0, tools: new Set() });
+      }
+      const entry = agentMap.get(span.harness)!;
+      entry.spanCount++;
+      if (span.severity !== 'none') entry.threatCount++;
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const toolName = attrs['gen_ai.tool.name'] || attrs['tool.name'];
+        if (toolName) entry.tools.add(String(toolName));
+      } catch {}
+    }
+
+    const agents = [...agentMap.values()].map(a => ({
+      harness:     a.harness,
+      spanCount:   a.spanCount,
+      threatCount: a.threatCount,
+      tools:       [...a.tools],
+    }));
+
+    // Group spans by traceId to find co-occurring harnesses
+    const traceHarnesses = new Map<string, { harness: string; startNano: string }[]>();
+    for (const span of allSpans) {
+      if (!traceHarnesses.has(span.traceId)) traceHarnesses.set(span.traceId, []);
+      traceHarnesses.get(span.traceId)!.push({ harness: span.harness, startNano: span.startNano });
+    }
+
+    const edgeMap = new Map<string, { from: string; to: string; count: number }>();
+    for (const [, spans] of traceHarnesses) {
+      const unique = [...new Map(spans.map(s => [s.harness, s])).values()];
+      if (unique.length < 2) continue;
+      unique.sort((a, b) => {
+        try { return Number(BigInt(a.startNano) - BigInt(b.startNano) > 0n ? 1 : -1); }
+        catch { return 0; }
+      });
+      for (let i = 0; i < unique.length - 1; i++) {
+        const key = `${unique[i].harness}→${unique[i + 1].harness}`;
+        if (!edgeMap.has(key)) edgeMap.set(key, { from: unique[i].harness, to: unique[i + 1].harness, count: 0 });
+        edgeMap.get(key)!.count++;
+      }
+    }
+
+    const edges = [...edgeMap.values()];
+
+    // Tool inventory
+    const toolMap = new Map<string, { toolName: string; harness: string; count: number; threatCount: number }>();
+    for (const span of allSpans) {
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const toolName = attrs['gen_ai.tool.name'] || attrs['tool.name'];
+        if (!toolName) continue;
+        const key = `${toolName}::${span.harness}`;
+        if (!toolMap.has(key)) toolMap.set(key, { toolName: String(toolName), harness: span.harness, count: 0, threatCount: 0 });
+        const entry = toolMap.get(key)!;
+        entry.count++;
+        if (span.severity !== 'none') entry.threatCount++;
+      } catch {}
+    }
+    const tools = [...toolMap.values()].sort((a, b) => b.count - a.count).slice(0, 50);
+
+    res.json({ agents, edges, tools });
   });
 
   // ── Dev / prod static ────────────────────────────────────────────────────

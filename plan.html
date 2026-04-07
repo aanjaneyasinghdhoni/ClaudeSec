@@ -222,16 +222,16 @@
   </div>
   <div class="progress-bar"><div class="progress-fill" id="p4" style="width:0%"></div></div>
   <div class="steps">
-    <div class="step" id="s15">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s15">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Expand threat rules — prompt injection, exfiltration, supply chain</div>
         <div class="step-desc">Add 20+ rules: prompt injection (ignore previous instructions), secret scanning (AWS/GitHub tokens), supply chain (npm from unknown registry), network exfiltration (curl to external IPs).</div>
         <span class="tag" style="background:#eab30822;color:#eab308">security</span>
       </div>
     </div>
-    <div class="step" id="s16">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s16">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Custom rules UI — add/edit/delete rules in the dashboard</div>
         <div class="step-desc">Settings panel where users define custom regex rules with severity, label, description. Persist in rules.json. API: GET/POST/DELETE /api/rules.</div>
@@ -239,8 +239,8 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
       </div>
     </div>
-    <div class="step" id="s17">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s17">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Desktop notifications for HIGH severity spans</div>
         <div class="step-desc">Use Web Notifications API to pop native OS notification when HIGH severity span arrives via Socket.io. Works on macOS/Windows/Linux.</div>
@@ -248,8 +248,8 @@
         <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
       </div>
     </div>
-    <div class="step" id="s18">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s18">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Audit log — immutable append-only threat log</div>
         <div class="step-desc">Separate SQLite table "alerts" — every rule match appended with timestamp, rule name, matched text snippet, span context. Export as CSV/JSON from UI.</div>
@@ -270,8 +270,8 @@
   </div>
   <div class="progress-bar"><div class="progress-fill" id="p5" style="width:0%"></div></div>
   <div class="steps">
-    <div class="step" id="s19">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s19">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Orchestration graph — agent-to-agent edges</div>
         <div class="step-desc">Detect MCP tool calls between agents (gen_ai.tool.call.id correlating to parent span of another agent). Render a separate "Orchestration" tab showing the agent DAG.</div>
