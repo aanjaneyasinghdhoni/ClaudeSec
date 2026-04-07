@@ -1,8 +1,38 @@
 {
-  "name": "react-example",
-  "private": true,
-  "version": "0.0.0",
+  "name": "claudesec",
+  "version": "0.3.0",
+  "description": "Real-time local observatory and security visualizer for AI agent telemetry. Ingests OpenTelemetry traces from any CLI agent harness (Claude Code, Copilot, OpenHands, Cursor, Aider, Cline, and more) and surfaces suspicious activity as an interactive graph.",
   "type": "module",
+  "license": "MIT",
+  "author": "withkarann <https://github.com/withkarann>",
+  "contributors": [
+    "aanjaneyasinghdhoni <https://github.com/aanjaneyasinghdhoni>"
+  ],
+  "homepage": "https://github.com/aanjaneyasinghdhoni/ClaudeSec#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aanjaneyasinghdhoni/ClaudeSec.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aanjaneyasinghdhoni/ClaudeSec/issues"
+  },
+  "keywords": [
+    "ai-agent",
+    "observability",
+    "opentelemetry",
+    "otlp",
+    "security",
+    "claude-code",
+    "copilot",
+    "agentic",
+    "visualization",
+    "threat-detection",
+    "local-observatory",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",

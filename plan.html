@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ClaudeSec — Build Roadmap</title>
+<style>
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
+    --purple: #a855f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding: 2rem; }
+  h1 { font-size: 1.8rem; font-weight: 800; margin-bottom: .25rem; }
+  .subtitle { color: var(--muted); font-size: .85rem; margin-bottom: 2rem; }
+  .phase { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 1.5rem; overflow: hidden; }
+  .phase-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: .75rem; }
+  .phase-num { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 800; flex-shrink: 0; }
+  .phase-title { font-weight: 700; font-size: 1rem; }
+  .phase-desc { color: var(--muted); font-size: .78rem; margin-top: .15rem; }
+  .steps { padding: .75rem 1.25rem; }
+  .step { display: flex; align-items: flex-start; gap: .75rem; padding: .6rem 0; border-bottom: 1px solid #1e293b; }
+  .step:last-child { border-bottom: none; }
+  .step input[type=checkbox] { margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+  .step-body { flex: 1; }
+  .step-title { font-size: .85rem; font-weight: 600; }
+  .step-desc { color: var(--muted); font-size: .75rem; margin-top: .2rem; line-height: 1.5; }
+  .tag { display: inline-block; font-size: .65rem; padding: .15rem .45rem; border-radius: 999px; font-weight: 700; margin-right: .3rem; margin-top: .3rem; }
+  .done .step-title { text-decoration: line-through; color: var(--muted); }
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin: .5rem 1.25rem 1rem; }
+  .progress-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width .3s; }
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .legend-item { display: flex; align-items: center; gap: .4rem; font-size: .75rem; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<h1>ClaudeSec Roadmap</h1>
+<p class="subtitle">Local AI Agent Observatory &amp; Security Visualizer — Open Source Build Plan</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="dot" style="background:#22c55e"></div> Foundation</div>
+  <div class="legend-item"><div class="dot" style="background:#3b82f6"></div> Core Feature</div>
+  <div class="legend-item"><div class="dot" style="background:#a855f7"></div> Multi-Harness</div>
+  <div class="legend-item"><div class="dot" style="background:#f97316"></div> Observatory</div>
+  <div class="legend-item"><div class="dot" style="background:#eab308"></div> Security</div>
+  <div class="legend-item"><div class="dot" style="background:#ef4444"></div> Docs &amp; Release</div>
+</div>
+
+<!-- PHASE 1 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#22c55e22;color:#22c55e">1</div>
+    <div>
+      <div class="phase-title">Project Foundation &amp; OSS Standards</div>
+      <div class="phase-desc">Package metadata, contributing guide, license, CI — everything needed for a healthy open source repo</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p1" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step done" id="s1">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Create plan.html — this file</div>
+        <div class="step-desc">Interactive build roadmap with phases, checkboxes, and progress tracking.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+      </div>
+    </div>
+    <div class="step" id="s2">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Fix package.json — proper OSS metadata</div>
+        <div class="step-desc">Name "claudesec", version 0.3.0, description, author list, license MIT, repository, keywords, homepage, bugs URL.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+      </div>
+    </div>
+    <div class="step" id="s3">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Add LICENSE (MIT), CONTRIBUTING.md, CODE_OF_CONDUCT.md</div>
+        <div class="step-desc">Standard OSS files required for GitHub community health. Include setup instructions and contribution workflow.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+      </div>
+    </div>
+    <div class="step" id="s4">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">GitHub Actions CI — lint + build on push/PR</div>
+        <div class="step-desc">.github/workflows/ci.yml: Node 20, npm ci, tsc --noEmit, vite build. Badge in README.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+      </div>
+    </div>
+    <div class="step" id="s5">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Issue &amp; PR templates (.github/)</div>
+        <div class="step-desc">Bug report, feature request, and pull request templates for structured community contributions.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 2 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#a855f722;color:#a855f7">2</div>
+    <div>
+      <div class="phase-title">Universal Agent Harness Support</div>
+      <div class="phase-desc">Auto-detect &amp; ingest telemetry from every major CLI agent: Claude Code, GitHub Copilot, OpenHands, Cursor, Aider, Continue.dev, Cline, and more</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p2" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step" id="s6">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Harness detection registry (harnesses.ts)</div>
+        <div class="step-desc">Typed registry of known agent harnesses with OTLP env var names, default ports, span attribute mappings, and logo assets. Covers: Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Continue.dev, Cline, Goose, Zed AI, Windsurf.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">server.ts</span>
+      </div>
+    </div>
+    <div class="step" id="s7">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Auto-setup CLI wizard (npx claudesec init)</div>
+        <div class="step-desc">Interactive CLI that detects which agent harness is running, prints exact export commands, and optionally writes to shell profile. Ship as "bin" in package.json.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">cli/init.ts</span>
+      </div>
+    </div>
+    <div class="step" id="s8">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Harness identity on spans — badge in UI</div>
+        <div class="step-desc">Extract resource attributes (service.name, telemetry.sdk.name) to tag each span with its source harness. Show colored harness badge in workflow list and detail panel.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step" id="s9">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Multi-agent topology — separate graph roots per harness</div>
+        <div class="step-desc">When spans from multiple harnesses arrive, render separate agent root nodes with distinct colors. Show inter-agent edges when one agent calls another via MCP/API.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">graph</span>
+      </div>
+    </div>
+    <div class="step" id="s10">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Session isolation — track concurrent agent sessions</div>
+        <div class="step-desc">Use traceId to group spans into sessions. Show session switcher in sidebar. Each session gets its own graph, timeline, and threat summary.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 3 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#f9731622;color:#f97316">3</div>
+    <div>
+      <div class="phase-title">Local Observatory — Timeline &amp; Metrics</div>
+      <div class="phase-desc">Deep visibility into what local agents are doing — timeline view, latency heatmaps, token usage, and span drill-down</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p3" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step" id="s11">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Timeline view — Gantt-style span visualization</div>
+        <div class="step-desc">Second tab alongside the graph: horizontal timeline with spans as bars, colored by severity, grouped by trace. Click bar to open detail panel. Uses startNano/endNano from SQLite.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step" id="s12">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Metrics panel — tokens, latency, tool-call counts</div>
+        <div class="step-desc">Aggregate OTel attributes: llm.usage.input_tokens, llm.usage.output_tokens, duration. Show running totals in header stats panel with sparklines (canvas/SVG, no chart lib).</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step" id="s13">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Span search with attribute filtering</div>
+        <div class="step-desc">Extend search to filter by any attribute key/value (e.g. tool.name=bash). Add GET /api/spans?q= endpoint with SQLite LIKE query.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">API</span>
+      </div>
+    </div>
+    <div class="step" id="s14">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Persistent sessions — named snapshots</div>
+        <div class="step-desc">Allow naming and saving snapshots of the current session. Store in separate SQLite table. Load/switch sessions from UI. Add GET/POST /api/sessions endpoints.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 4 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#eab30822;color:#eab308">4</div>
+    <div>
+      <div class="phase-title">Enhanced Security Engine</div>
+      <div class="phase-desc">Richer threat detection, real-time alerts, custom rules, and audit log export</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p4" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step" id="s15">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Expand threat rules — prompt injection, exfiltration, supply chain</div>
+        <div class="step-desc">Add 20+ rules: prompt injection (ignore previous instructions), secret scanning (AWS/GitHub tokens), supply chain (npm from unknown registry), network exfiltration (curl to external IPs).</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+      </div>
+    </div>
+    <div class="step" id="s16">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Custom rules UI — add/edit/delete rules in the dashboard</div>
+        <div class="step-desc">Settings panel where users define custom regex rules with severity, label, description. Persist in rules.json. API: GET/POST/DELETE /api/rules.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step" id="s17">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Desktop notifications for HIGH severity spans</div>
+        <div class="step-desc">Use Web Notifications API to pop native OS notification when HIGH severity span arrives via Socket.io. Works on macOS/Windows/Linux.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
+      </div>
+    </div>
+    <div class="step" id="s18">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Audit log — immutable append-only threat log</div>
+        <div class="step-desc">Separate SQLite table "alerts" — every rule match appended with timestamp, rule name, matched text snippet, span context. Export as CSV/JSON from UI.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 5 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#3b82f622;color:#3b82f6">5</div>
+    <div>
+      <div class="phase-title">Agent Orchestration View</div>
+      <div class="phase-desc">Visualize how multiple agents coordinate, hand off tasks, and call tools — the "big picture" of an agentic workflow</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p5" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step" id="s19">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Orchestration graph — agent-to-agent edges</div>
+        <div class="step-desc">Detect MCP tool calls between agents (gen_ai.tool.call.id correlating to parent span of another agent). Render a separate "Orchestration" tab showing the agent DAG.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">orchestration</span>
+      </div>
+    </div>
+    <div class="step" id="s20">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Sub-agent spawning detection &amp; tree view</div>
+        <div class="step-desc">Track when Claude Code's Agent tool or similar spawns child agents. Build a collapsible tree showing parent-child agent relationships with per-node threat summary.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">orchestration</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step" id="s21">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Tool inventory — what tools each agent uses</div>
+        <div class="step-desc">Aggregate gen_ai.tool.name attributes across all spans. Show per-agent tool usage heatmap. Flag suspicious tools (bash, exec) with threat counts.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">orchestration</span>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 6 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#ef444422;color:#ef4444">6</div>
+    <div>
+      <div class="phase-title">Docs (Mintlify) &amp; Release</div>
+      <div class="phase-desc">Production-ready Mintlify documentation site, GitHub release, npm publish, and community assets</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p6" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step" id="s22">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Mintlify docs scaffold (docs/ folder)</div>
+        <div class="step-desc">docs/mint.json, docs/index.mdx (overview), docs/quickstart.mdx, docs/harnesses/*.mdx (one per harness), docs/security/rules.mdx, docs/api-reference/*.mdx. Run with: npx mintlify dev.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
+      </div>
+    </div>
+    <div class="step" id="s23">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">API reference docs — all endpoints documented</div>
+        <div class="step-desc">OpenAPI 3.0 spec (openapi.yaml) + Mintlify API reference pages for all endpoints. Include request/response examples for OTLP, /api/graph, /api/export, /api/rules.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
+      </div>
+    </div>
+    <div class="step" id="s24">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Per-harness quickstart guides</div>
+        <div class="step-desc">One doc page per harness with copy-paste export commands, verification steps, and a screenshot. Harnesses: Claude Code, Copilot CLI, OpenHands, Cursor, Aider, Continue.dev, Cline, Goose.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+      </div>
+    </div>
+    <div class="step" id="s25">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">GitHub Release v1.0.0 + CHANGELOG.md</div>
+        <div class="step-desc">Tag v1.0.0, generate CHANGELOG.md (Keep a Changelog format), create GitHub release with install instructions.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">release</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function recalc() {
+  const phases = [
+    { steps: ['s1','s2','s3','s4','s5'], bar: 'p1' },
+    { steps: ['s6','s7','s8','s9','s10'], bar: 'p2' },
+    { steps: ['s11','s12','s13','s14'], bar: 'p3' },
+    { steps: ['s15','s16','s17','s18'], bar: 'p4' },
+    { steps: ['s19','s20','s21'], bar: 'p5' },
+    { steps: ['s22','s23','s24','s25'], bar: 'p6' },
+  ];
+  phases.forEach(({ steps, bar }) => {
+    const done = steps.filter(id => {
+      const el = document.getElementById(id);
+      return el && el.querySelector('input').checked;
+    }).length;
+    document.getElementById(bar).style.width = `${Math.round((done / steps.length) * 100)}%`;
+  });
+}
+recalc();
+</script>
+</body>
+</html>
