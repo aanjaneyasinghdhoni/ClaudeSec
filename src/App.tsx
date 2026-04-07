@@ -9,6 +9,7 @@ import {
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
+  Sun, Moon, Server, GitCompare,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
@@ -21,6 +22,8 @@ import { HarnessTab } from './HarnessTab';
 import { HeatmapTab } from './HeatmapTab';
 import { GraphSearch } from './GraphSearch';
 import { SpanAttributes } from './SpanAttributes';
+import { GraphReplay, type ReplayState } from './GraphReplay';
+import { ComparePanel } from './ComparePanel';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -326,6 +329,31 @@ export default function App() {
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importStatus, setImportStatus] = useState<{ msg: string; ok: boolean } | null>(null);
 
+  // ── Theme (s53) ───────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try {
+      const saved = localStorage.getItem('claudesec.theme') as 'dark' | 'light' | null;
+      if (saved) return saved;
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } catch { return 'dark'; }
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('light', theme === 'light');
+    try { localStorage.setItem('claudesec.theme', theme); } catch { /* ignore */ }
+  }, [theme]);
+
+  // ── Session compare (s49) ─────────────────────────────────────────────────
+  const [compareIds, setCompareIds] = useState<[string, string] | null>(null);
+  // When exactly one session is Ctrl-clicked, hold it here until the 2nd pick
+  const [comparePending, setComparePending] = useState<string | null>(null);
+
+  // ── Graph replay (s51) ────────────────────────────────────────────────────
+  const [replay, setReplay] = useState<ReplayState>({
+    active: false, playing: false, speed: 1, progress: 0, currentStep: 0, totalSteps: 0,
+  });
+  const replayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // ── Graph search (s46) ────────────────────────────────────────────────────
   const [graphSearchOpen,  setGraphSearchOpen]  = useState(false);
   const [graphSearchQuery, setGraphSearchQuery] = useState('');
@@ -495,7 +523,63 @@ export default function App() {
     setHarnessFilter(null);
     setActiveSession(null);
     setAlertCount(0);
+    setReplay({ active: false, playing: false, speed: 1, progress: 0, currentStep: 0, totalSteps: 0 });
+    setCompareIds(null);
+    setComparePending(null);
   };
+
+  // ── Replay ────────────────────────────────────────────────────────────────
+
+  const allSpansSorted = useMemo(() =>
+    nodes
+      .filter(n => n.id !== 'agent' && !(n.data as any).isRoot)
+      .sort((a, b) => {
+        try {
+          const diff = BigInt((a.data as any).startNano ?? '0') - BigInt((b.data as any).startNano ?? '0');
+          return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+        } catch { return 0; }
+      }),
+    [nodes],
+  );
+
+  const startReplay = useCallback(() => {
+    if (allSpansSorted.length === 0) return;
+    if (replayIntervalRef.current) clearInterval(replayIntervalRef.current);
+    setReplay({ active: true, playing: true, speed: 1, progress: 0, currentStep: 0, totalSteps: allSpansSorted.length });
+  }, [allSpansSorted]);
+
+  // Replay tick
+  useEffect(() => {
+    if (!replay.active || !replay.playing) {
+      if (replayIntervalRef.current) { clearInterval(replayIntervalRef.current); replayIntervalRef.current = null; }
+      return;
+    }
+    const TICK_MS = 300;
+    replayIntervalRef.current = setInterval(() => {
+      setReplay(prev => {
+        const next = Math.min(prev.currentStep + prev.speed, prev.totalSteps);
+        const done  = next >= prev.totalSteps;
+        if (done && replayIntervalRef.current) { clearInterval(replayIntervalRef.current); replayIntervalRef.current = null; }
+        return { ...prev, currentStep: next, progress: next / prev.totalSteps, playing: !done };
+      });
+    }, TICK_MS);
+    return () => { if (replayIntervalRef.current) { clearInterval(replayIntervalRef.current); replayIntervalRef.current = null; } };
+  }, [replay.active, replay.playing, replay.speed]);
+
+  const handleReplayPlay    = useCallback(() => setReplay(p => ({ ...p, playing: true })), []);
+  const handleReplayPause   = useCallback(() => setReplay(p => ({ ...p, playing: false })), []);
+  const handleReplayRestart = useCallback(() => setReplay(p => ({ ...p, playing: true, currentStep: 0, progress: 0 })), []);
+  const handleReplayStop    = useCallback(() => {
+    if (replayIntervalRef.current) { clearInterval(replayIntervalRef.current); replayIntervalRef.current = null; }
+    setReplay({ active: false, playing: false, speed: 1, progress: 0, currentStep: 0, totalSteps: 0 });
+  }, []);
+  const handleReplaySetSpeed = useCallback((s: 1 | 2 | 5) => setReplay(p => ({ ...p, speed: s })), []);
+  const handleReplayScrub    = useCallback((frac: number) => {
+    setReplay(p => {
+      const step = Math.round(frac * p.totalSteps);
+      return { ...p, currentStep: step, progress: frac, playing: false };
+    });
+  }, []);
 
   const startRename = (s: Session) => {
     setEditingSession(s.traceId);
@@ -674,6 +758,14 @@ export default function App() {
 
   // Apply search highlighting: dim non-matching nodes
   const displayNodes = useMemo(() => {
+    // Replay takes precedence: only show nodes up to current replay step
+    if (replay.active) {
+      const visibleIds = new Set<string>(['agent', ...allSpansSorted.slice(0, replay.currentStep).map(n => n.id)]);
+      return nodes.map(n => ({
+        ...n,
+        style: { ...n.style, opacity: visibleIds.has(n.id) ? 1 : 0 },
+      }));
+    }
     if (!graphSearchQuery.trim() || graphSearchMatchIds.length === 0) return nodes;
     const matchSet = new Set(graphSearchMatchIds);
     const current  = graphSearchMatchIds[graphSearchIdx];
@@ -686,7 +778,7 @@ export default function App() {
         outlineOffset: n.id === current ? '2px' : undefined,
       },
     }));
-  }, [nodes, graphSearchMatchIds, graphSearchIdx, graphSearchQuery]);
+  }, [nodes, graphSearchMatchIds, graphSearchIdx, graphSearchQuery, replay.active, replay.currentStep, allSpansSorted]);
 
   // Keyboard shortcut: Ctrl/Cmd+F opens graph search
   useEffect(() => {
@@ -769,6 +861,20 @@ export default function App() {
             <FileText className="w-3.5 h-3.5" /> CSV
           </button>
           <button
+            onClick={() => window.open('/api/collector-config', '_blank')}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
+            title="Download OpenTelemetry Collector config"
+          >
+            <Server className="w-3.5 h-3.5" /> Collector
+          </button>
+          <button
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-200 border border-slate-700"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+          <button
             onClick={resetGraph}
             className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-red-400"
             title="Reset all data"
@@ -789,7 +895,29 @@ export default function App() {
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
                 <Layers className="w-3 h-3" /> Sessions
               </p>
-              <span className="text-[9px] text-slate-600 font-mono">{sessions.length}</span>
+              <div className="flex items-center gap-1.5">
+                {comparePending ? (
+                  <>
+                    <span className="text-[9px] text-blue-400 font-mono animate-pulse">pick 2nd…</span>
+                    <button
+                      onClick={() => setComparePending(null)}
+                      className="text-slate-500 hover:text-slate-300"
+                      title="Cancel comparison"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : compareIds ? (
+                  <button
+                    onClick={() => setCompareIds(null)}
+                    className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5"
+                    title="Close comparison"
+                  >
+                    <GitCompare className="w-2.5 h-2.5" /> Close
+                  </button>
+                ) : null}
+                <span className="text-[9px] text-slate-600 font-mono">{sessions.length}</span>
+              </div>
             </div>
             <div className="space-y-1 max-h-28 overflow-y-auto">
               <button
@@ -814,6 +942,8 @@ export default function App() {
                     className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors group ${
                       isActive
                         ? 'bg-blue-600 text-white'
+                        : comparePending === s.traceId
+                        ? 'bg-blue-900/40 border border-blue-600/50 text-blue-300'
                         : isPinned
                         ? 'bg-yellow-900/20 border border-yellow-700/30 text-slate-300 hover:bg-yellow-900/30'
                         : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
@@ -838,7 +968,22 @@ export default function App() {
                       <>
                         <button
                           className="flex-1 text-left truncate min-w-0"
-                          onClick={() => setActiveSession(isActive ? null : s.traceId)}
+                          onClick={e => {
+                            if (e.ctrlKey || e.metaKey) {
+                              // Compare mode: pick two sessions
+                              if (!comparePending) {
+                                setComparePending(s.traceId);
+                              } else if (comparePending !== s.traceId) {
+                                setCompareIds([comparePending, s.traceId]);
+                                setComparePending(null);
+                              } else {
+                                setComparePending(null);
+                              }
+                            } else {
+                              setActiveSession(isActive ? null : s.traceId);
+                            }
+                          }}
+                          title="Click to filter · Ctrl+click to compare"
                         >
                           {s.name}
                         </button>
@@ -1124,7 +1269,7 @@ export default function App() {
                 nodes={displayNodes} edges={edges}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
                 onConnect={onConnect} onNodeClick={onNodeClick}
-                fitView colorMode="dark"
+                fitView colorMode={theme === 'light' ? 'light' : 'dark'}
                 defaultEdgeOptions={{ markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' } }}
               >
                 <Background color="#1e293b" gap={20} size={1} />
@@ -1133,6 +1278,15 @@ export default function App() {
                   query={graphSearchQuery} setQuery={setGraphSearchQuery}
                   open={graphSearchOpen} setOpen={o => { setGraphSearchOpen(o); if (!o) setGraphSearchQuery(''); }}
                   matchIds={graphSearchMatchIds} matchIndex={graphSearchIdx} setMatchIndex={setGraphSearchIdx}
+                />
+                <GraphReplay
+                  replay={replay}
+                  onPlay={handleReplayPlay}
+                  onPause={handleReplayPause}
+                  onRestart={handleReplayRestart}
+                  onStop={handleReplayStop}
+                  onSetSpeed={handleReplaySetSpeed}
+                  onScrub={handleReplayScrub}
                 />
                 <Panel position="top-right" className="bg-slate-900/80 backdrop-blur-md border border-slate-800 p-3 rounded-xl shadow-2xl">
                   <div className="flex items-center gap-2 mb-2">
@@ -1145,6 +1299,15 @@ export default function App() {
                     >
                       <Search className="w-3.5 h-3.5" />
                     </button>
+                    {!replay.active && allSpansSorted.length > 0 && (
+                      <button
+                        onClick={startReplay}
+                        title="Replay spans in chronological order"
+                        className="p-0.5 rounded hover:bg-slate-700 text-slate-500 hover:text-blue-400 transition-colors"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                     <div>
@@ -1392,8 +1555,19 @@ export default function App() {
             OTLP → http://localhost:3000/v1/traces · {sessions.length} sessions
           </span>
         </div>
-        <span className="text-[9px] text-slate-600 font-mono">v0.4.0</span>
+        <span className="text-[9px] text-slate-600 font-mono">v0.5.0</span>
       </footer>
+
+      {/* ── Session Compare Panel (s49) ── */}
+      <AnimatePresence>
+        {compareIds && (
+          <ComparePanel
+            aId={compareIds[0]}
+            bId={compareIds[1]}
+            onClose={() => setCompareIds(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

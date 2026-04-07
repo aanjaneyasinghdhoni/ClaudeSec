@@ -623,6 +623,65 @@
   </div>
 </div>
 
+<!-- PHASE 12 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#22c55e22;color:#22c55e">12</div>
+    <div>
+      <div class="phase-title">Intelligence, Replay &amp; Theme</div>
+      <div class="phase-desc">Session comparison, threshold alert rules, graph replay, OTEL Collector config generator, and dark/light theme</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p12" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step" id="s49">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Session comparison — side-by-side diff view</div>
+        <div class="step-desc">GET /api/sessions/compare?a=traceId1&amp;b=traceId2 returns per-session diffs: span counts, threat counts by severity, token in/out, avg duration, top tools, threat rules triggered. UI: Ctrl+click two sessions in sidebar to enter compare mode; a ComparePanel slides in showing two-column diff with delta badges (green/red). </div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step" id="s50">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Threshold alert rules — numeric trigger conditions</div>
+        <div class="step-desc">New threshold_rules table (id, name, metric, operator, value, window_min, enabled). Metrics: tokens_in, tokens_out, threat_count, span_count, high_threat_count. Evaluated after every OTLP batch per session. Fires webhook + creates alert. CRUD: GET/POST/DELETE /api/threshold-rules. Settings panel section for managing them.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
+      </div>
+    </div>
+    <div class="step" id="s51">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Graph timeline replay / scrubber</div>
+        <div class="step-desc">A "Replay" button on the graph canvas animates spans appearing in chronological order (sorted by startNano). Play/Pause, 1×/2×/5× speed, progress scrubber bar. Spans fade in as they're "received". ESC resets to full view. Works on selected session or all spans.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step" id="s52">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">OTEL Collector config generator</div>
+        <div class="step-desc">GET /api/collector-config returns a ready-to-use otel-collector-config.yaml (receivers: otlp grpc+http, processors: batch+memory_limiter, exporters: otlphttp to ClaudeSec). Download button in dashboard. docs/collector.mdx explains usage.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step" id="s53">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Dark / light theme toggle</div>
+        <div class="step-desc">System-aware theme respecting prefers-color-scheme. Sun/moon toggle in header, stored in localStorage. Light theme: slate-50/white backgrounds, slate-900 text. ReactFlow colorMode follows theme. CSS custom properties on :root.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -637,6 +696,7 @@ function recalc() {
     { steps: ['s34','s35','s36','s37','s38'], bar: 'p9' },
     { steps: ['s39','s40','s41','s42','s43'], bar: 'p10' },
     { steps: ['s44','s45','s46','s47','s48'], bar: 'p11' },
+    { steps: ['s49','s50','s51','s52','s53'], bar: 'p12' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {

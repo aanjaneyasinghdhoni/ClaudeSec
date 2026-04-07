@@ -139,6 +139,93 @@ const insertAlert = db.prepare(`
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
 
 // ---------------------------------------------------------------------------
+// Threshold alert rules — numeric trigger conditions
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS threshold_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    metric     TEXT NOT NULL,
+    operator   TEXT NOT NULL,
+    value      REAL NOT NULL,
+    window_min INTEGER NOT NULL DEFAULT 60,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    createdAt  TEXT NOT NULL
+  );
+`);
+
+const insertThresholdRule = db.prepare(`
+  INSERT INTO threshold_rules (name, metric, operator, value, window_min, enabled, createdAt)
+  VALUES (@name, @metric, @operator, @value, @window_min, @enabled, @createdAt)
+`);
+const deleteThresholdRule  = db.prepare(`DELETE FROM threshold_rules WHERE id = ?`);
+const updateThresholdRule  = db.prepare(`UPDATE threshold_rules SET enabled = ? WHERE id = ?`);
+const getAllThresholdRules  = db.prepare(`SELECT * FROM threshold_rules ORDER BY id ASC`);
+
+// Dedup cache: traceId+ruleId → last fired ts
+const thresholdFiredCache = new Map<string, number>();
+
+type ThresholdMetric = 'tokens_in' | 'tokens_out' | 'threat_count' | 'span_count' | 'high_threat_count';
+
+function evaluateThresholdRules(traceId: string, harness: string): void {
+  const rules = getAllThresholdRules.all() as {
+    id: number; name: string; metric: ThresholdMetric;
+    operator: string; value: number; window_min: number; enabled: number;
+  }[];
+  if (rules.length === 0) return;
+
+  const windowMs = (r: typeof rules[0]) => r.window_min * 60 * 1000;
+  const cutoffNano = (r: typeof rules[0]) => {
+    const ms = Date.now() - windowMs(r);
+    return String(BigInt(ms) * 1_000_000n);
+  };
+
+  for (const rule of rules) {
+    if (!rule.enabled) continue;
+    const cacheKey = `${traceId}::${rule.id}`;
+    const lastFired = thresholdFiredCache.get(cacheKey) ?? 0;
+    if (Date.now() - lastFired < windowMs(rule)) continue; // dedup within window
+
+    const cutoff = cutoffNano(rule);
+    let actual = 0;
+    const spans = db.prepare(`SELECT attributes, severity FROM spans WHERE traceId = ? AND startNano > ?`).all(traceId, cutoff) as { attributes: string; severity: string }[];
+
+    switch (rule.metric) {
+      case 'span_count':       actual = spans.length; break;
+      case 'threat_count':     actual = spans.filter(s => s.severity !== 'none').length; break;
+      case 'high_threat_count': actual = spans.filter(s => s.severity === 'high').length; break;
+      case 'tokens_in':
+      case 'tokens_out': {
+        const key = rule.metric === 'tokens_in' ? 'gen_ai.usage.input_tokens' : 'gen_ai.usage.output_tokens';
+        const alt = rule.metric === 'tokens_in' ? 'llm.usage.input_tokens' : 'llm.usage.output_tokens';
+        for (const s of spans) {
+          try { const a = JSON.parse(s.attributes); actual += Number(a[key] ?? a[alt] ?? 0); } catch {}
+        }
+        break;
+      }
+    }
+
+    const exceeded = rule.operator === '>' ? actual > rule.value
+      : rule.operator === '>=' ? actual >= rule.value
+      : rule.operator === '<'  ? actual < rule.value
+      : rule.operator === '<=' ? actual <= rule.value
+      : actual === rule.value;
+
+    if (exceeded) {
+      thresholdFiredCache.set(cacheKey, Date.now());
+      const label = `Threshold: ${rule.name} (${rule.metric} ${rule.operator} ${rule.value})`;
+      insertAlert.run({
+        ts: new Date().toISOString(), ruleLabel: label, severity: 'medium',
+        spanId: 'threshold', traceId, harness, spanName: 'threshold-check',
+        matchedText: `actual=${actual}`,
+      });
+      fireWebhook({ ruleLabel: label, severity: 'medium', harness, spanName: 'threshold-check', matchedText: `actual=${actual}, threshold=${rule.operator}${rule.value}`, traceId }).catch(() => {});
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Annotations table — user investigation notes on spans
 // ---------------------------------------------------------------------------
 
@@ -879,6 +966,7 @@ async function startServer() {
       const traceHarness = (db.prepare('SELECT harness FROM spans WHERE traceId = ? LIMIT 1')
         .get(traceId) as { harness: string } | undefined)?.harness ?? 'unknown';
       detectBehavioralAnomalies(traceId, traceHarness);
+      evaluateThresholdRules(traceId, traceHarness);
     }
 
     // Retention pruning (async — don't block response)
@@ -1279,6 +1367,152 @@ async function startServer() {
     } catch (e: unknown) {
       err(-32603, e instanceof Error ? e.message : 'Internal error');
     }
+  });
+
+  // ── Session comparison ───────────────────────────────────────────────────
+  app.get('/api/sessions/compare', (req, res) => {
+    const aId = String(req.query.a ?? '');
+    const bId = String(req.query.b ?? '');
+    if (!aId || !bId || aId === bId) {
+      return res.status(400).json({ error: 'Provide two distinct traceId values as ?a=...&b=...' }) as any;
+    }
+
+    function sessionStats(traceId: string) {
+      const session = db.prepare('SELECT * FROM sessions WHERE traceId = ?').get(traceId) as
+        { traceId: string; name: string; createdAt: string; pinned: number } | undefined;
+      if (!session) return null;
+      const spans = db.prepare('SELECT * FROM spans WHERE traceId = ?').all(traceId) as SpanRecord[];
+      const alerts = db.prepare('SELECT * FROM alerts WHERE traceId = ?').all(traceId) as any[];
+
+      let tokensIn = 0, tokensOut = 0;
+      let totalDurationMs = 0, durCount = 0;
+      const toolCounts = new Map<string, number>();
+      const ruleCounts = new Map<string, number>();
+
+      for (const span of spans) {
+        try {
+          const a = JSON.parse(span.attributes);
+          tokensIn  += Number(a['gen_ai.usage.input_tokens']  ?? a['llm.usage.input_tokens']  ?? 0);
+          tokensOut += Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
+          const tool = String(a['gen_ai.tool.name'] ?? a['tool.name'] ?? '');
+          if (tool) toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
+          const rule = String(a['claudesec.threat.rule'] ?? '');
+          if (rule) ruleCounts.set(rule, (ruleCounts.get(rule) ?? 0) + 1);
+        } catch {}
+        try {
+          const ms = Number((BigInt(span.endNano) - BigInt(span.startNano)) / 1_000_000n);
+          if (ms > 0 && ms < 3_600_000) { totalDurationMs += ms; durCount++; }
+        } catch {}
+      }
+
+      const threatCounts = { high: 0, medium: 0, low: 0 };
+      spans.forEach(s => { if (s.severity in threatCounts) (threatCounts as any)[s.severity]++; });
+
+      return {
+        traceId, name: session.name, createdAt: session.createdAt,
+        spanCount: spans.length, alertCount: alerts.length,
+        threatHigh: threatCounts.high, threatMedium: threatCounts.medium, threatLow: threatCounts.low,
+        tokensIn, tokensOut, avgDurationMs: durCount > 0 ? Math.round(totalDurationMs / durCount) : 0,
+        topTools:  [...toolCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, c]) => ({ name: n, count: c })),
+        topRules:  [...ruleCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, c]) => ({ name: n, count: c })),
+      };
+    }
+
+    const a = sessionStats(aId);
+    const b = sessionStats(bId);
+    if (!a || !b) return res.status(404).json({ error: 'One or both sessions not found' }) as any;
+    res.json({ a, b });
+  });
+
+  // ── Threshold alert rules ────────────────────────────────────────────────
+  app.get('/api/threshold-rules', (_req, res) => {
+    res.json({ rules: getAllThresholdRules.all() });
+  });
+
+  app.post('/api/threshold-rules', (req, res) => {
+    const { name, metric, operator, value, window_min, enabled } = req.body as {
+      name?: string; metric?: string; operator?: string;
+      value?: number; window_min?: number; enabled?: boolean;
+    };
+    const validMetrics   = ['tokens_in', 'tokens_out', 'threat_count', 'span_count', 'high_threat_count'];
+    const validOperators = ['>', '>=', '<', '<=', '='];
+    if (!name?.trim())                  return res.status(400).json({ error: 'name required' }) as any;
+    if (!metric || !validMetrics.includes(metric))   return res.status(400).json({ error: `metric must be one of: ${validMetrics.join(', ')}` }) as any;
+    if (!operator || !validOperators.includes(operator)) return res.status(400).json({ error: `operator must be one of: ${validOperators.join(', ')}` }) as any;
+    if (value === undefined || isNaN(Number(value))) return res.status(400).json({ error: 'value (number) required' }) as any;
+    const result = insertThresholdRule.run({
+      name: name.trim(), metric, operator, value: Number(value),
+      window_min: Number(window_min ?? 60), enabled: enabled !== false ? 1 : 0,
+      createdAt: new Date().toISOString(),
+    });
+    const row = db.prepare('SELECT * FROM threshold_rules WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(row);
+  });
+
+  app.patch('/api/threshold-rules/:id', (req, res) => {
+    const { enabled } = req.body as { enabled?: boolean };
+    if (enabled === undefined) return res.status(400).json({ error: 'enabled required' }) as any;
+    const changes = updateThresholdRule.run(enabled ? 1 : 0, Number(req.params.id)).changes;
+    if (!changes) return res.status(404).json({ error: 'Rule not found' }) as any;
+    res.json({ status: 'ok' });
+  });
+
+  app.delete('/api/threshold-rules/:id', (req, res) => {
+    const changes = deleteThresholdRule.run(Number(req.params.id)).changes;
+    if (!changes) return res.status(404).json({ error: 'Rule not found' }) as any;
+    res.json({ status: 'ok' });
+  });
+
+  // ── OTEL Collector config generator ─────────────────────────────────────
+  app.get('/api/collector-config', (_req, res) => {
+    const port = process.env.PORT ?? 3000;
+    const yaml = `# OpenTelemetry Collector configuration for ClaudeSec
+# Generated by ClaudeSec v1.0.0 — https://github.com/aanjaneyasinghdhoni/ClaudeSec
+#
+# Usage:
+#   docker run --rm -p 4317:4317 -p 4318:4318 \\
+#     -v $(pwd)/otel-collector-config.yaml:/etc/otelcol/config.yaml \\
+#     otel/opentelemetry-collector-contrib:latest
+#
+# Then point your agent to the collector instead of ClaudeSec directly:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 200ms
+    send_batch_size: 100
+    send_batch_max_size: 500
+
+exporters:
+  otlphttp:
+    endpoint: http://host.docker.internal:${port}
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp, debug]
+`;
+    res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="otel-collector-config.yaml"');
+    res.send(yaml);
   });
 
   // ── Config read/write ─────────────────────────────────────────────────────

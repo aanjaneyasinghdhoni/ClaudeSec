@@ -1,0 +1,97 @@
+---
+title: OTEL Collector Setup
+description: Route agent telemetry through an OpenTelemetry Collector before it reaches ClaudeSec
+icon: server
+---
+
+By default, agents send OTLP traces directly to ClaudeSec's HTTP endpoint. For production setups or multi-agent environments, you can insert an **OpenTelemetry Collector** in between.
+
+## When to use a Collector
+
+| Scenario | Direct to ClaudeSec | Via Collector |
+|----------|--------------------|--------------------|
+| Local development | ✅ Recommended | Not needed |
+| Multiple agents on different machines | ❌ Firewall issues | ✅ Single ingress |
+| Need gRPC (port 4317) | ❌ ClaudeSec is HTTP-only | ✅ Collector translates |
+| Fan-out to multiple backends | ❌ | ✅ Add more exporters |
+| Production with rate limiting | Possible | ✅ Better isolation |
+
+## Download the config
+
+```bash
+curl -o otel-collector-config.yaml http://localhost:3000/api/collector-config
+```
+
+Or click **Settings → Download Collector Config** in the dashboard.
+
+## Run the Collector
+
+```bash
+docker run --rm \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  -v $(pwd)/otel-collector-config.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector-contrib:latest
+```
+
+## Point your agents at the Collector
+
+Instead of `http://localhost:3000/v1/traces`, use:
+
+```bash
+# gRPC (port 4317)
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
+export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
+
+# or HTTP/JSON (port 4318)
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+```
+
+## What the generated config does
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:   { endpoint: 0.0.0.0:4317 }
+      http:   { endpoint: 0.0.0.0:4318 }
+
+processors:
+  memory_limiter:   # Prevents OOM if agent floods the collector
+    limit_mib: 256
+  batch:            # Groups spans for efficient forwarding
+    timeout: 200ms
+    send_batch_size: 100
+
+exporters:
+  otlphttp:         # Forwards to ClaudeSec
+    endpoint: http://host.docker.internal:3000
+  debug:            # Logs to collector stdout for debugging
+    verbosity: basic
+```
+
+## Fan-out example
+
+To send traces to **both** ClaudeSec and Jaeger:
+
+```yaml
+exporters:
+  otlphttp/claudesec:
+    endpoint: http://host.docker.internal:3000
+  otlp/jaeger:
+    endpoint: http://jaeger:4317
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp/claudesec, otlp/jaeger]
+```
+
+## Troubleshooting
+
+- **No spans arriving**: check that `host.docker.internal` resolves. On Linux, use `--add-host host.docker.internal:host-gateway`.
+- **Port conflict**: if 4317/4318 are busy, remap with `-p 14317:4317 -p 14318:4318` and update `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- **TLS errors**: the generated config uses `insecure: true` since ClaudeSec is local. For production, configure proper TLS.
