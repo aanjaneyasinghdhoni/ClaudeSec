@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check } from 'lucide-react';
+import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing } from 'lucide-react';
+import { ThresholdRulesSection } from './ThresholdRulesSection';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -468,6 +469,14 @@ export function SettingsTab(): React.ReactElement {
 
         <Section icon={<Monitor className="w-4 h-4" />} title="Display">
           <DisplaySection />
+        </Section>
+
+        <Section icon={<BellRing className="w-4 h-4" />} title="Threshold Rules" defaultOpen={false}>
+          <p className="text-[10px] text-slate-500 mb-1 leading-relaxed">
+            Trigger alerts when a session metric exceeds a threshold within a time window.
+            Fired alerts appear in the Alerts tab.
+          </p>
+          <ThresholdRulesSection />
         </Section>
 
       </div>

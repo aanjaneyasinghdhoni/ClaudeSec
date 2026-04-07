@@ -53,7 +53,8 @@
     {
       "group": "Integrations",
       "pages": [
-        "mcp"
+        "mcp",
+        "collector"
       ]
     },
     {

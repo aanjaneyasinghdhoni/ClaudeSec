@@ -1,9 +1,69 @@
 @import "@xyflow/react/dist/style.css";
 @import "tailwindcss";
 
+/* ── Theme tokens ────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
+  --cs-bg-primary:   #020617;   /* slate-950 */
+  --cs-bg-surface:   #0f172a;   /* slate-900 */
+  --cs-bg-elevated:  #1e293b;   /* slate-800 */
+  --cs-bg-subtle:    #334155;   /* slate-700 */
+  --cs-border:       #1e293b;   /* slate-800 */
+  --cs-border-soft:  #334155;   /* slate-700 */
+  --cs-text-base:    #f1f5f9;   /* slate-100 */
+  --cs-text-muted:   #94a3b8;   /* slate-400 */
+  --cs-text-faint:   #475569;   /* slate-600 */
+}
+
+html.light {
+  color-scheme: light;
+  --cs-bg-primary:   #f8fafc;   /* slate-50 */
+  --cs-bg-surface:   #ffffff;
+  --cs-bg-elevated:  #f1f5f9;   /* slate-100 */
+  --cs-bg-subtle:    #e2e8f0;   /* slate-200 */
+  --cs-border:       #e2e8f0;   /* slate-200 */
+  --cs-border-soft:  #cbd5e1;   /* slate-300 */
+  --cs-text-base:    #0f172a;   /* slate-900 */
+  --cs-text-muted:   #475569;   /* slate-600 */
+  --cs-text-faint:   #94a3b8;   /* slate-400 */
+}
+
+/* ── Light mode structural overrides ─────────────────────────────────────── */
+html.light .bg-slate-950  { background-color: var(--cs-bg-primary)  !important; }
+html.light .bg-slate-900  { background-color: var(--cs-bg-surface)  !important; }
+html.light .bg-slate-800  { background-color: var(--cs-bg-elevated) !important; }
+html.light .bg-slate-700  { background-color: var(--cs-bg-subtle)   !important; }
+
+html.light .bg-slate-900\/50 { background-color: rgba(255,255,255,0.85) !important; backdrop-filter: blur(12px); }
+html.light .bg-slate-900\/80 { background-color: rgba(255,255,255,0.92) !important; }
+html.light .bg-slate-900\/30 { background-color: rgba(248,250,252,0.70) !important; }
+html.light .bg-slate-800\/50 { background-color: rgba(241,245,249,0.85) !important; }
+html.light .bg-slate-800\/60 { background-color: rgba(241,245,249,0.90) !important; }
+html.light .bg-slate-800\/20 { background-color: rgba(241,245,249,0.50) !important; }
+
+html.light .border-slate-800 { border-color: var(--cs-border)      !important; }
+html.light .border-slate-700 { border-color: var(--cs-border-soft) !important; }
+
+html.light .text-slate-100 { color: var(--cs-text-base)  !important; }
+html.light .text-slate-200 { color: #1e293b              !important; }
+html.light .text-slate-300 { color: #334155              !important; }
+html.light .text-slate-400 { color: var(--cs-text-muted) !important; }
+html.light .text-slate-500 { color: #64748b              !important; }
+html.light .text-slate-600 { color: var(--cs-text-faint) !important; }
+
+/* Prevent pure-black shadows in light mode */
+html.light .shadow-2xl { box-shadow: 0 25px 50px rgba(0,0,0,0.12); }
+
+/* ── ReactFlow light mode ─────────────────────────────────────────────────── */
+html.light .react-flow__background { background-color: var(--cs-bg-primary) !important; }
+html.light .react-flow__controls   { background-color: var(--cs-bg-elevated) !important; border-color: var(--cs-border) !important; }
+
 body {
   margin: 0;
   padding: 0;
   overflow: hidden;
   font-family: "Inter", sans-serif;
+  background: var(--cs-bg-primary);
+  color: var(--cs-text-base);
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
