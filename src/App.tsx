@@ -14,6 +14,7 @@ import { socket } from './socket';
 import { RulesTab } from './RulesTab';
 import { AlertsTab } from './AlertsTab';
 import { OrchestrationTab } from './OrchestrationTab';
+import { CostTab } from './CostTab';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs';
 
 interface Workflow {
   id: string;
@@ -919,6 +920,14 @@ export default function App() {
             >
               <Shield className="w-3.5 h-3.5" /> Rules
             </button>
+            <button
+              onClick={() => setActiveTab('costs')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'costs' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" /> Costs
+            </button>
           </div>
 
           {/* Graph view */}
@@ -1112,6 +1121,9 @@ export default function App() {
 
           {/* Rules view */}
           {activeTab === 'rules' && <RulesTab />}
+
+          {/* Costs + Webhook view */}
+          {activeTab === 'costs' && <CostTab />}
         </div>
       </div>
 

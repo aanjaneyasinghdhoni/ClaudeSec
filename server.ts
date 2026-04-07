@@ -136,6 +136,21 @@ const insertAlert = db.prepare(`
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
 
 // ---------------------------------------------------------------------------
+// Config table (webhook URL, thresholds, etc.)
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`);
+
+const getConfig = db.prepare<[string], { value: string }>(`SELECT value FROM config WHERE key = ?`);
+const setConfig = db.prepare(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`);
+const delConfig = db.prepare(`DELETE FROM config WHERE key = ?`);
+
+// ---------------------------------------------------------------------------
 // Custom rules persistence
 // ---------------------------------------------------------------------------
 
@@ -155,6 +170,149 @@ function saveCustomRules() {
 }
 
 loadCustomRules();
+
+// ---------------------------------------------------------------------------
+// Webhook alert delivery
+// ---------------------------------------------------------------------------
+
+const SERVER_START_MS = Date.now();
+
+function getWebhookUrl(): string {
+  // Env var takes precedence over DB config
+  return process.env.CLAUDESEC_WEBHOOK_URL
+    ?? (getConfig.get('webhook.url')?.value ?? '');
+}
+
+function getWebhookThreshold(): Severity {
+  const t = process.env.CLAUDESEC_WEBHOOK_THRESHOLD
+    ?? (getConfig.get('webhook.threshold')?.value ?? 'high');
+  return (['low', 'medium', 'high'].includes(t) ? t : 'high') as Severity;
+}
+
+const SEV_RANK_MAP: Record<Severity, number> = { none: 0, low: 1, medium: 2, high: 3 };
+
+async function fireWebhook(alert: {
+  ruleLabel: string; severity: Severity; harness: string;
+  spanName: string; matchedText: string; traceId: string;
+}) {
+  const url = getWebhookUrl();
+  if (!url) return;
+
+  const threshold = getWebhookThreshold();
+  if (SEV_RANK_MAP[alert.severity] < SEV_RANK_MAP[threshold]) return;
+
+  const isSlack   = url.includes('hooks.slack.com');
+  const isDiscord = url.includes('discord.com/api/webhooks');
+
+  const sevEmoji = alert.severity === 'high' ? '🔴' : alert.severity === 'medium' ? '🟠' : '🟡';
+
+  let body: string;
+  if (isSlack) {
+    body = JSON.stringify({
+      text: `${sevEmoji} ClaudeSec *${alert.severity.toUpperCase()}* alert — ${alert.ruleLabel}`,
+      blocks: [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: `${sevEmoji} ${alert.severity.toUpperCase()}: ${alert.ruleLabel}` },
+        },
+        {
+          type: 'section',
+          fields: [
+            { type: 'mrkdwn', text: `*Agent*\n${alert.harness}` },
+            { type: 'mrkdwn', text: `*Span*\n${alert.spanName}` },
+            { type: 'mrkdwn', text: `*Matched*\n\`${alert.matchedText}\`` },
+            { type: 'mrkdwn', text: `*Trace*\n\`${alert.traceId.slice(0, 12)}…\`` },
+          ],
+        },
+      ],
+    });
+  } else if (isDiscord) {
+    const color = alert.severity === 'high' ? 0xef4444 : alert.severity === 'medium' ? 0xf97316 : 0xeab308;
+    body = JSON.stringify({
+      username: 'ClaudeSec',
+      avatar_url: 'https://raw.githubusercontent.com/aanjaneyasinghdhoni/ClaudeSec/main/public/logo.png',
+      embeds: [{
+        title: `${sevEmoji} ${alert.severity.toUpperCase()}: ${alert.ruleLabel}`,
+        color,
+        fields: [
+          { name: 'Agent',   value: alert.harness,                         inline: true  },
+          { name: 'Span',    value: alert.spanName,                        inline: true  },
+          { name: 'Matched', value: `\`${alert.matchedText}\``,            inline: false },
+          { name: 'Trace',   value: `\`${alert.traceId.slice(0, 16)}…\``, inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+        footer: { text: 'ClaudeSec · Local AI Agent Observatory' },
+      }],
+    });
+  } else {
+    // Generic JSON — works with any webhook handler (PagerDuty, n8n, custom)
+    body = JSON.stringify({
+      source:      'claudesec',
+      severity:    alert.severity,
+      rule:        alert.ruleLabel,
+      harness:     alert.harness,
+      spanName:    alert.spanName,
+      matchedText: alert.matchedText,
+      traceId:     alert.traceId,
+      timestamp:   new Date().toISOString(),
+    });
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!res.ok) console.error(`[ClaudeSec] Webhook returned ${res.status}`);
+  } catch (err) {
+    console.error('[ClaudeSec] Webhook delivery failed:', (err as Error).message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Token cost estimation — per-1M prices (input / output USD)
+// ---------------------------------------------------------------------------
+
+const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number; label: string }> = {
+  // Claude
+  'claude-opus-4-6':      { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4.6' },
+  'claude-opus-4-5':      { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4.5' },
+  'claude-opus-4':        { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4' },
+  'claude-sonnet-4-6':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 4.6' },
+  'claude-sonnet-4-5':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 4.5' },
+  'claude-sonnet-3-7':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 3.7' },
+  'claude-sonnet-3-5':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 3.5' },
+  'claude-haiku-4-5':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude Haiku 4.5' },
+  'claude-haiku-3-5':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude Haiku 3.5' },
+  'claude-3-haiku':       { inputPer1M: 0.25,  outputPer1M: 1.25,  label: 'Claude 3 Haiku' },
+  'claude-3-5-sonnet':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude 3.5 Sonnet' },
+  'claude-3-5-haiku':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude 3.5 Haiku' },
+  'claude-3-opus':        { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude 3 Opus' },
+  // OpenAI
+  'gpt-4o':               { inputPer1M: 5,     outputPer1M: 15,    label: 'GPT-4o' },
+  'gpt-4o-mini':          { inputPer1M: 0.15,  outputPer1M: 0.6,   label: 'GPT-4o mini' },
+  'gpt-4-turbo':          { inputPer1M: 10,    outputPer1M: 30,    label: 'GPT-4 Turbo' },
+  'gpt-4':                { inputPer1M: 30,    outputPer1M: 60,    label: 'GPT-4' },
+  'gpt-3.5-turbo':        { inputPer1M: 0.5,   outputPer1M: 1.5,   label: 'GPT-3.5 Turbo' },
+  // Google
+  'gemini-1.5-pro':       { inputPer1M: 3.5,   outputPer1M: 10.5,  label: 'Gemini 1.5 Pro' },
+  'gemini-1.5-flash':     { inputPer1M: 0.075, outputPer1M: 0.3,   label: 'Gemini 1.5 Flash' },
+  'gemini-2.0-flash':     { inputPer1M: 0.1,   outputPer1M: 0.4,   label: 'Gemini 2.0 Flash' },
+  'gemini-pro':           { inputPer1M: 0.5,   outputPer1M: 1.5,   label: 'Gemini Pro' },
+};
+
+function lookupPricing(model: string) {
+  if (!model) return null;
+  const lower = model.toLowerCase();
+  // Direct match
+  if (MODEL_PRICING[lower]) return MODEL_PRICING[lower];
+  // Prefix match (e.g. "claude-opus-4-6-20250514" → "claude-opus-4-6")
+  for (const key of Object.keys(MODEL_PRICING)) {
+    if (lower.startsWith(key)) return MODEL_PRICING[key];
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Security detection
@@ -370,6 +528,15 @@ async function startServer() {
               matchedText,
             });
             alertsChanged = true;
+            // Fire webhook asynchronously — don't block OTLP ingestion
+            fireWebhook({
+              ruleLabel:   matchedLabel,
+              severity,
+              harness:     harness.id,
+              spanName:    span.name,
+              matchedText,
+              traceId,
+            }).catch(() => {});
           }
         });
       });
@@ -724,6 +891,234 @@ async function startServer() {
     const spawnTree = rootSpawnTraces.map(id => buildSpawnNode(id));
 
     res.json({ agents, edges, tools, spawnTree });
+  });
+
+  // ── Health check ────────────────────────────────────────────────────────
+  app.get('/api/health', (_req, res) => {
+    const spansTotal    = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
+    const threatsTotal  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c as number;
+    const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
+    const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
+    const dbStats       = fs.statSync('spans.db');
+    res.json({
+      status:      'ok',
+      version:     '1.0.0',
+      uptimeMs:    Date.now() - SERVER_START_MS,
+      spansTotal,
+      threatsTotal,
+      sessionsTotal,
+      alertsTotal,
+      dbSizeBytes: dbStats.size,
+      webhookConfigured: !!getWebhookUrl(),
+      webhookThreshold:  getWebhookThreshold(),
+    });
+  });
+
+  // ── Prometheus metrics ───────────────────────────────────────────────────
+  app.get('/metrics', (_req, res) => {
+    const allSpans = getAllSpans.all() as SpanRecord[];
+
+    // spans_total by harness
+    const spansPerHarness = new Map<string, number>();
+    const threatsPerHarnessSev = new Map<string, number>();
+    const tokensIn  = new Map<string, number>();
+    const tokensOut = new Map<string, number>();
+
+    for (const span of allSpans) {
+      spansPerHarness.set(span.harness, (spansPerHarness.get(span.harness) ?? 0) + 1);
+      if (span.severity !== 'none') {
+        const k = `${span.harness}::${span.severity}`;
+        threatsPerHarnessSev.set(k, (threatsPerHarnessSev.get(k) ?? 0) + 1);
+      }
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);
+        const to = Number(attrs['gen_ai.usage.output_tokens'] ?? attrs['llm.usage.output_tokens'] ?? 0);
+        if (ti) tokensIn.set(span.harness,  (tokensIn.get(span.harness)  ?? 0) + ti);
+        if (to) tokensOut.set(span.harness, (tokensOut.get(span.harness) ?? 0) + to);
+      } catch {}
+    }
+
+    const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
+    const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
+    const uptimeSec     = (Date.now() - SERVER_START_MS) / 1000;
+
+    const lines: string[] = [
+      '# HELP claudesec_spans_total Total spans recorded',
+      '# TYPE claudesec_spans_total counter',
+      ...[...spansPerHarness.entries()].map(([h, c]) => `claudesec_spans_total{harness="${h}"} ${c}`),
+
+      '# HELP claudesec_threats_total Total threat detections',
+      '# TYPE claudesec_threats_total counter',
+      ...[...threatsPerHarnessSev.entries()].map(([k, c]) => {
+        const [h, sev] = k.split('::');
+        return `claudesec_threats_total{harness="${h}",severity="${sev}"} ${c}`;
+      }),
+
+      '# HELP claudesec_tokens_in_total Total input tokens processed',
+      '# TYPE claudesec_tokens_in_total counter',
+      ...[...tokensIn.entries()].map(([h, c]) => `claudesec_tokens_in_total{harness="${h}"} ${c}`),
+
+      '# HELP claudesec_tokens_out_total Total output tokens processed',
+      '# TYPE claudesec_tokens_out_total counter',
+      ...[...tokensOut.entries()].map(([h, c]) => `claudesec_tokens_out_total{harness="${h}"} ${c}`),
+
+      '# HELP claudesec_sessions_total Total sessions recorded',
+      '# TYPE claudesec_sessions_total gauge',
+      `claudesec_sessions_total ${sessionsTotal}`,
+
+      '# HELP claudesec_alerts_total Total security alerts',
+      '# TYPE claudesec_alerts_total gauge',
+      `claudesec_alerts_total ${alertsTotal}`,
+
+      '# HELP claudesec_uptime_seconds Server uptime in seconds',
+      '# TYPE claudesec_uptime_seconds gauge',
+      `claudesec_uptime_seconds ${uptimeSec.toFixed(1)}`,
+    ];
+
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(lines.join('\n') + '\n');
+  });
+
+  // ── Webhook config ───────────────────────────────────────────────────────
+  app.get('/api/webhook', (_req, res) => {
+    const url       = getWebhookUrl();
+    const threshold = getWebhookThreshold();
+    res.json({
+      configured:  !!url,
+      // Never expose full URL — only show redacted form for UI display
+      urlPreview:  url ? url.replace(/\/[^/]{8,}$/, '/***') : null,
+      threshold,
+      envOverride: !!process.env.CLAUDESEC_WEBHOOK_URL,
+    });
+  });
+
+  app.post('/api/webhook', (req, res) => {
+    if (process.env.CLAUDESEC_WEBHOOK_URL) {
+      return res.status(409).json({ error: 'CLAUDESEC_WEBHOOK_URL env var is set — remove it to manage via API' }) as any;
+    }
+    const { url, threshold } = req.body as { url?: string; threshold?: string };
+    if (!url?.trim()) return res.status(400).json({ error: 'url is required' }) as any;
+    try { new URL(url); } catch {
+      return res.status(400).json({ error: 'invalid URL' }) as any;
+    }
+    setConfig.run('webhook.url', url.trim());
+    if (threshold && ['low', 'medium', 'high'].includes(threshold)) {
+      setConfig.run('webhook.threshold', threshold);
+    }
+    res.json({ status: 'ok', urlPreview: url.replace(/\/[^/]{8,}$/, '/***'), threshold: getWebhookThreshold() });
+  });
+
+  app.delete('/api/webhook', (_req, res) => {
+    if (process.env.CLAUDESEC_WEBHOOK_URL) {
+      return res.status(409).json({ error: 'CLAUDESEC_WEBHOOK_URL env var is set — unset it instead' }) as any;
+    }
+    delConfig.run('webhook.url');
+    res.json({ status: 'ok' });
+  });
+
+  app.post('/api/webhook/test', async (_req, res) => {
+    const url = getWebhookUrl();
+    if (!url) return res.status(404).json({ error: 'No webhook URL configured' }) as any;
+    await fireWebhook({
+      ruleLabel:   'Webhook test',
+      severity:    'high',
+      harness:     'claudesec',
+      spanName:    'test',
+      matchedText: 'This is a test alert from ClaudeSec',
+      traceId:     'test-' + Date.now().toString(16),
+    });
+    res.json({ status: 'ok', url: url.replace(/\/[^/]{8,}$/, '/***') });
+  });
+
+  // ── Token cost estimation ─────────────────────────────────────────────────
+  app.get('/api/costs', (_req, res) => {
+    const allSpans = getAllSpans.all() as SpanRecord[];
+    const sessionRows = db.prepare('SELECT traceId, name FROM sessions').all() as { traceId: string; name: string }[];
+    const sessionNames = new Map(sessionRows.map(s => [s.traceId, s.name]));
+
+    // Aggregate by traceId × model
+    interface CostRow {
+      traceId:    string;
+      sessionName: string;
+      harness:    string;
+      model:      string;
+      modelLabel: string;
+      tokensIn:   number;
+      tokensOut:  number;
+      costUsd:    number;
+      knownPrice: boolean;
+    }
+
+    const key = (t: string, m: string) => `${t}::${m}`;
+    const rowMap = new Map<string, CostRow>();
+    let totalCostUsd = 0;
+    let totalTokensIn = 0;
+    let totalTokensOut = 0;
+
+    for (const span of allSpans) {
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const model = String(
+          attrs['gen_ai.request.model'] ??
+          attrs['gen_ai.response.model'] ??
+          attrs['llm.request.model']    ?? ''
+        ).toLowerCase().trim();
+        const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);
+        const to = Number(attrs['gen_ai.usage.output_tokens'] ?? attrs['llm.usage.output_tokens'] ?? 0);
+        if (!model && ti === 0 && to === 0) continue;
+
+        const k = key(span.traceId, model || 'unknown');
+        if (!rowMap.has(k)) {
+          const pricing = model ? lookupPricing(model) : null;
+          rowMap.set(k, {
+            traceId:    span.traceId,
+            sessionName: sessionNames.get(span.traceId) ?? span.traceId.slice(0, 8),
+            harness:    span.harness,
+            model:      model || 'unknown',
+            modelLabel: pricing?.label ?? (model || 'Unknown Model'),
+            tokensIn:   0, tokensOut: 0, costUsd: 0,
+            knownPrice: !!pricing,
+          });
+        }
+        const row = rowMap.get(k)!;
+        row.tokensIn  += ti;
+        row.tokensOut += to;
+        totalTokensIn  += ti;
+        totalTokensOut += to;
+
+        if (model) {
+          const pricing = lookupPricing(model);
+          if (pricing) {
+            row.costUsd += (ti / 1_000_000) * pricing.inputPer1M + (to / 1_000_000) * pricing.outputPer1M;
+          }
+        }
+      } catch {}
+    }
+
+    const rows = [...rowMap.values()].sort((a, b) => b.costUsd - a.costUsd);
+    rows.forEach(r => { totalCostUsd += r.costUsd; });
+
+    // Per-model summary (across all sessions)
+    const modelSummary = new Map<string, { label: string; tokensIn: number; tokensOut: number; costUsd: number; knownPrice: boolean }>();
+    for (const row of rows) {
+      if (!modelSummary.has(row.model)) {
+        modelSummary.set(row.model, { label: row.modelLabel, tokensIn: 0, tokensOut: 0, costUsd: 0, knownPrice: row.knownPrice });
+      }
+      const ms = modelSummary.get(row.model)!;
+      ms.tokensIn  += row.tokensIn;
+      ms.tokensOut += row.tokensOut;
+      ms.costUsd   += row.costUsd;
+    }
+
+    res.json({
+      sessions:      rows.map(r => ({ ...r, costUsd: Math.round(r.costUsd * 1_000_000) / 1_000_000 })),
+      models:        [...modelSummary.entries()].map(([model, s]) => ({ model, ...s, costUsd: Math.round(s.costUsd * 1_000_000) / 1_000_000 })).sort((a, b) => b.costUsd - a.costUsd),
+      totalCostUsd:  Math.round(totalCostUsd  * 1_000_000) / 1_000_000,
+      totalTokensIn,
+      totalTokensOut,
+      pricingTable:  Object.entries(MODEL_PRICING).map(([model, p]) => ({ model, ...p })),
+    });
   });
 
   // ── Dev / prod static ────────────────────────────────────────────────────

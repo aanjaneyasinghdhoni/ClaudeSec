@@ -326,8 +326,8 @@
         <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
       </div>
     </div>
-    <div class="step" id="s24">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s24">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Per-harness quickstart guides</div>
         <div class="step-desc">One doc page per harness with copy-paste export commands, verification steps, and a screenshot. Harnesses: Claude Code, Copilot CLI, OpenHands, Cursor, Aider, Continue.dev, Cline, Goose.</div>
@@ -335,12 +335,53 @@
         <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
       </div>
     </div>
-    <div class="step" id="s25">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s25">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">GitHub Release v1.0.0 + CHANGELOG.md</div>
         <div class="step-desc">Tag v1.0.0, generate CHANGELOG.md (Keep a Changelog format), create GitHub release with install instructions.</div>
         <span class="tag" style="background:#ef444422;color:#ef4444">release</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 7 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#0ea5e922;color:#0ea5e9">7</div>
+    <div>
+      <div class="phase-title">Advanced Observatory — Cost, Webhooks &amp; Metrics</div>
+      <div class="phase-desc">Token cost tracking, Prometheus metrics export, webhook alert delivery, and server health monitoring</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p7" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step done" id="s26">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Health check + Prometheus metrics endpoints</div>
+        <div class="step-desc">GET /api/health (JSON: version, uptime, counts, DB size, webhook status). GET /metrics (Prometheus text: spans_total, threats_total, tokens_in/out_total by harness, sessions_total, alerts_total, uptime_seconds).</div>
+        <span class="tag" style="background:#0ea5e922;color:#0ea5e9">observatory</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">API</span>
+      </div>
+    </div>
+    <div class="step done" id="s27">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Webhook alert notifications (Slack / Discord / generic)</div>
+        <div class="step-desc">CLAUDESEC_WEBHOOK_URL env var or in-dashboard config. Auto-detects Slack and Discord URLs for native formatting. Configurable threshold (low/medium/high). In-app test delivery. GET/POST/DELETE /api/webhook + POST /api/webhook/test.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#0ea5e922;color:#0ea5e9">observatory</span>
+      </div>
+    </div>
+    <div class="step done" id="s28">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Token cost estimator — per-session and per-model breakdown</div>
+        <div class="step-desc">GET /api/costs aggregates input/output tokens and estimates USD cost using pricing table for 20+ models (Claude, GPT-4o, Gemini). New Costs tab in dashboard with model summary, per-session breakdown, color-coded cost bars.</div>
+        <span class="tag" style="background:#0ea5e922;color:#0ea5e9">observatory</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
       </div>
     </div>
   </div>
@@ -355,6 +396,7 @@ function recalc() {
     { steps: ['s15','s16','s17','s18'], bar: 'p4' },
     { steps: ['s19','s20','s21'], bar: 'p5' },
     { steps: ['s22','s23','s24','s25'], bar: 'p6' },
+    { steps: ['s26','s27','s28'], bar: 'p7' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {

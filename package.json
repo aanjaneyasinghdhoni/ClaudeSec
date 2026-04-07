@@ -1,6 +1,6 @@
 {
   "name": "claudesec",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Real-time local observatory and security visualizer for AI agent telemetry. Ingests OpenTelemetry traces from any CLI agent harness (Claude Code, Copilot, OpenHands, Cursor, Aider, Cline, and more) and surfaces suspicious activity as an interactive graph.",
   "type": "module",
   "license": "MIT",
