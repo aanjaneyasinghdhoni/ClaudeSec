@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
+import { detectHarness, HARNESSES } from './src/harnesses.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,7 @@ interface SpanRecord {
   protocol: string;
   reason: string;
   severity: Severity;
+  harness: string;
   attributes: string; // JSON string
   startNano: string;
   endNano: string;
@@ -65,15 +67,17 @@ db.exec(`
     protocol    TEXT NOT NULL,
     reason      TEXT NOT NULL,
     severity    TEXT NOT NULL DEFAULT 'none',
+    harness     TEXT NOT NULL DEFAULT 'unknown',
     attributes  TEXT NOT NULL DEFAULT '{}',
     startNano   TEXT NOT NULL DEFAULT '0',
     endNano     TEXT NOT NULL DEFAULT '0'
   );
 `);
+try { db.exec(`ALTER TABLE spans ADD COLUMN harness TEXT NOT NULL DEFAULT 'unknown'`); } catch {}
 
 const insertSpan = db.prepare(`
-  INSERT OR IGNORE INTO spans (spanId, parentId, name, protocol, reason, severity, attributes, startNano, endNano)
-  VALUES (@spanId, @parentId, @name, @protocol, @reason, @severity, @attributes, @startNano, @endNano)
+  INSERT OR IGNORE INTO spans (spanId, parentId, name, protocol, reason, severity, harness, attributes, startNano, endNano)
+  VALUES (@spanId, @parentId, @name, @protocol, @reason, @severity, @harness, @attributes, @startNano, @endNano)
 `);
 
 const deleteAllSpans = db.prepare(`DELETE FROM spans`);
@@ -135,6 +139,7 @@ function recordToNode(r: SpanRecord) {
       isMalicious: r.severity !== 'none',
       protocol:   r.protocol,
       reason:     r.reason,
+      harness:    r.harness,
       startNano:  r.startNano,
       endNano:    r.endNano,
     },
@@ -157,9 +162,29 @@ function recordToEdge(r: SpanRecord) {
 }
 
 function buildGraph() {
-  const ROOT = { id: 'agent', data: { label: 'AI Agent' }, position: { x: 0, y: 0 }, type: 'input' };
   const records = getAllSpans.all() as SpanRecord[];
-  const nodes = [ROOT, ...records.map(recordToNode)];
+
+  // Build per-harness root nodes
+  const distinctHarnesses = (db.prepare('SELECT DISTINCT harness FROM spans').all() as { harness: string }[]);
+  let rootNodes: object[];
+
+  if (distinctHarnesses.length === 0) {
+    // No spans yet — show the single fallback root
+    rootNodes = [{ id: 'agent', data: { label: 'AI Agent' }, position: { x: 0, y: 0 }, type: 'input' }];
+  } else {
+    rootNodes = distinctHarnesses.map(({ harness: harnessId }) => {
+      const hConfig = HARNESSES.find(h => h.id === harnessId) ?? HARNESSES[HARNESSES.length - 1];
+      return {
+        id:   hConfig.id,
+        data: { label: hConfig.name, isRoot: true, harnessColor: hConfig.color },
+        position: { x: 0, y: 0 },
+        type: 'input',
+        style: { backgroundColor: hConfig.color + '22', border: `2px solid ${hConfig.color}`, color: '#fff' },
+      };
+    });
+  }
+
+  const nodes = [...rootNodes, ...records.map(recordToNode)];
   const edges = records.map(recordToEdge);
   return { nodes, edges };
 }
@@ -181,6 +206,10 @@ async function startServer() {
     const traceData: TraceData = req.body;
 
     traceData.resourceSpans?.forEach(rs => {
+      const serviceName = String(rs.resource?.attributes?.find?.((a: any) => a.key === 'service.name')?.value?.stringValue ?? '');
+      const sdkName     = String(rs.resource?.attributes?.find?.((a: any) => a.key === 'telemetry.sdk.name')?.value?.stringValue ?? '');
+      const harness     = detectHarness(serviceName, sdkName);
+
       rs.scopeSpans?.forEach(ss => {
         ss.spans?.forEach(span => {
           const attrs: Record<string, any> = {};
@@ -195,13 +224,17 @@ async function startServer() {
           const searchText = JSON.stringify(attrs) + ' ' + span.name;
           const severity   = detectSeverity(searchText);
 
+          // parentId points to harness root if span has no parent
+          const parentId = span.parentSpanId || harness.id;
+
           const record: SpanRecord = {
             spanId:    span.spanId,
-            parentId:  span.parentSpanId || 'agent',
+            parentId,
             name:      span.name,
             protocol:  String(attrs['protocol'] ?? 'HTTPS'),
             reason:    String(attrs['reason']   ?? 'Processing step'),
             severity,
+            harness:   harness.id,
             attributes: JSON.stringify(attrs),
             startNano:  String(span.startTimeUnixNano ?? '0'),
             endNano:    String(span.endTimeUnixNano   ?? '0'),
@@ -226,6 +259,12 @@ async function startServer() {
     const records = getAllSpans.all() as SpanRecord[];
     res.setHeader('Content-Disposition', `attachment; filename="session-${Date.now()}.json"`);
     res.json({ exportedAt: new Date().toISOString(), spans: records });
+  });
+
+  // Active harnesses
+  app.get('/api/harnesses', (_req, res) => {
+    const rows = (db.prepare('SELECT DISTINCT harness FROM spans').all() as { harness: string }[]);
+    res.json({ harnesses: rows.map(r => r.harness) });
   });
 
   // Reset
