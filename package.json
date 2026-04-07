@@ -33,8 +33,12 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "bin": {
+    "claudesec": "./cli/init.ts"
+  },
   "scripts": {
     "dev": "tsx server.ts",
+    "init": "tsx cli/init.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",

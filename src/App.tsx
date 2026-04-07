@@ -57,8 +57,22 @@ interface Workflow {
   protocol: string;
   reason: string;
   severity: Severity;
+  harness: string;
   timestamp: string;
 }
+
+const HARNESS_COLORS: Record<string, string> = {
+  'claude-code':    '#f97316',
+  'github-copilot': '#6366f1',
+  'openhands':      '#22c55e',
+  'cursor':         '#a855f7',
+  'aider':          '#ec4899',
+  'cline':          '#14b8a6',
+  'goose':          '#f59e0b',
+  'continue':       '#0ea5e9',
+  'windsurf':       '#38bdf8',
+  'unknown':        '#64748b',
+};
 
 const SEVERITY_LABEL: Record<Severity, string> = {
   none:   'OK',
@@ -114,13 +128,14 @@ export default function App() {
   }, []);
 
   function syncWorkflows(rawNodes: Node[]) {
-    const spans = rawNodes.filter(n => n.id !== 'agent');
+    const spans = rawNodes.filter(n => !(n.data as any).isRoot && n.id !== 'agent');
     setWorkflows(spans.map(n => ({
       id:       n.id,
       label:    String(n.data.label),
       protocol: String((n.data as any).protocol ?? 'HTTPS'),
       reason:   String((n.data as any).reason   ?? '—'),
       severity: ((n.data as any).severity ?? 'none') as Severity,
+      harness:  String((n.data as any).harness ?? 'unknown'),
       timestamp: seenIds.current.has(n.id)
         ? (prevWorkflows.current.find(w => w.id === n.id)?.timestamp ?? new Date().toLocaleTimeString())
         : new Date().toLocaleTimeString(),
@@ -355,6 +370,7 @@ export default function App() {
                             ? <CheckCircle className={`w-3 h-3 shrink-0 ${c.icon}`} />
                             : <AlertTriangle className={`w-3 h-3 shrink-0 ${c.icon}`} />
                           }
+                          <span style={{background: HARNESS_COLORS[wf.harness] ?? '#64748b'}} className="w-2 h-2 rounded-full shrink-0 inline-block" />
                           <span className={`text-[11px] font-semibold truncate ${c.text}`}>{wf.label}</span>
                           <span className="ml-auto text-[9px] font-mono text-slate-500 shrink-0">{wf.timestamp}</span>
                         </div>

@@ -93,8 +93,8 @@
         <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
       </div>
     </div>
-    <div class="step" id="s5">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s5">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Issue &amp; PR templates (.github/)</div>
         <div class="step-desc">Bug report, feature request, and pull request templates for structured community contributions.</div>
@@ -115,8 +115,8 @@
   </div>
   <div class="progress-bar"><div class="progress-fill" id="p2" style="width:0%"></div></div>
   <div class="steps">
-    <div class="step" id="s6">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s6">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Harness detection registry (harnesses.ts)</div>
         <div class="step-desc">Typed registry of known agent harnesses with OTLP env var names, default ports, span attribute mappings, and logo assets. Covers: Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Continue.dev, Cline, Goose, Zed AI, Windsurf.</div>
@@ -124,8 +124,8 @@
         <span class="tag" style="background:#1e293b;color:#94a3b8">server.ts</span>
       </div>
     </div>
-    <div class="step" id="s7">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s7">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Auto-setup CLI wizard (npx claudesec init)</div>
         <div class="step-desc">Interactive CLI that detects which agent harness is running, prints exact export commands, and optionally writes to shell profile. Ship as "bin" in package.json.</div>
@@ -133,8 +133,8 @@
         <span class="tag" style="background:#1e293b;color:#94a3b8">cli/init.ts</span>
       </div>
     </div>
-    <div class="step" id="s8">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s8">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Harness identity on spans — badge in UI</div>
         <div class="step-desc">Extract resource attributes (service.name, telemetry.sdk.name) to tag each span with its source harness. Show colored harness badge in workflow list and detail panel.</div>
@@ -142,8 +142,8 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
       </div>
     </div>
-    <div class="step" id="s9">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s9">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Multi-agent topology — separate graph roots per harness</div>
         <div class="step-desc">When spans from multiple harnesses arrive, render separate agent root nodes with distinct colors. Show inter-agent edges when one agent calls another via MCP/API.</div>
