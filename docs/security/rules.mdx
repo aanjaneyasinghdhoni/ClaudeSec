@@ -1,0 +1,155 @@
+---
+title: "Security Rules"
+description: "Understand ClaudeSec's built-in threat detection library and learn how to add custom rules."
+---
+
+## How rules work
+
+Every span that arrives at `POST /v1/traces` is evaluated against the security rule engine. The engine concatenates all span attributes into a single string and tests it against each rule's regular expression in priority order:
+
+1. **Custom rules** are checked first (most recently added = highest priority).
+2. **Built-in rules** are checked if no custom rule matches.
+
+The first matching rule determines the span's severity level. If no rule matches, the severity is `none` and the span is treated as benign.
+
+A matched span results in:
+- The span node in the graph receiving a colored border (yellow/orange/red).
+- An **alert** row written to the `alerts` table.
+- A Socket.io `alerts-update` event broadcast to all connected clients.
+- A browser desktop notification (if permission has been granted).
+
+---
+
+## Severity levels
+
+| Level | Color | Meaning |
+|-------|-------|---------|
+| `high` | Red (`#ef4444`) | Immediate risk — system compromise, data destruction, secret exfiltration, prompt injection |
+| `medium` | Orange (`#f97316`) | Elevated risk — sensitive file access, credential-adjacent activity |
+| `low` | Yellow (`#eab308`) | Noteworthy — potentially legitimate but worth reviewing |
+| `none` | Gray | No threat detected |
+
+---
+
+## Built-in rules
+
+### HIGH severity
+
+| Rule label | Pattern | What it catches |
+|------------|---------|-----------------|
+| Recursive root deletion | `rm\s+-rf\s+[\/\\]` | `rm -rf /` or `rm -rf \` style commands |
+| Passwd file read | `cat\s+\/etc\/passwd` | Reading the Unix password database |
+| Remote code execution via curl | `curl\s+.*\|\s*(ba)?sh` | `curl URL | bash` one-liners |
+| Remote code execution via wget | `wget\s+.*\|\s*(ba)?sh` | `wget URL | bash` one-liners |
+| SQL destructive operation | `DROP\s+(TABLE|DATABASE|SCHEMA)` | Destructive DDL statements |
+| SQL table truncation | `TRUNCATE\s+TABLE` | Mass data deletion |
+| Code eval injection | `eval\s*\(` | Dynamic code execution |
+| Exec injection | `exec\s*\(` | Process spawning from user-controlled input |
+| Prompt injection attempt | `ignore\s+(previous\|prior\|all)\s+instructions?` | Classic jailbreak phrasing |
+| Prompt injection attempt | `disregard\s+your\s+(previous\|prior\|system)` | System prompt override attempt |
+| DAN jailbreak attempt | `you\s+are\s+now\s+DAN` | "Do Anything Now" jailbreak |
+| AWS access key detected | `AKIA[0-9A-Z]{16}` | AWS IAM access key ID |
+| GitHub token detected | `ghp_[A-Za-z0-9]{36}` | GitHub personal access token |
+| OpenAI API key detected | `sk-[A-Za-z0-9]{48}` | OpenAI API key format |
+| Supply-chain: custom PyPI index | `pip\s+install\s+.*--index-url` | Dependency confusion / typosquatting |
+| Supply-chain: custom npm registry | `npm\s+install.*--registry` | Custom npm registry override |
+| Clone-and-execute | `git\s+clone\s+.*&&\s*(ba)?sh` | Cloning and immediately executing |
+| Bash TCP reverse shell | `\/dev\/tcp\/` | Bash built-in reverse shell technique |
+
+### MEDIUM severity
+
+| Rule label | Pattern | What it catches |
+|------------|---------|-----------------|
+| Environment variable access | `process\.env` | Node.js env access (may expose secrets) |
+| Dotenv file access | `\.env\b` | Reading `.env` files |
+| SSH key manipulation | `ssh-add` | Adding SSH keys to the agent |
+| Sensitive system file access | `\/etc\/(shadow\|hosts\|sudoers)` | Unix security files |
+| Base64 decode | `atob\s*\(` | Client-side base64 decode |
+| Base64 decode | `base64\s+-d` | Shell base64 decode |
+| SSH directory access | `~\/\.ssh\/` | Access to SSH key directory |
+| macOS keychain access | `security\s+find-generic-password` | macOS keychain credential extraction |
+| Python one-liner execution | `python[23]?\s+-c\s+["']import` | One-shot Python code execution |
+
+### LOW severity
+
+| Rule label | Pattern | What it catches |
+|------------|---------|-----------------|
+| Full table scan | `SELECT\s+\*\s+FROM` | Potentially expensive/sensitive DB queries |
+| World-executable permission | `chmod\s+[0-7]*7[0-7]*` | Setting world-executable bits |
+| Sudo usage | `sudo\s+` | Privilege escalation |
+| Global npm package install | `npm\s+install\s+--global` | System-wide package installation |
+| Python package install | `pip\s+install` | Python package installation |
+
+---
+
+## Adding custom rules
+
+### Via the dashboard
+
+1. Open ClaudeSec at [http://localhost:3000](http://localhost:3000).
+2. Click the **Rules** tab in the top navigation.
+3. Click **Add Rule**.
+4. Fill in:
+   - **Pattern** — a JavaScript-compatible regular expression (e.g., `secretToken[=:]\s*\w+`)
+   - **Severity** — `low`, `medium`, or `high`
+   - **Label** — a short description shown in alert notifications (e.g., `Custom secret token pattern`)
+5. Click **Save**.
+
+The rule takes effect immediately — all future spans are evaluated against it. Existing spans are not retroactively re-evaluated.
+
+### Via the API
+
+```bash
+curl -X POST http://localhost:3000/api/rules \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "pattern": "secretToken[=:]\\s*\\w+",
+    "severity": "high",
+    "label": "Custom secret token pattern"
+  }'
+```
+
+All custom rules are evaluated with the `i` (case-insensitive) flag automatically applied.
+
+---
+
+## Regex pattern syntax
+
+ClaudeSec uses JavaScript `RegExp` syntax. Key tips:
+
+- Escape backslashes in JSON: `\s` becomes `\\s` in the JSON body.
+- Patterns are case-insensitive by default (`i` flag is always added to custom rules).
+- Use anchors (`^`, `$`) sparingly — patterns match anywhere in the concatenated attribute string.
+- Test patterns at [regex101.com](https://regex101.com) using the JavaScript flavor.
+
+### Example patterns
+
+| Goal | Pattern |
+|------|---------|
+| Match any Stripe secret key | `sk_live_[A-Za-z0-9]{24,}` |
+| Match `password=` in any context | `password\s*=\s*\S+` |
+| Match base64-encoded strings (long) | `[A-Za-z0-9+/]{40,}={0,2}` |
+| Match `curl` to an IP address | `curl\s+http://\d+\.\d+\.\d+\.\d+` |
+| Match any `docker run` with `--privileged` | `docker\s+run\s+.*--privileged` |
+
+---
+
+## Deleting custom rules
+
+### Via the dashboard
+
+Click the trash icon next to any custom rule in the Rules tab.
+
+### Via the API
+
+```bash
+curl -X DELETE http://localhost:3000/api/rules/custom-1700000000000-abc12
+```
+
+Built-in rules cannot be deleted, but they can be superseded by a custom rule that matches the same pattern with a different severity or label.
+
+---
+
+## Rule persistence
+
+Custom rules are persisted in `rules.json` in the project root directory and survive server restarts. Built-in rules are compiled into `server.ts` and are always present.

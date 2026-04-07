@@ -1,0 +1,88 @@
+---
+title: "Cursor"
+description: "Connect Cursor's agentic Composer mode to ClaudeSec for real-time activity monitoring."
+---
+
+## Overview
+
+[Cursor](https://cursor.com) is an AI-first code editor built on VS Code. Its **Composer** and **Agent** modes can autonomously edit files, run terminal commands, and browse the web. When OTLP export is configured, Cursor emits spans for each agent action.
+
+ClaudeSec identifies Cursor spans by matching against `/cursor/i`. Spans appear as **purple nodes** (`#a855f7`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Set environment variables
+
+Cursor inherits environment variables from the shell it is launched from. The recommended approach is to add them to your shell profile:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=cursor
+```
+
+Then restart your terminal and launch Cursor from it:
+
+```bash
+cursor .
+```
+
+### 3. Alternative — Cursor settings
+
+Some Cursor versions support configuring the telemetry endpoint directly in **Settings → Features → Telemetry**. If available, set:
+
+- **OTLP Endpoint**: `http://localhost:3000/v1/traces`
+- **Protocol**: `http/json`
+
+---
+
+## Verifying the connection
+
+1. Open Cursor and trigger an Agent action (e.g., ask Composer to "add a README to this project").
+2. Switch to your browser at [http://localhost:3000](http://localhost:3000).
+3. Within a few seconds you should see a purple **Cursor** root node with child spans.
+
+---
+
+## Key span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Tool invoked (e.g., `edit_file`, `run_terminal_cmd`) |
+| `gen_ai.request.model` | string | Model used for this action |
+| `gen_ai.usage.input_tokens` | int | Input tokens |
+| `gen_ai.usage.output_tokens` | int | Output tokens |
+
+---
+
+## What to watch for
+
+Cursor's Agent mode is particularly powerful and may:
+
+- Execute arbitrary shell commands in the integrated terminal
+- Read and write any file in the workspace
+- Install dependencies via `npm install` or `pip install`
+
+ClaudeSec will flag shell commands matching dangerous patterns (e.g., `rm -rf /`, `sudo`, global npm installs) in real time. Keep the Alerts tab open during long Composer sessions.
+
+---
+
+## Troubleshooting
+
+**Cursor not emitting spans**
+
+Cursor's OTLP integration may not be available in all release channels. Check **Help → About Cursor** for your version and consult the [Cursor changelog](https://cursor.com/changelog) for telemetry support details.
+
+**Spans appear as "Unknown Agent"**
+
+Add `OTEL_RESOURCE_ATTRIBUTES=service.name=cursor` to your shell environment before launching Cursor.

@@ -1,0 +1,101 @@
+---
+title: "OpenHands"
+description: "Connect OpenHands (formerly OpenDevin) to ClaudeSec for autonomous agent observability."
+---
+
+## Overview
+
+[OpenHands](https://docs.all-hands.dev) (formerly OpenDevin) is an open-source autonomous software engineering agent that can execute multi-step coding tasks. It uses a Docker-based sandbox and communicates with various LLM backends.
+
+ClaudeSec identifies OpenHands spans by matching against `/openhands|opendevin/i`. Spans appear as **green nodes** (`#22c55e`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Export environment variables
+
+OpenHands reads standard OTLP environment variables:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=openhands
+```
+
+Setting `OTEL_RESOURCE_ATTRIBUTES` ensures ClaudeSec correctly identifies the harness even if OpenHands does not set `service.name` automatically.
+
+### 3. Launch OpenHands
+
+```bash
+# Docker-based launch (most common)
+docker run -it \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:3000/v1/traces \
+  -e OTEL_EXPORTER_OTLP_PROTOCOL=http/json \
+  -e OTEL_RESOURCE_ATTRIBUTES=service.name=openhands \
+  ghcr.io/all-hands-ai/openhands:latest
+```
+
+<Warning>
+  When running OpenHands inside Docker, use `host.docker.internal` instead of `localhost` to reach ClaudeSec on the host machine. On Linux, you may need to use the host's actual IP or pass `--network host`.
+</Warning>
+
+---
+
+## Docker Compose integration
+
+If you use Docker Compose to run OpenHands, add the OTLP environment variables to your `docker-compose.yml`:
+
+```yaml
+services:
+  openhands:
+    image: ghcr.io/all-hands-ai/openhands:latest
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:3000/v1/traces
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+      - OTEL_RESOURCE_ATTRIBUTES=service.name=openhands
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+---
+
+## Key span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Tool invoked by the agent (e.g., `run_bash`, `write_file`) |
+| `openhands.agent_type` | string | Agent class handling the task (e.g., `CodeActAgent`) |
+| `gen_ai.usage.input_tokens` | int | Tokens in the prompt |
+| `gen_ai.usage.output_tokens` | int | Tokens in the response |
+
+---
+
+## Security considerations
+
+OpenHands runs commands inside a Docker sandbox, but it is still capable of:
+
+- Reading files from mounted volumes
+- Making network requests
+- Installing packages via `pip` or `npm`
+
+ClaudeSec will flag any of these activities that match the built-in rules (e.g., `pip install --index-url` for supply-chain attacks). Monitor the Alerts tab during long-running OpenHands sessions.
+
+---
+
+## Troubleshooting
+
+**Connection refused inside Docker**
+
+The container cannot reach `localhost` on the host. Use `host.docker.internal` (macOS/Windows) or the host's bridge IP (`172.17.0.1` on Linux by default) as the endpoint hostname.
+
+**Spans not attributed to OpenHands**
+
+Ensure `OTEL_RESOURCE_ATTRIBUTES=service.name=openhands` is set in the container environment. Without this, spans will show under "Unknown Agent".

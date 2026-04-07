@@ -1,0 +1,58 @@
+---
+title: "Rules API"
+description: "Manage custom threat detection rules"
+---
+
+## List Rules
+
+`GET /api/rules`
+
+Returns both built-in rules and user-defined custom rules.
+
+```json Response
+{
+  "builtIn": [
+    {
+      "id": "builtin-0",
+      "pattern": "rm\\s+-rf\\s+[\\/\\\\]",
+      "flags": "i",
+      "severity": "high",
+      "label": "Recursive root deletion",
+      "builtin": true
+    }
+  ],
+  "custom": [
+    {
+      "id": "custom-1700000000000-ab12c",
+      "pattern": "my-secret-pattern",
+      "flags": "i",
+      "severity": "high",
+      "label": "My custom rule",
+      "createdAt": "2025-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+## Create Custom Rule
+
+`POST /api/rules`
+
+```json Body
+{
+  "pattern": "my-regex-pattern",
+  "severity": "high",
+  "label": "Human-readable rule name"
+}
+```
+
+- `severity`: `"low"` | `"medium"` | `"high"`
+- `pattern`: JavaScript regex string (tested with `new RegExp(pattern)`)
+
+Returns `201 Created` with the new rule object.
+
+## Delete Custom Rule
+
+`DELETE /api/rules/:id`
+
+Only custom rules can be deleted. Returns `404` if the rule does not exist or is a built-in rule.
