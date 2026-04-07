@@ -682,6 +682,69 @@
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════════════════
+     Phase 13 — Advanced Analytics & Integrations
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="phase" id="phase13">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#3b82f622;color:#3b82f6">13</div>
+    <div>
+      <div class="phase-title">Advanced Analytics &amp; Integrations</div>
+      <div class="phase-desc">Full-text search, health scores, webhook delivery log, live ticker, CLI super-powers</div>
+    </div>
+    <div style="margin-left:auto;height:6px;width:120px;background:#1e293b;border-radius:3px;overflow:hidden">
+      <div style="height:100%;background:#3b82f6;border-radius:3px;transition:width .3s" id="p13"></div>
+    </div>
+  </div>
+  <div class="steps">
+    <div class="step" id="s54">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Full-text span search</div>
+        <div class="step-desc">SQLite FTS5 virtual table synced with spans table via INSERT trigger. GET /api/search?q=&severity=&harness=&from=&to=&page=&limit= with total/pages. SearchTab.tsx: debounced input, severity/harness filters, date range, results table with click-to-detail drawer, pagination, Export button (GET /api/search/export). CLI: claudesec search &lt;query&gt;.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step" id="s55">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Session health score</div>
+        <div class="step-desc">Compute 0–100 health score per session: 100 − (high×15 + med×8 + low×3) − min(alertCount×10, 30), floor 0. GET /api/sessions/:traceId/health returns {score, grade, breakdown}. GET /api/sessions enriched with healthScore field. Session list sidebar shows colored badge: green ≥80, yellow 50-79, red &lt;50. CLI: claudesec top --by health shows worst sessions first.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step" id="s56">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Webhook delivery log &amp; retry</div>
+        <div class="step-desc">webhook_deliveries SQLite table (id, ruleLabel, severity, urlPreview, status, httpCode, latencyMs, error, attempts, createdAt, lastAttemptAt). fireWebhook logs each attempt and retries up to 3× with exponential backoff (1s/3s/9s). GET /api/webhook-deliveries?limit=50. POST /api/webhook-deliveries/:id/retry for manual retry. DELETE /api/webhook-deliveries clears history. WebhookDeliverySection in Settings tab.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">integration</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step" id="s57">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Live span ticker in footer</div>
+        <div class="step-desc">After each OTLP span insert, emit span-added socket event with {spanId, name, harness, severity, ts}. App.tsx footer shows a rolling live ticker of last 5 incoming spans: harness color dot + severity mini-badge + truncated name, animated slide-in. Separate from graph-update to avoid full re-renders. Shows "quiet" state when no spans in last 10s.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step" id="s58">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">CLI super-powers: top, search, sessions, report</div>
+        <div class="step-desc">claudesec top [--by spans|threats|tokens|health] [--limit N] — ranked session table. claudesec search &lt;query&gt; [--severity X] [--harness X] [--limit 20] — calls /api/search and prints table. claudesec sessions [--json] — list all sessions with health scores. claudesec report &lt;sessionId|latest&gt; — generates a markdown report with span table, threat summary, token stats, and alert list, printed to stdout or saved to file.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">CLI</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -697,6 +760,7 @@ function recalc() {
     { steps: ['s39','s40','s41','s42','s43'], bar: 'p10' },
     { steps: ['s44','s45','s46','s47','s48'], bar: 'p11' },
     { steps: ['s49','s50','s51','s52','s53'], bar: 'p12' },
+    { steps: ['s54','s55','s56','s57','s58'], bar: 'p13' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {

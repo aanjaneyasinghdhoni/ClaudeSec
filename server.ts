@@ -249,6 +249,111 @@ const deleteAllAnnotations = db.prepare(`DELETE FROM annotations`);
 const getAnnotationsBySpan = db.prepare(`SELECT * FROM annotations WHERE spanId = ? ORDER BY id ASC`);
 
 // ---------------------------------------------------------------------------
+// FTS5 full-text search — spans_fts mirrors spans(name, attributes)
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS spans_fts USING fts5(
+    spanId    UNINDEXED,
+    name,
+    attributes,
+    tokenize  = 'unicode61 remove_diacritics 1'
+  );
+  CREATE TRIGGER IF NOT EXISTS spans_fts_insert AFTER INSERT ON spans BEGIN
+    INSERT OR IGNORE INTO spans_fts(spanId, name, attributes)
+    VALUES (new.spanId, new.name, new.attributes);
+  END;
+`);
+
+// One-time backfill: index any spans that pre-date the trigger
+{
+  const indexed = new Set(
+    (db.prepare('SELECT spanId FROM spans_fts').all() as { spanId: string }[]).map(r => r.spanId),
+  );
+  const toIndex = (db.prepare('SELECT spanId, name, attributes FROM spans').all() as
+    { spanId: string; name: string; attributes: string }[])
+    .filter(s => !indexed.has(s.spanId));
+  if (toIndex.length > 0) {
+    const ftsInsert = db.prepare('INSERT OR IGNORE INTO spans_fts(spanId, name, attributes) VALUES (?, ?, ?)');
+    const tx = db.transaction(() => { for (const s of toIndex) ftsInsert.run(s.spanId, s.name, s.attributes); });
+    tx();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Webhook delivery log — tracks every attempt with retry support
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ruleLabel     TEXT NOT NULL,
+    severity      TEXT NOT NULL DEFAULT 'low',
+    urlPreview    TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'pending',
+    httpCode      INTEGER,
+    latencyMs     INTEGER,
+    error         TEXT,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    createdAt     TEXT NOT NULL,
+    lastAttemptAt TEXT
+  );
+`);
+
+const insertDelivery = db.prepare(`
+  INSERT INTO webhook_deliveries (ruleLabel, severity, urlPreview, status, createdAt)
+  VALUES (@ruleLabel, @severity, @urlPreview, 'pending', @createdAt)
+`);
+const updateDelivery = db.prepare(`
+  UPDATE webhook_deliveries
+  SET status = ?, httpCode = ?, latencyMs = ?, error = ?, attempts = attempts + 1, lastAttemptAt = ?
+  WHERE id = ?
+`);
+
+// Keep delivery log to last 500 rows
+function pruneDeliveryLog() {
+  const count = (db.prepare('SELECT COUNT(*) as c FROM webhook_deliveries').get() as any).c as number;
+  if (count > 500) {
+    db.prepare('DELETE FROM webhook_deliveries WHERE id IN (SELECT id FROM webhook_deliveries ORDER BY id ASC LIMIT ?)').run(count - 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session health score
+// ---------------------------------------------------------------------------
+
+interface HealthBreakdown {
+  score:   number;
+  grade:   'A' | 'B' | 'C' | 'D' | 'F';
+  threatHigh:   number;
+  threatMedium: number;
+  threatLow:    number;
+  alertCount:   number;
+}
+
+function computeHealthScore(traceId: string): HealthBreakdown {
+  const sev = db.prepare(`
+    SELECT
+      SUM(CASE WHEN severity = 'high'   THEN 1 ELSE 0 END) AS h,
+      SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS m,
+      SUM(CASE WHEN severity = 'low'    THEN 1 ELSE 0 END) AS l
+    FROM spans WHERE traceId = ?
+  `).get(traceId) as { h: number; m: number; l: number };
+
+  const alertCount = (db.prepare('SELECT COUNT(*) as c FROM alerts WHERE traceId = ?').get(traceId) as any).c as number;
+
+  const h = sev?.h ?? 0;
+  const m = sev?.m ?? 0;
+  const l = sev?.l ?? 0;
+
+  const raw   = 100 - h * 15 - m * 8 - l * 3 - Math.min(alertCount * 10, 30);
+  const score = Math.max(0, raw);
+  const grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
+
+  return { score, grade, threatHigh: h, threatMedium: m, threatLow: l, alertCount };
+}
+
+// ---------------------------------------------------------------------------
 // Config table (webhook URL, thresholds, etc.)
 // ---------------------------------------------------------------------------
 
@@ -533,16 +638,49 @@ async function fireWebhook(alert: {
     });
   }
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
-    if (!res.ok) console.error(`[ClaudeSec] Webhook returned ${res.status}`);
-  } catch (err) {
-    console.error('[ClaudeSec] Webhook delivery failed:', (err as Error).message);
+  const urlPreview = url.replace(/\/[^/]{8,}$/, '/***');
+  const deliveryRow = insertDelivery.run({
+    ruleLabel: alert.ruleLabel, severity: alert.severity,
+    urlPreview, createdAt: new Date().toISOString(),
+  });
+  const deliveryId = (deliveryRow as any).lastInsertRowid as number;
+  pruneDeliveryLog();
+
+  async function attempt(maxRetries: number, delayMs = 0): Promise<void> {
+    if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+    const t0 = Date.now();
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      const latencyMs = Date.now() - t0;
+      if (res.ok) {
+        updateDelivery.run('success', res.status, latencyMs, null, new Date().toISOString(), deliveryId);
+      } else {
+        const errMsg = `HTTP ${res.status}`;
+        if (maxRetries > 0) {
+          updateDelivery.run('retrying', res.status, latencyMs, errMsg, new Date().toISOString(), deliveryId);
+          attempt(maxRetries - 1, delayMs === 0 ? 1000 : delayMs * 3).catch(() => {});
+        } else {
+          updateDelivery.run('failed', res.status, latencyMs, errMsg, new Date().toISOString(), deliveryId);
+          console.error(`[ClaudeSec] Webhook failed after retries: ${errMsg}`);
+        }
+      }
+    } catch (err) {
+      const latencyMs = Date.now() - t0;
+      const errMsg = (err as Error).message;
+      if (maxRetries > 0) {
+        updateDelivery.run('retrying', null, latencyMs, errMsg, new Date().toISOString(), deliveryId);
+        attempt(maxRetries - 1, delayMs === 0 ? 1000 : delayMs * 3).catch(() => {});
+      } else {
+        updateDelivery.run('failed', null, latencyMs, errMsg, new Date().toISOString(), deliveryId);
+        console.error('[ClaudeSec] Webhook delivery failed:', errMsg);
+      }
+    }
   }
+  attempt(2).catch(() => {}); // up to 3 total attempts (1 + 2 retries)
 }
 
 // ---------------------------------------------------------------------------
@@ -912,6 +1050,14 @@ async function startServer() {
           };
           insertSpan.run(spanRecord);
           pushToSse(spanRecord);
+          // Lightweight per-span event for the live ticker (avoids full graph rebuild)
+          io.emit('span-added', {
+            spanId:   spanRecord.spanId,
+            name:     spanRecord.name,
+            harness:  spanRecord.harness,
+            severity: spanRecord.severity,
+            ts:       new Date().toISOString(),
+          });
 
           if (matchedLabel) {
             insertAlert.run({
@@ -1100,16 +1246,36 @@ async function startServer() {
         se.name,
         se.createdAt,
         se.pinned,
-        COUNT(s.spanId) AS spanCount,
+        COUNT(DISTINCT s.spanId) AS spanCount,
         SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
         MAX(CASE s.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
-        GROUP_CONCAT(DISTINCT s.harness) AS harnesses
+        GROUP_CONCAT(DISTINCT s.harness) AS harnesses,
+        SUM(CASE WHEN s.severity = 'high'   THEN 1 ELSE 0 END) AS threatHigh,
+        SUM(CASE WHEN s.severity = 'medium' THEN 1 ELSE 0 END) AS threatMedium,
+        SUM(CASE WHEN s.severity = 'low'    THEN 1 ELSE 0 END) AS threatLow,
+        COUNT(DISTINCT a.id) AS alertCount
       FROM sessions se
-      LEFT JOIN spans s ON s.traceId = se.traceId
+      LEFT JOIN spans  s ON s.traceId = se.traceId
+      LEFT JOIN alerts a ON a.traceId = se.traceId
       GROUP BY se.traceId
       ORDER BY se.pinned DESC, se.createdAt DESC
-    `).all();
-    res.json({ sessions: rows });
+    `).all() as any[];
+
+    const sessions = rows.map(r => ({
+      ...r,
+      healthScore: Math.max(0,
+        100 - (r.threatHigh ?? 0) * 15 - (r.threatMedium ?? 0) * 8 - (r.threatLow ?? 0) * 3
+            - Math.min((r.alertCount ?? 0) * 10, 30)
+      ),
+    }));
+    res.json({ sessions });
+  });
+
+  // ── Session health ────────────────────────────────────────────────────────
+  app.get('/api/sessions/:traceId/health', (req, res) => {
+    const exists = db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(req.params.traceId);
+    if (!exists) return res.status(404).json({ error: 'session not found' }) as any;
+    res.json(computeHealthScore(req.params.traceId));
   });
 
   app.patch('/api/sessions/:traceId', (req, res) => {
@@ -1561,6 +1727,8 @@ service:
     deleteAllSessions.run();
     deleteAllAlerts.run();
     deleteAllAnnotations.run();
+    db.prepare('DELETE FROM spans_fts').run();
+    db.prepare('DELETE FROM webhook_deliveries').run();
     io.emit('graph-update', buildGraph());
     io.emit('sessions-update');
     io.emit('alerts-update');
@@ -2249,6 +2417,120 @@ ${alerts.length > 0 ? `
       totalTokensOut,
       pricingTable:  Object.entries(MODEL_PRICING).map(([model, p]) => ({ model, ...p })),
     });
+  });
+
+  // ── Full-text search (s54) ───────────────────────────────────────────────
+
+  function buildSearchQuery(opts: {
+    q: string; severity?: string; harness?: string;
+    from?: string; to?: string; limit: number; offset: number;
+  }): { spans: SpanRecord[]; total: number } {
+    const conditions: string[] = [];
+    const params: unknown[]    = [];
+
+    // FTS5 match — fall back to LIKE if query is empty
+    let baseTable = 'spans';
+    if (opts.q) {
+      try {
+        const escaped = '"' + opts.q.replace(/"/g, '""') + '"';
+        const ftsIds  = (db.prepare('SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?').all(escaped) as { spanId: string }[]).map(r => r.spanId);
+        if (ftsIds.length === 0) return { spans: [], total: 0 };
+        const ph = ftsIds.map(() => '?').join(',');
+        conditions.push(`spanId IN (${ph})`);
+        params.push(...ftsIds);
+      } catch {
+        // FTS5 syntax error → fall back to LIKE
+        const like = `%${opts.q}%`;
+        conditions.push('(name LIKE ? OR attributes LIKE ?)');
+        params.push(like, like);
+      }
+    }
+
+    if (opts.severity && opts.severity !== 'all') {
+      conditions.push('severity = ?');
+      params.push(opts.severity);
+    }
+    if (opts.harness) {
+      conditions.push('harness = ?');
+      params.push(opts.harness);
+    }
+    if (opts.from) {
+      try {
+        const nanoFrom = String(BigInt(new Date(opts.from).getTime()) * 1_000_000n);
+        conditions.push('startNano >= ?');
+        params.push(nanoFrom);
+      } catch {}
+    }
+    if (opts.to) {
+      try {
+        const nanoTo = String(BigInt(new Date(opts.to).getTime()) * 1_000_000n);
+        conditions.push('startNano <= ?');
+        params.push(nanoTo);
+      } catch {}
+    }
+
+    const where  = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const total  = (db.prepare(`SELECT COUNT(*) as c FROM ${baseTable} ${where}`).get(...params) as any).c as number;
+    const spans  = db.prepare(`SELECT * FROM ${baseTable} ${where} ORDER BY startNano DESC LIMIT ? OFFSET ?`)
+      .all(...params, opts.limit, opts.offset) as SpanRecord[];
+    return { spans, total };
+  }
+
+  app.get('/api/search', (req, res) => {
+    const q        = String(req.query.q        ?? '').trim();
+    const severity = String(req.query.severity ?? '').trim();
+    const harness  = String(req.query.harness  ?? '').trim();
+    const from     = String(req.query.from     ?? '').trim();
+    const to       = String(req.query.to       ?? '').trim();
+    const limit    = Math.min(Math.max(1, Number(req.query.limit ?? 20)), 100);
+    const page     = Math.max(1, Number(req.query.page ?? 1));
+    const offset   = (page - 1) * limit;
+
+    const { spans, total } = buildSearchQuery({ q, severity, harness, from, to, limit, offset });
+    res.json({ spans, total, page, pages: Math.ceil(total / limit), query: q });
+  });
+
+  app.get('/api/search/export', (req, res) => {
+    const q        = String(req.query.q        ?? '').trim();
+    const severity = String(req.query.severity ?? '').trim();
+    const harness  = String(req.query.harness  ?? '').trim();
+    const { spans } = buildSearchQuery({ q, severity, harness, limit: 5000, offset: 0 });
+    res.setHeader('Content-Disposition', `attachment; filename="claudesec-search-${Date.now()}.json"`);
+    res.json({ exportedAt: new Date().toISOString(), query: q, count: spans.length, spans });
+  });
+
+  // ── Webhook delivery log (s56) ────────────────────────────────────────────
+
+  app.get('/api/webhook-deliveries', (req, res) => {
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const rows  = db.prepare('SELECT * FROM webhook_deliveries ORDER BY id DESC LIMIT ?').all(limit) as any[];
+    const total = (db.prepare('SELECT COUNT(*) as c FROM webhook_deliveries').get() as any).c as number;
+    res.json({ deliveries: rows, total });
+  });
+
+  app.post('/api/webhook-deliveries/:id/retry', async (req, res) => {
+    const delivery = db.prepare('SELECT * FROM webhook_deliveries WHERE id = ?').get(Number(req.params.id)) as any;
+    if (!delivery) return res.status(404).json({ error: 'delivery not found' }) as any;
+    if (delivery.status === 'success') return res.status(409).json({ error: 'delivery already succeeded' }) as any;
+
+    const url = getWebhookUrl();
+    if (!url) return res.status(503).json({ error: 'No webhook URL configured' }) as any;
+
+    const t0 = Date.now();
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'claudesec', rule: delivery.ruleLabel, severity: delivery.severity, retry: true }) });
+      updateDelivery.run(r.ok ? 'success' : 'failed', r.status, Date.now() - t0, r.ok ? null : `HTTP ${r.status}`, new Date().toISOString(), delivery.id);
+      res.json({ status: r.ok ? 'success' : 'failed', httpCode: r.status });
+    } catch (err: any) {
+      updateDelivery.run('failed', null, Date.now() - t0, err.message, new Date().toISOString(), delivery.id);
+      res.status(502).json({ status: 'failed', error: err.message });
+    }
+  });
+
+  app.delete('/api/webhook-deliveries', (_req, res) => {
+    db.prepare('DELETE FROM webhook_deliveries').run();
+    res.json({ status: 'ok' });
   });
 
   // ── Dev / prod static ────────────────────────────────────────────────────
