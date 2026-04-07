@@ -1,0 +1,210 @@
+import React, { useEffect, useState } from 'react';
+import { AlertTriangle, Download, Trash2, ShieldOff } from 'lucide-react';
+import { socket } from './socket';
+
+type Severity = 'none' | 'low' | 'medium' | 'high';
+type SeverityFilter = 'all' | 'high' | 'medium' | 'low';
+
+interface AlertRow {
+  id: number;
+  ts: string;
+  ruleLabel: string;
+  severity: Severity;
+  spanId: string;
+  traceId: string;
+  harness: string;
+  spanName: string;
+  matchedText: string;
+}
+
+const HARNESS_COLORS: Record<string, string> = {
+  'claude-code':    '#f97316',
+  'github-copilot': '#6366f1',
+  'openhands':      '#22c55e',
+  'cursor':         '#a855f7',
+  'aider':          '#ec4899',
+  'cline':          '#14b8a6',
+  'goose':          '#f59e0b',
+  'continue':       '#0ea5e9',
+  'windsurf':       '#38bdf8',
+  'unknown':        '#64748b',
+};
+
+const HARNESS_NAMES: Record<string, string> = {
+  'claude-code':    'Claude Code',
+  'github-copilot': 'GitHub Copilot',
+  'openhands':      'OpenHands',
+  'cursor':         'Cursor',
+  'aider':          'Aider',
+  'cline':          'Cline',
+  'goose':          'Goose',
+  'continue':       'Continue.dev',
+  'windsurf':       'Windsurf',
+  'unknown':        'Unknown',
+};
+
+const SEV_BADGE: Record<string, string> = {
+  high:   'bg-red-900/40 text-red-300 border border-red-700/40',
+  medium: 'bg-orange-900/40 text-orange-300 border border-orange-700/40',
+  low:    'bg-yellow-900/40 text-yellow-300 border border-yellow-700/40',
+  none:   'bg-slate-800 text-slate-400',
+};
+
+const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
+  { label: 'All',    value: 'all'    },
+  { label: 'High',   value: 'high'   },
+  { label: 'Medium', value: 'medium' },
+  { label: 'Low',    value: 'low'    },
+];
+
+export function AlertsTab() {
+  const [alerts,        setAlerts]        = useState<AlertRow[]>([]);
+  const [total,         setTotal]         = useState(0);
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
+
+  const fetchAlerts = (sev: SeverityFilter = severityFilter) => {
+    const params = new URLSearchParams({ limit: '200' });
+    if (sev !== 'all') params.set('severity', sev);
+    fetch(`/api/alerts?${params}`)
+      .then(r => r.json())
+      .then(({ alerts: a, total: t }: { alerts: AlertRow[]; total: number }) => {
+        setAlerts(a ?? []);
+        setTotal(t ?? 0);
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetchAlerts(severityFilter);
+  }, [severityFilter]);
+
+  useEffect(() => {
+    const handler = () => fetchAlerts(severityFilter);
+    socket.on('alerts-update', handler);
+    return () => { socket.off('alerts-update', handler); };
+  }, [severityFilter]);
+
+  const handleClear = async () => {
+    if (!window.confirm('Clear all alerts? This cannot be undone.')) return;
+    await fetch('/api/alerts', { method: 'DELETE' });
+  };
+
+  const formatTime = (ts: string) => {
+    try { return new Date(ts).toLocaleTimeString(); }
+    catch { return ts; }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 bg-slate-950">
+
+      {/* Toolbar */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-900/40 shrink-0 flex-wrap">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-orange-400" />
+          <span className="text-sm font-bold text-slate-200">Alert Log</span>
+          <span className="text-[11px] font-mono text-slate-500">{total} total</span>
+        </div>
+
+        <div className="flex gap-1 ml-2">
+          {FILTER_BTNS.map(btn => (
+            <button
+              key={btn.value}
+              onClick={() => setSeverityFilter(btn.value)}
+              className={`px-2.5 py-1 text-[10px] font-medium rounded-full transition-colors ${
+                severityFilter === btn.value
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              }`}
+            >
+              {btn.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto">
+          <button
+            onClick={() => window.open('/api/alerts/export', '_blank')}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" /> Export JSON
+          </button>
+          <button
+            onClick={handleClear}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-900/40 rounded-lg border border-slate-700 hover:border-red-700/40 text-xs text-slate-400 hover:text-red-400 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Clear
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="flex-1 overflow-auto">
+        {alerts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
+            <ShieldOff className="w-8 h-8 text-slate-700" />
+            <p className="text-sm font-medium text-slate-500">No alerts yet</p>
+            <p className="text-xs text-slate-600 max-w-xs text-center leading-relaxed">
+              Alerts appear here when a span matches a threat detection rule.
+            </p>
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-900/90 backdrop-blur-sm z-10">
+              <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase tracking-wider">
+                <th className="px-4 py-2.5 text-left">Time</th>
+                <th className="px-4 py-2.5 text-left">Severity</th>
+                <th className="px-4 py-2.5 text-left">Rule</th>
+                <th className="px-4 py-2.5 text-left">Agent</th>
+                <th className="px-4 py-2.5 text-left">Span Name</th>
+                <th className="px-4 py-2.5 text-left">Snippet</th>
+              </tr>
+            </thead>
+            <tbody>
+              {alerts.map(alert => (
+                <tr
+                  key={alert.id}
+                  className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
+                >
+                  <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
+                    {formatTime(alert.ts)}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
+                      {alert.severity}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-200 font-medium max-w-[180px] truncate" title={alert.ruleLabel}>
+                    {alert.ruleLabel}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: HARNESS_COLORS[alert.harness] ?? '#64748b' }}
+                      />
+                      <span className="text-slate-400 truncate max-w-[100px]" title={HARNESS_NAMES[alert.harness]}>
+                        {HARNESS_NAMES[alert.harness] ?? alert.harness}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-400 max-w-[160px] truncate" title={alert.spanName}>
+                    {alert.spanName}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {alert.matchedText ? (
+                      <code className="text-[10px] font-mono text-red-300 bg-red-900/20 px-1.5 py-0.5 rounded max-w-[200px] truncate block" title={alert.matchedText}>
+                        {alert.matchedText}
+                      </code>
+                    ) : (
+                      <span className="text-slate-700">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
