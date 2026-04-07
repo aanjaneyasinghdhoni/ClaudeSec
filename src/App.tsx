@@ -8,7 +8,7 @@ import {
   Shield, AlertTriangle, Activity, Terminal, Trash2,
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
-  Bell, BellOff, Upload,
+  Bell, BellOff, Upload, Settings, StickyNote,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
@@ -16,6 +16,8 @@ import { AlertsTab } from './AlertsTab';
 import { OrchestrationTab } from './OrchestrationTab';
 import { CostTab } from './CostTab';
 import { ActivitySparkline } from './Sparkline';
+import { SettingsTab } from './SettingsTab';
+import { HarnessTab } from './HarnessTab';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -63,7 +65,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings';
 
 interface Workflow {
   id: string;
@@ -310,6 +312,12 @@ export default function App() {
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importStatus, setImportStatus] = useState<{ msg: string; ok: boolean } | null>(null);
 
+  // ── Annotations ───────────────────────────────────────────────────────────
+  interface Annotation { id: number; spanId: string; text: string; author: string; createdAt: string }
+  const [annotations, setAnnotations]       = useState<Annotation[]>([]);
+  const [annotationText, setAnnotationText] = useState('');
+  const [annotationSaving, setAnnotationSaving] = useState(false);
+
   const seenIds      = useRef<Set<string>>(new Set());
   const prevWorkflows = useRef<Workflow[]>([]);
 
@@ -405,6 +413,15 @@ export default function App() {
   }, []);
 
   useEffect(() => { prevWorkflows.current = workflows; }, [workflows]);
+
+  // Fetch annotations when a span is selected
+  useEffect(() => {
+    if (!selectedNode || selectedNode.id === 'agent') { setAnnotations([]); setAnnotationText(''); return; }
+    fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/annotations`)
+      .then(r => r.json())
+      .then(({ annotations: a }) => setAnnotations(a ?? []))
+      .catch(() => {});
+  }, [selectedNode]);
 
   // Socket events
   useEffect(() => {
@@ -991,6 +1008,22 @@ export default function App() {
             >
               <Zap className="w-3.5 h-3.5" /> Costs
             </button>
+            <button
+              onClick={() => setActiveTab('harnesses')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'harnesses' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Cpu className="w-3.5 h-3.5" /> Harnesses
+            </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ml-auto ${
+                activeTab === 'settings' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" /> Settings
+            </button>
           </div>
 
           {/* Graph view */}
@@ -1160,6 +1193,59 @@ export default function App() {
                             ))}
                         </div>
                       </div>
+
+                      {/* Annotations */}
+                      <div className="border-t border-slate-800 pt-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-2 flex items-center gap-1.5">
+                          <StickyNote className="w-3 h-3" /> Notes ({annotations.length})
+                        </p>
+                        {annotations.length > 0 && (
+                          <div className="space-y-1.5 mb-2">
+                            {annotations.map(a => (
+                              <div key={a.id} className="p-2 bg-slate-800/60 rounded border border-slate-700 group">
+                                <p className="text-[11px] text-slate-200 break-words leading-relaxed">{a.text}</p>
+                                <div className="flex items-center justify-between mt-1">
+                                  <p className="text-[9px] text-slate-600 font-mono">{a.author} · {new Date(a.createdAt).toLocaleTimeString()}</p>
+                                  <button
+                                    onClick={() => fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/annotations/${a.id}`, { method: 'DELETE' })
+                                      .then(() => setAnnotations(prev => prev.filter(x => x.id !== a.id)))}
+                                    className="hidden group-hover:block text-[9px] text-red-400 hover:text-red-300"
+                                  >✕</button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex gap-1.5">
+                          <textarea
+                            value={annotationText}
+                            onChange={e => setAnnotationText(e.target.value)}
+                            placeholder="Add investigation note…"
+                            rows={2}
+                            className="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500/50"
+                          />
+                          <button
+                            disabled={!annotationText.trim() || annotationSaving}
+                            onClick={async () => {
+                              if (!annotationText.trim()) return;
+                              setAnnotationSaving(true);
+                              try {
+                                const res = await fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/annotations`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ text: annotationText.trim() }),
+                                });
+                                const newA = await res.json();
+                                setAnnotations(prev => [...prev, newA]);
+                                setAnnotationText('');
+                              } finally { setAnnotationSaving(false); }
+                            }}
+                            className="px-2 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded text-xs text-white font-medium"
+                          >
+                            {annotationSaving ? '…' : 'Add'}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </motion.div>
                 )}
@@ -1187,6 +1273,17 @@ export default function App() {
 
           {/* Costs + Webhook view */}
           {activeTab === 'costs' && <CostTab />}
+
+          {/* Harnesses view */}
+          {activeTab === 'harnesses' && (
+            <HarnessTab
+              onFilterHarness={h => { setHarnessFilter(h); if (h) setActiveTab('graph'); }}
+              activeFilter={harnessFilter}
+            />
+          )}
+
+          {/* Settings view */}
+          {activeTab === 'settings' && <SettingsTab />}
         </div>
       </div>
 

@@ -150,6 +150,71 @@ async function cmdReset() {
   }
 }
 
+async function cmdTail(args: string[]) {
+  const harnessIdx = args.indexOf('--harness');
+  const sevIdx     = args.indexOf('--severity');
+  const harness    = harnessIdx >= 0 ? args[harnessIdx + 1] : undefined;
+  const severity   = sevIdx    >= 0 ? args[sevIdx    + 1] : undefined;
+
+  const params = new URLSearchParams();
+  if (harness)  params.set('harness',  harness);
+  if (severity) params.set('severity', severity);
+
+  const url = `${BASE_URL}/api/tail${params.toString() ? '?' + params.toString() : ''}`;
+
+  const SEV_COLOR: Record<string, string> = {
+    high:   '\x1b[31m',
+    medium: '\x1b[33m',
+    low:    '\x1b[34m',
+    none:   '\x1b[32m',
+  };
+
+  console.log(`\n\x1b[1m\x1b[35mClaudeSec Live Tail\x1b[0m  \x1b[90m${url}\x1b[0m`);
+  console.log(`\x1b[90mStreaming new spans… (Ctrl+C to stop)\x1b[0m\n`);
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Accept: 'text/event-stream' } });
+  } catch {
+    console.error(`\x1b[31m✗ Cannot connect to ${BASE_URL}. Is ClaudeSec running?\x1b[0m\n`);
+    process.exit(1);
+  }
+
+  if (!res.body) { console.error('\x1b[31m✗ No body in SSE response\x1b[0m'); process.exit(1); }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const span = JSON.parse(line.slice(6));
+        const col  = SEV_COLOR[span.severity] ?? '\x1b[37m';
+        const sev  = (span.severity ?? 'none').toUpperCase().padEnd(6);
+        const ts   = new Date().toLocaleTimeString();
+        console.log(
+          `\x1b[90m${ts}\x1b[0m ${col}${sev}\x1b[0m \x1b[36m${(span.harness ?? 'unknown').padEnd(16)}\x1b[0m ${span.name}`,
+        );
+        if (span.severity !== 'none' && span.attributes) {
+          try {
+            const a = typeof span.attributes === 'string' ? JSON.parse(span.attributes) : span.attributes;
+            const rule = a['claudesec.threat.rule'];
+            if (rule) console.log(`         \x1b[90m↳ ${rule}\x1b[0m`);
+          } catch {}
+        }
+      } catch {}
+    }
+  }
+}
+
 function cmdOpen() {
   console.log(`\n\x1b[90mOpening ${BASE_URL} …\x1b[0m\n`);
   const platform = process.platform;
@@ -167,14 +232,16 @@ function printHelp() {
 \x1b[1m\x1b[35mClaudeSec CLI\x1b[0m
 
 \x1b[1mUsage:\x1b[0m
-  \x1b[33mclaudesec\x1b[0m                    Interactive setup wizard
-  \x1b[33mclaudesec init\x1b[0m               Interactive setup wizard
-  \x1b[33mclaudesec status\x1b[0m             Show server health and span counts
-  \x1b[33mclaudesec export [file]\x1b[0m      Download all spans as JSON
-  \x1b[33mclaudesec reset\x1b[0m              Wipe all data (with confirmation)
-  \x1b[33mclaudesec open\x1b[0m               Open the dashboard in your browser
-  \x1b[33mclaudesec help\x1b[0m               Show this help
+  \x1b[33mclaudesec\x1b[0m                              Interactive setup wizard
+  \x1b[33mclaudesec init\x1b[0m                         Interactive setup wizard
+  \x1b[33mclaudesec status\x1b[0m                       Show server health and span counts
+  \x1b[33mclaudesec export [file]\x1b[0m                Download all spans as JSON
+  \x1b[33mclaudesec reset\x1b[0m                        Wipe all data (with confirmation)
+  \x1b[33mclaudesec open\x1b[0m                         Open the dashboard in your browser
+  \x1b[33mclaudesec tail [--harness X] [--severity Y]\x1b[0m   Stream live spans to terminal
+  \x1b[33mclaudesec help\x1b[0m                         Show this help
 
+\x1b[1mSeverity levels:\x1b[0m  \x1b[31mhigh\x1b[0m  \x1b[33mmedium\x1b[0m  \x1b[34mlow\x1b[0m  \x1b[32mnone\x1b[0m
 \x1b[90mDashboard: ${BASE_URL}\x1b[0m
 `);
 }
@@ -192,6 +259,7 @@ async function main() {
     case 'export': await cmdExport(rest[0]);         break;
     case 'reset':  await cmdReset();                 break;
     case 'open':   cmdOpen();                        break;
+    case 'tail':   await cmdTail(rest);              break;
     case '--help':
     case '-h':
     case 'help':   printHelp();                      break;

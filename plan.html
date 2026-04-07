@@ -505,6 +505,65 @@
   </div>
 </div>
 
+<!-- PHASE 10 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#06b6d422;color:#06b6d4">10</div>
+    <div>
+      <div class="phase-title">Deep Inspection, MCP &amp; Live Tail</div>
+      <div class="phase-desc">Span annotations, SSE live tail stream, MCP server mode, unified settings UI, and per-harness profiling</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p10" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step done" id="s39">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Span annotations — user investigation notes</div>
+        <div class="step-desc">GET/POST/DELETE /api/spans/:spanId/annotations. SQLite annotations table with text, author (default "analyst"), createdAt. Annotation count badge on span node in graph. Annotation editor in span detail panel (inline textarea, save/delete). Annotations included in HTML session reports and JSON export.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step done" id="s40">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">SSE live tail — GET /api/tail + claudesec tail CLI</div>
+        <div class="step-desc">GET /api/tail streams newline-delimited JSON of every new span as it arrives (Server-Sent Events). Supports ?harness= and ?severity= filters. claudesec tail [--harness X] [--severity high] CLI subcommand that connects to the SSE stream and pretty-prints spans to the terminal with color-coded severity.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">CLI</span>
+      </div>
+    </div>
+    <div class="step done" id="s41">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">MCP server mode — AI agents query their own telemetry</div>
+        <div class="step-desc">POST /mcp endpoint implementing the Model Context Protocol (JSON-RPC 2.0 stdio transport over HTTP). Exposes tools: get_sessions, get_spans(traceId), get_alerts, get_health, search_spans(query). Lets Claude Code and other MCP-capable agents introspect their own activity. Documented in docs/mcp.mdx.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step done" id="s42">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Settings panel — unified dashboard config UI</div>
+        <div class="step-desc">New Settings tab (gear icon) in the dashboard. Sections: Retention (max spans, days), Rate Limiting (RPS, burst, max batch), Webhook (URL, threshold, test), Display (show/hide zero-severity spans, timeline default zoom). All settings read/write via existing /api endpoints. No page reload required.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step done" id="s43">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Harness profile sidebar — per-agent stats &amp; health</div>
+        <div class="step-desc">GET /api/harnesses returns per-harness aggregates: total spans, sessions, HIGH/MED/LOW threat counts, total tokens in+out, first/last seen timestamps. New "Harnesses" tab in dashboard sidebar showing cards for each active harness with color, icon, counts, threat heatmap badge, and last-seen time. Drives the existing harnessFilter in the graph.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -517,6 +576,7 @@ function recalc() {
     { steps: ['s26','s27','s28'], bar: 'p7' },
     { steps: ['s29','s30','s31','s32','s33'], bar: 'p8' },
     { steps: ['s34','s35','s36','s37','s38'], bar: 'p9' },
+    { steps: ['s39','s40','s41','s42','s43'], bar: 'p10' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {
