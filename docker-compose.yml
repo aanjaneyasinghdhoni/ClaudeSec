@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  claudesec:
+    build: .
+    image: claudesec:latest
+    container_name: claudesec
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      # Persist the SQLite database outside the container
+      - claudesec-data:/data
+      # Persist custom rules
+      - claudesec-rules:/app/rules.json:z
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Webhook (optional — set in .env or shell)
+      CLAUDESEC_WEBHOOK_URL: ${CLAUDESEC_WEBHOOK_URL:-}
+      CLAUDESEC_WEBHOOK_THRESHOLD: ${CLAUDESEC_WEBHOOK_THRESHOLD:-high}
+      # Retention (optional)
+      CLAUDESEC_MAX_SPANS: ${CLAUDESEC_MAX_SPANS:-50000}
+      CLAUDESEC_RETENTION_DAYS: ${CLAUDESEC_RETENTION_DAYS:-30}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  claudesec-data:
+  claudesec-rules:

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { DollarSign, TrendingUp, Cpu, HelpCircle, Webhook, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { DollarSign, TrendingUp, Cpu, HelpCircle, Webhook, CheckCircle, XCircle, AlertTriangle, Database, Trash2, RefreshCw } from 'lucide-react';
 import { socket } from './socket';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -221,6 +221,144 @@ function WebhookPanel() {
   );
 }
 
+// ── DB Health Panel ───────────────────────────────────────────────────────────
+
+interface DBStats {
+  spansTotal:    number;
+  sessionsTotal: number;
+  alertsTotal:   number;
+  dbSizeHuman:   string;
+  dbSizeBytes:   number;
+  oldestSession: string | null;
+  retentionConfig: { maxSpans: number; retentionDays: number };
+}
+
+function DBHealthPanel() {
+  const [stats, setStats]         = useState<DBStats | null>(null);
+  const [pruning, setPruning]     = useState(false);
+  const [pruneResult, setPruneResult] = useState<{ prunedByAge: number; prunedByCount: number } | null>(null);
+  const [editing, setEditing]     = useState(false);
+  const [maxSpans, setMaxSpans]   = useState('');
+  const [retDays, setRetDays]     = useState('');
+
+  const load = () =>
+    fetch('/api/db-stats').then(r => r.json()).then((d: DBStats) => {
+      setStats(d);
+      setMaxSpans(String(d.retentionConfig.maxSpans));
+      setRetDays(String(d.retentionConfig.retentionDays));
+    }).catch(() => {});
+
+  useEffect(() => { load(); }, []);
+
+  const prune = async () => {
+    setPruning(true);
+    const r = await fetch('/api/db-stats/prune', { method: 'POST' });
+    const result = await r.json();
+    setPruneResult(result);
+    setTimeout(() => setPruneResult(null), 5000);
+    load();
+    setPruning(false);
+  };
+
+  const saveRetention = async () => {
+    await fetch('/api/db-stats/retention', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxSpans: Number(maxSpans), retentionDays: Number(retDays) }),
+    });
+    setEditing(false);
+    load();
+  };
+
+  if (!stats) return null;
+
+  const usagePct = Math.min(100, Math.round((stats.spansTotal / stats.retentionConfig.maxSpans) * 100));
+  const barColor = usagePct > 85 ? '#ef4444' : usagePct > 60 ? '#f97316' : '#22c55e';
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Database className="w-4 h-4 text-slate-400" />
+        <span className="text-xs font-bold text-slate-300">Database Health</span>
+        <button onClick={load} className="ml-auto text-slate-600 hover:text-slate-400 transition-colors">
+          <RefreshCw className="w-3 h-3" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-3 text-center">
+        {[
+          { val: stats.spansTotal.toLocaleString(),    label: 'Spans',    color: 'text-blue-400' },
+          { val: stats.sessionsTotal.toLocaleString(),  label: 'Sessions', color: 'text-purple-400' },
+          { val: stats.dbSizeHuman,                    label: 'DB Size',  color: 'text-orange-400' },
+        ].map(c => (
+          <div key={c.label} className="bg-slate-800 rounded-lg p-2">
+            <div className={`text-sm font-bold font-mono ${c.color}`}>{c.val}</div>
+            <div className="text-[9px] text-slate-600 uppercase tracking-wider mt-0.5">{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Span usage bar */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[9px] text-slate-600">
+            {stats.spansTotal.toLocaleString()} / {stats.retentionConfig.maxSpans.toLocaleString()} max spans
+          </span>
+          <span className="text-[9px] font-mono" style={{ color: barColor }}>{usagePct}%</span>
+        </div>
+        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${usagePct}%`, background: barColor }} />
+        </div>
+      </div>
+
+      {/* Retention config */}
+      {!editing ? (
+        <div className="flex items-center justify-between text-[10px] text-slate-500 mb-3">
+          <span>Retention: {stats.retentionConfig.retentionDays}d · max {stats.retentionConfig.maxSpans.toLocaleString()} spans</span>
+          <button onClick={() => setEditing(true)} className="text-blue-400 hover:text-blue-300 transition-colors">Edit</button>
+        </div>
+      ) : (
+        <div className="mb-3 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-slate-500 w-20">Max spans</label>
+            <input type="number" value={maxSpans} onChange={e => setMaxSpans(e.target.value)}
+              className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-[11px] text-slate-200 focus:outline-none" />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-slate-500 w-20">Days to keep</label>
+            <input type="number" value={retDays} onChange={e => setRetDays(e.target.value)}
+              className="flex-1 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-[11px] text-slate-200 focus:outline-none" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={saveRetention}
+              className="flex-1 py-1 bg-blue-600 hover:bg-blue-500 text-white text-[10px] rounded transition-colors">
+              Save
+            </button>
+            <button onClick={() => setEditing(false)}
+              className="flex-1 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-[10px] rounded transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <button
+        onClick={prune}
+        disabled={pruning}
+        className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] rounded border border-slate-700 transition-colors disabled:opacity-50"
+      >
+        <Trash2 className="w-3 h-3" /> {pruning ? 'Pruning…' : 'Run manual prune'}
+      </button>
+
+      {pruneResult && (
+        <p className="mt-1.5 text-[10px] text-green-400 text-center">
+          Pruned {pruneResult.prunedByAge} by age + {pruneResult.prunedByCount} by count
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function CostTab() {
@@ -437,6 +575,9 @@ export function CostTab() {
 
           {/* Webhook panel */}
           <WebhookPanel />
+
+          {/* DB Health panel */}
+          <DBHealthPanel />
 
           {/* Pricing disclaimer */}
           <div className="flex items-start gap-2 p-3 bg-slate-900/50 border border-slate-800 rounded-xl text-[10px] text-slate-600">

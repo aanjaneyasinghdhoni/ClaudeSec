@@ -387,6 +387,65 @@
   </div>
 </div>
 
+<!-- PHASE 8 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#22c55e22;color:#22c55e">8</div>
+    <div>
+      <div class="phase-title">Production Hardening &amp; Developer Experience</div>
+      <div class="phase-desc">README overhaul, Docker support, span retention policy, behavioral anomaly detection, and shareable HTML session reports</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p8" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step done" id="s29">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">README.md comprehensive refresh</div>
+        <div class="step-desc">Full rewrite with badges (CI, license, npm, Node), feature list, quickstart, all supported harnesses table, architecture diagram, API reference table, Prometheus scrape example, webhook setup, Mintlify docs pointer, Docker instructions, contributing section.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+        <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
+      </div>
+    </div>
+    <div class="step done" id="s30">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Docker support — Dockerfile + docker-compose.yml</div>
+        <div class="step-desc">Multi-stage Dockerfile (build frontend → production Node image). docker-compose.yml with named volumes for SQLite persistence and rules.json. HEALTHCHECK via /api/health. .dockerignore. One-command deploy: docker compose up.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
+        <span class="tag" style="background:#0ea5e922;color:#0ea5e9">devex</span>
+      </div>
+    </div>
+    <div class="step done" id="s31">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Span retention policy + DB health panel</div>
+        <div class="step-desc">Auto-prune spans by age (CLAUDESEC_RETENTION_DAYS, default 30) and count (CLAUDESEC_MAX_SPANS, default 50,000). GET /api/db-stats, POST /api/db-stats/prune, POST /api/db-stats/retention. DB health panel in Costs tab with usage bar and inline retention config editor.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">API</span>
+      </div>
+    </div>
+    <div class="step done" id="s32">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Behavioral anomaly detection</div>
+        <div class="step-desc">Statistical rules layer on top of regex rules. Detects: token spike (single span > 4× session avg), threat burst (≥3 threats in last 10 spans → HIGH), excessive tool calls (>100 per session), off-hours activity (before 6am). Runs per-session after every OTLP batch. Fires webhooks. Deduped by 5–60 min windows.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
+      </div>
+    </div>
+    <div class="step done" id="s33">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Shareable session HTML report</div>
+        <div class="step-desc">GET /api/sessions/:traceId/report — self-contained HTML with inline CSS, no external deps. Shows: session header (name, harness badges, date), summary cards (spans, HIGH/MED/LOW threats, input/output tokens), alerts table, full span table with severity coloring, duration, tool name, matched threat rule. Download button in sidebar per session.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -397,6 +456,7 @@ function recalc() {
     { steps: ['s19','s20','s21'], bar: 'p5' },
     { steps: ['s22','s23','s24','s25'], bar: 'p6' },
     { steps: ['s26','s27','s28'], bar: 'p7' },
+    { steps: ['s29','s30','s31','s32','s33'], bar: 'p8' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {
