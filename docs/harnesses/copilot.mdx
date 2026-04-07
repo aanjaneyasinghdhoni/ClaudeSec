@@ -1,0 +1,83 @@
+---
+title: "GitHub Copilot"
+description: "Connect GitHub Copilot CLI and Copilot Workspace to ClaudeSec for agent activity monitoring."
+---
+
+## Overview
+
+[GitHub Copilot](https://docs.github.com/en/copilot) is GitHub's AI pair programmer. Its CLI extension and Copilot Workspace (agentic coding environment) can emit OpenTelemetry spans when the appropriate OTLP environment variables are set.
+
+ClaudeSec identifies GitHub Copilot spans by matching the `service.name` or `telemetry.sdk.name` resource attribute against the pattern `/copilot/i`. Spans appear as **indigo/purple nodes** (`#6366f1`) in the graph.
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Export environment variables
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+<Note>
+  GitHub Copilot does not use a dedicated telemetry toggle like Claude Code's `CLAUDE_CODE_ENABLE_TELEMETRY`. OTLP export is controlled entirely by the endpoint variable. If the variable is unset, no spans are emitted.
+</Note>
+
+### 3. Launch Copilot CLI
+
+```bash
+gh copilot suggest "create a new React component"
+```
+
+Or use Copilot Workspace from the GitHub web UI — if Workspace is configured to emit telemetry, it will route spans to the endpoint you specified.
+
+---
+
+## Persisting the configuration
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+---
+
+## Key span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Tool or capability invoked |
+| `github.copilot.model` | string | Model serving the request |
+| `gen_ai.usage.input_tokens` | int | Input token count |
+| `gen_ai.usage.output_tokens` | int | Output token count |
+
+---
+
+## Graph visualization
+
+GitHub Copilot appears as an **indigo root node** in the ClaudeSec graph. Each agentic step (file read, edit, shell command) appears as a child span connected by an animated edge. Edges are colored red/orange/yellow when a threat rule fires.
+
+---
+
+## Troubleshooting
+
+**No spans appearing**
+
+The Copilot CLI's OTLP integration may be gated behind a feature flag in some versions. Verify the version supports OTLP by checking the [GitHub Copilot CLI changelog](https://docs.github.com/en/copilot/github-copilot-in-the-cli) or contact GitHub support.
+
+**Spans classified as "Unknown Agent"**
+
+The `service.name` reported by Copilot must include the string `copilot`. If you see an "Unknown Agent" root node instead, add a manual override:
+
+```bash
+export OTEL_RESOURCE_ATTRIBUTES=service.name=github-copilot
+```

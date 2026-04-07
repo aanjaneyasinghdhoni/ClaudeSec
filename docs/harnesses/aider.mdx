@@ -1,0 +1,90 @@
+---
+title: "Aider"
+description: "Connect Aider — AI pair programming in your terminal — to ClaudeSec."
+---
+
+## Overview
+
+[Aider](https://aider.chat) is an open-source AI pair programmer that runs in your terminal. It supports many LLM backends (GPT-4, Claude, Gemini, local models via Ollama) and can edit code files autonomously using structured diff formats.
+
+ClaudeSec identifies Aider spans by matching against `/aider/i`. Spans appear as **pink nodes** (`#ec4899`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Export environment variables
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=aider
+```
+
+### 3. Launch Aider
+
+```bash
+aider --model claude-opus-4-5
+```
+
+Aider will use the OTLP exporter configured by the environment variables and emit spans for each LLM request and file edit.
+
+---
+
+## Persisting the configuration
+
+Add the exports to your shell profile:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=aider
+```
+
+---
+
+## Aider-specific span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `aider.model` | string | LLM model used (e.g., `claude-opus-4-5`, `gpt-4o`) |
+| `aider.edit_format` | string | Edit format (`diff`, `udiff`, `whole`) |
+| `gen_ai.usage.input_tokens` | int | Prompt tokens |
+| `gen_ai.usage.output_tokens` | int | Completion tokens |
+
+---
+
+## Edit format and security
+
+Aider's `whole` edit format sends entire file contents to the LLM and receives entire rewritten files. This means:
+
+- Large files may cause high token counts in spans, which ClaudeSec records.
+- If a file contains secrets (API keys, credentials), those strings will appear in span attributes — ClaudeSec will flag them immediately.
+
+Use `.aiderignore` to prevent Aider from reading sensitive files, and watch the ClaudeSec Alerts tab for any secret-pattern matches.
+
+---
+
+## Troubleshooting
+
+**Aider not emitting OTLP spans**
+
+Aider's OTLP support depends on the version and whether it ships with the OpenTelemetry SDK. Check `aider --version` and upgrade if needed:
+
+```bash
+pip install --upgrade aider-chat
+```
+
+If Aider does not natively support OTLP, you can wrap it with a custom OpenTelemetry auto-instrumentation shim — see [OpenTelemetry Python](https://opentelemetry.io/docs/instrumentation/python/) for details.
+
+**Spans appear as "Unknown Agent"**
+
+Ensure `OTEL_RESOURCE_ATTRIBUTES=service.name=aider` is set before launching Aider.

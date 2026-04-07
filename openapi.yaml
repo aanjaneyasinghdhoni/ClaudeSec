@@ -1,0 +1,710 @@
+openapi: 3.0.3
+info:
+  title: ClaudeSec API
+  description: |
+    Local AI Agent Observatory — ingests OpenTelemetry traces from any CLI agent
+    harness (Claude Code, GitHub Copilot, OpenHands, Cursor, Aider, Cline, Goose,
+    Continue.dev, Windsurf) and surfaces suspicious activity in real-time.
+  version: 0.4.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  contact:
+    name: ClaudeSec GitHub
+    url: https://github.com/aanjaneyasinghdhoni/ClaudeSec
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: OTLP
+    description: OpenTelemetry trace ingestion
+  - name: Graph
+    description: Span graph data for visualization
+  - name: Sessions
+    description: Session management
+  - name: Spans
+    description: Span search and retrieval
+  - name: Rules
+    description: Threat detection rules
+  - name: Alerts
+    description: Security alert log
+  - name: Orchestration
+    description: Multi-agent orchestration data
+  - name: Export
+    description: Data export and reset
+
+paths:
+  /v1/traces:
+    post:
+      tags: [OTLP]
+      summary: Ingest OTLP traces
+      description: |
+        Accepts OpenTelemetry trace data in OTLP JSON format. Each span is:
+        - Classified by source harness (claude-code, github-copilot, etc.)
+        - Scanned against 31+ built-in threat detection rules
+        - Persisted to SQLite
+        - Broadcast to connected dashboard clients via Socket.io
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OTLPTracePayload'
+            example:
+              resourceSpans:
+                - resource:
+                    attributes:
+                      - key: service.name
+                        value: { stringValue: claude-code }
+                  scopeSpans:
+                    - spans:
+                        - traceId: abc123
+                          spanId: span001
+                          parentSpanId: ""
+                          name: "bash: ls -la"
+                          kind: 1
+                          startTimeUnixNano: "1700000000000000000"
+                          endTimeUnixNano: "1700000001500000000"
+                          attributes:
+                            - key: gen_ai.tool.name
+                              value: { stringValue: bash }
+                            - key: gen_ai.usage.input_tokens
+                              value: { intValue: 150 }
+                          status: { code: 0 }
+      responses:
+        '200':
+          description: Traces accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/graph:
+    get:
+      tags: [Graph]
+      summary: Get graph data
+      description: Returns nodes and edges for the ReactFlow span graph.
+      parameters:
+        - name: session
+          in: query
+          description: Filter by traceId (session)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Graph data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphData'
+
+  /api/sessions:
+    get:
+      tags: [Sessions]
+      summary: List all sessions
+      description: Returns all sessions with aggregated span and threat counts.
+      responses:
+        '200':
+          description: Session list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+
+  /api/sessions/{traceId}:
+    patch:
+      tags: [Sessions]
+      summary: Rename a session
+      parameters:
+        - name: traceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: Session renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '400':
+          description: Name is required
+
+  /api/spans:
+    get:
+      tags: [Spans]
+      summary: Search spans
+      parameters:
+        - name: q
+          in: query
+          description: |
+            Full-text search. Supports `key=value` attribute filter syntax.
+            Example: `gen_ai.tool.name=bash`
+          schema:
+            type: string
+        - name: session
+          in: query
+          description: Filter by traceId
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching spans (max 500)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spans:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpanRecord'
+
+  /api/rules:
+    get:
+      tags: [Rules]
+      summary: List all rules
+      description: Returns both built-in and custom threat detection rules.
+      responses:
+        '200':
+          description: Rule lists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleList'
+    post:
+      tags: [Rules]
+      summary: Create custom rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pattern, severity, label]
+              properties:
+                pattern:
+                  type: string
+                  description: JavaScript regex pattern
+                  example: "secret_key_[a-z0-9]+"
+                severity:
+                  type: string
+                  enum: [low, medium, high]
+                label:
+                  type: string
+                  description: Human-readable rule name
+                  example: "Custom secret key pattern"
+      responses:
+        '201':
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomRule'
+        '400':
+          description: Validation error (missing fields or invalid regex)
+
+  /api/rules/{id}:
+    delete:
+      tags: [Rules]
+      summary: Delete custom rule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rule deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Rule not found
+
+  /api/alerts:
+    get:
+      tags: [Alerts]
+      summary: List alerts
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+            maximum: 1000
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high, all]
+      responses:
+        '200':
+          description: Alert list with total count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertList'
+    delete:
+      tags: [Alerts]
+      summary: Clear all alerts
+      responses:
+        '200':
+          description: Alerts cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+
+  /api/alerts/export:
+    get:
+      tags: [Alerts]
+      summary: Export alerts as JSON file
+      responses:
+        '200':
+          description: Downloadable JSON file
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="claudesec-alerts-1700000000000.json"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exportedAt:
+                    type: string
+                    format: date-time
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+
+  /api/orchestration:
+    get:
+      tags: [Orchestration]
+      summary: Get agent orchestration data
+      description: |
+        Returns per-agent stats, inter-agent edges, tool inventory, and
+        sub-agent spawn tree (cross-trace parent-child relationships).
+      responses:
+        '200':
+          description: Orchestration data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestrationData'
+
+  /api/harnesses:
+    get:
+      tags: [Orchestration]
+      summary: List active harnesses
+      description: Returns harness IDs that have sent at least one span.
+      responses:
+        '200':
+          description: Active harness IDs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  harnesses:
+                    type: array
+                    items:
+                      type: string
+                    example: ["claude-code", "openhands"]
+
+  /api/export:
+    get:
+      tags: [Export]
+      summary: Export all spans as JSON
+      responses:
+        '200':
+          description: Downloadable JSON file
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exportedAt:
+                    type: string
+                    format: date-time
+                  version:
+                    type: string
+                  spans:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpanRecord'
+
+  /api/export/csv:
+    get:
+      tags: [Export]
+      summary: Export all spans as CSV
+      responses:
+        '200':
+          description: Downloadable CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  /api/reset:
+    post:
+      tags: [Export]
+      summary: Reset all data
+      description: |
+        Permanently deletes all spans, sessions, and alerts.
+        Emits graph-update, sessions-update, and alerts-update via Socket.io.
+      responses:
+        '200':
+          description: Data cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+
+components:
+  schemas:
+    StatusOk:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+
+    SpanRecord:
+      type: object
+      properties:
+        spanId:
+          type: string
+        traceId:
+          type: string
+        parentId:
+          type: string
+        name:
+          type: string
+        protocol:
+          type: string
+        reason:
+          type: string
+        severity:
+          type: string
+          enum: [none, low, medium, high]
+        harness:
+          type: string
+        attributes:
+          type: string
+          description: JSON-encoded attribute map
+        startNano:
+          type: string
+          description: Nanosecond epoch timestamp as string
+        endNano:
+          type: string
+
+    Session:
+      type: object
+      properties:
+        traceId:
+          type: string
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        spanCount:
+          type: integer
+        threatCount:
+          type: integer
+        maxSeverityRank:
+          type: integer
+          description: "0=none, 1=low, 2=medium, 3=high"
+        harnesses:
+          type: string
+          description: Comma-separated list of harness IDs
+
+    Alert:
+      type: object
+      properties:
+        id:
+          type: integer
+        ts:
+          type: string
+          format: date-time
+        ruleLabel:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high]
+        spanId:
+          type: string
+        traceId:
+          type: string
+        harness:
+          type: string
+        spanName:
+          type: string
+        matchedText:
+          type: string
+
+    AlertList:
+      type: object
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+        total:
+          type: integer
+
+    CustomRule:
+      type: object
+      properties:
+        id:
+          type: string
+        pattern:
+          type: string
+        flags:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high]
+        label:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    BuiltInRule:
+      allOf:
+        - $ref: '#/components/schemas/CustomRule'
+        - type: object
+          properties:
+            builtin:
+              type: boolean
+              example: true
+
+    RuleList:
+      type: object
+      properties:
+        builtIn:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuiltInRule'
+        custom:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomRule'
+
+    GraphNode:
+      type: object
+      properties:
+        id:
+          type: string
+        data:
+          type: object
+          properties:
+            label:
+              type: string
+            severity:
+              type: string
+            harness:
+              type: string
+            traceId:
+              type: string
+            startNano:
+              type: string
+            endNano:
+              type: string
+        position:
+          type: object
+          properties:
+            x: { type: number }
+            y: { type: number }
+        style:
+          type: object
+
+    GraphEdge:
+      type: object
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+        label:
+          type: string
+        animated:
+          type: boolean
+
+    GraphData:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphEdge'
+
+    SpawnTreeNode:
+      type: object
+      properties:
+        traceId:
+          type: string
+        harness:
+          type: string
+        sessionName:
+          type: string
+        spanCount:
+          type: integer
+        threatCount:
+          type: integer
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpawnTreeNode'
+
+    OrchestrationData:
+      type: object
+      properties:
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              harness: { type: string }
+              spanCount: { type: integer }
+              threatCount: { type: integer }
+              tools:
+                type: array
+                items: { type: string }
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              from: { type: string }
+              to: { type: string }
+              count: { type: integer }
+        tools:
+          type: array
+          items:
+            type: object
+            properties:
+              toolName: { type: string }
+              harness: { type: string }
+              count: { type: integer }
+              threatCount: { type: integer }
+        spawnTree:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpawnTreeNode'
+
+    OTLPResource:
+      type: object
+      properties:
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OTLPKeyValue'
+
+    OTLPKeyValue:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: object
+          properties:
+            stringValue: { type: string }
+            intValue: { type: integer }
+            boolValue: { type: boolean }
+
+    OTLPSpan:
+      type: object
+      required: [traceId, spanId, name, startTimeUnixNano, endTimeUnixNano]
+      properties:
+        traceId:
+          type: string
+        spanId:
+          type: string
+        parentSpanId:
+          type: string
+        name:
+          type: string
+        kind:
+          type: integer
+        startTimeUnixNano:
+          type: string
+        endTimeUnixNano:
+          type: string
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OTLPKeyValue'
+        status:
+          type: object
+          properties:
+            code: { type: integer }
+
+    OTLPScopeSpans:
+      type: object
+      properties:
+        scope:
+          type: object
+        spans:
+          type: array
+          items:
+            $ref: '#/components/schemas/OTLPSpan'
+
+    OTLPResourceSpans:
+      type: object
+      properties:
+        resource:
+          $ref: '#/components/schemas/OTLPResource'
+        scopeSpans:
+          type: array
+          items:
+            $ref: '#/components/schemas/OTLPScopeSpans'
+
+    OTLPTracePayload:
+      type: object
+      required: [resourceSpans]
+      properties:
+        resourceSpans:
+          type: array
+          items:
+            $ref: '#/components/schemas/OTLPResourceSpans'

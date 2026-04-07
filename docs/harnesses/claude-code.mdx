@@ -1,0 +1,138 @@
+---
+title: "Claude Code"
+description: "Connect Anthropic's official CLI agent to ClaudeSec for real-time observability and security monitoring."
+---
+
+## Overview
+
+[Claude Code](https://docs.anthropic.com/claude/docs/claude-code) is Anthropic's official command-line AI agent for software engineering tasks. It natively supports OpenTelemetry export via three environment variables — no plugins or instrumentation patches required.
+
+ClaudeSec identifies Claude Code spans by matching the `service.name` or `telemetry.sdk.name` resource attribute against the pattern `/claude/i`.
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+The OTLP collector is now listening at `http://localhost:3000/v1/traces`.
+
+### 2. Export environment variables
+
+In the same terminal session where you will run Claude Code, export:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+`CLAUDE_CODE_ENABLE_TELEMETRY=1` opts the CLI into telemetry. The other two variables tell the OpenTelemetry SDK where to send spans and which wire format to use.
+
+### 3. Launch Claude Code
+
+```bash
+claude
+```
+
+As soon as Claude Code performs its first action (reading a file, calling a tool, making a model request), spans will appear in the ClaudeSec graph.
+
+---
+
+## Persisting the configuration
+
+Add the exports to your shell profile so they apply automatically to every new terminal session:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+<Warning>
+  If ClaudeSec is not running when Claude Code starts, the OTLP exporter will silently fail and Claude Code will continue working normally. No spans will be collected until ClaudeSec is started and the agent is restarted.
+</Warning>
+
+---
+
+## What spans look like
+
+Claude Code emits spans in the OpenTelemetry `gen_ai` semantic conventions. A typical span payload received by ClaudeSec looks like:
+
+```json
+{
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "spanId": "00f067aa0ba902b7",
+  "parentSpanId": "",
+  "name": "tool_use",
+  "kind": 1,
+  "startTimeUnixNano": "1700000000000000000",
+  "endTimeUnixNano":   "1700000001500000000",
+  "attributes": [
+    { "key": "gen_ai.tool.name",             "value": { "stringValue": "Bash" } },
+    { "key": "gen_ai.usage.input_tokens",    "value": { "intValue": 1024 } },
+    { "key": "gen_ai.usage.output_tokens",   "value": { "intValue": 256 } },
+    { "key": "gen_ai.system",                "value": { "stringValue": "anthropic" } },
+    { "key": "gen_ai.request.model",         "value": { "stringValue": "claude-opus-4-5" } }
+  ],
+  "status": { "code": 1 }
+}
+```
+
+### Key span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Tool invoked (e.g., `Bash`, `Read`, `Edit`, `WebFetch`) |
+| `gen_ai.usage.input_tokens` | int | Prompt tokens consumed in this turn |
+| `gen_ai.usage.output_tokens` | int | Completion tokens produced |
+| `gen_ai.system` | string | Model provider — always `anthropic` for Claude Code |
+| `gen_ai.request.model` | string | Model ID requested |
+| `gen_ai.response.model` | string | Model ID that actually responded |
+
+---
+
+## Graph visualization
+
+In the ClaudeSec graph, Claude Code appears as an **orange root node** (`#f97316`). Child nodes represent individual spans, color-coded by threat severity:
+
+- **White/gray border** — no threat detected
+- **Yellow border** — LOW severity
+- **Orange border** — MEDIUM severity  
+- **Red border** — HIGH severity
+
+Clicking any node opens the attribute inspector panel on the right, showing all span attributes, the matched threat rule (if any), and timing information.
+
+---
+
+## Common threat patterns in Claude Code sessions
+
+| Scenario | Severity | Rule |
+|----------|----------|------|
+| Agent runs `rm -rf /some/path` | HIGH | Recursive root deletion |
+| Agent reads `~/.env` or `.env` file | MEDIUM | Dotenv file access |
+| Agent uses `sudo` | LOW | Sudo usage |
+| Prompt contains "ignore previous instructions" | HIGH | Prompt injection attempt |
+| Agent installs npm package with `--registry` flag | HIGH | Supply-chain: custom npm registry |
+| AWS key pattern appears in span attributes | HIGH | AWS access key detected |
+
+---
+
+## Troubleshooting
+
+**No spans appearing in the graph**
+
+1. Confirm ClaudeSec is running: `curl http://localhost:3000/api/graph` should return JSON.
+2. Confirm the env vars are exported in the same shell: `echo $OTEL_EXPORTER_OTLP_ENDPOINT`.
+3. Confirm the correct protocol: `OTEL_EXPORTER_OTLP_PROTOCOL` must be exactly `http/json` (not `grpc`).
+4. Check the ClaudeSec terminal for any ingestion errors.
+
+**Spans are arriving but the harness shows as "Unknown Agent"**
+
+Claude Code must be version 1.x or later for the `service.name` resource attribute to include the string `claude`. Upgrade with `npm update -g @anthropic-ai/claude-code`.

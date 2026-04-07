@@ -69,8 +69,8 @@
         <span class="tag" style="background:#22c55e22;color:#22c55e">foundation</span>
       </div>
     </div>
-    <div class="step" id="s2">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s2">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Fix package.json — proper OSS metadata</div>
         <div class="step-desc">Name "claudesec", version 0.3.0, description, author list, license MIT, repository, keywords, homepage, bugs URL.</div>
@@ -278,8 +278,8 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">orchestration</span>
       </div>
     </div>
-    <div class="step" id="s20">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s20">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Sub-agent spawning detection &amp; tree view</div>
         <div class="step-desc">Track when Claude Code's Agent tool or similar spawns child agents. Build a collapsible tree showing parent-child agent relationships with per-node threat summary.</div>
@@ -287,8 +287,8 @@
         <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
       </div>
     </div>
-    <div class="step" id="s21">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s21">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Tool inventory — what tools each agent uses</div>
         <div class="step-desc">Aggregate gen_ai.tool.name attributes across all spans. Show per-agent tool usage heatmap. Flag suspicious tools (bash, exec) with threat counts.</div>
@@ -310,16 +310,16 @@
   </div>
   <div class="progress-bar"><div class="progress-fill" id="p6" style="width:0%"></div></div>
   <div class="steps">
-    <div class="step" id="s22">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s22">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Mintlify docs scaffold (docs/ folder)</div>
         <div class="step-desc">docs/mint.json, docs/index.mdx (overview), docs/quickstart.mdx, docs/harnesses/*.mdx (one per harness), docs/security/rules.mdx, docs/api-reference/*.mdx. Run with: npx mintlify dev.</div>
         <span class="tag" style="background:#ef444422;color:#ef4444">docs</span>
       </div>
     </div>
-    <div class="step" id="s23">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s23">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">API reference docs — all endpoints documented</div>
         <div class="step-desc">OpenAPI 3.0 spec (openapi.yaml) + Mintlify API reference pages for all endpoints. Include request/response examples for OTLP, /api/graph, /api/export, /api/rules.</div>

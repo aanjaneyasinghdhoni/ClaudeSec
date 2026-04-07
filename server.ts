@@ -617,7 +617,7 @@ async function startServer() {
 
     const edges = [...edgeMap.values()];
 
-    // Tool inventory
+    // Tool inventory (full matrix: toolName × harness)
     const toolMap = new Map<string, { toolName: string; harness: string; count: number; threatCount: number }>();
     for (const span of allSpans) {
       try {
@@ -633,7 +633,97 @@ async function startServer() {
     }
     const tools = [...toolMap.values()].sort((a, b) => b.count - a.count).slice(0, 50);
 
-    res.json({ agents, edges, tools });
+    // ── Sub-agent spawn tree detection ──────────────────────────────────────
+    // A spawn event is when span.parentId references a span from a DIFFERENT traceId.
+    // This happens when Claude Code's Agent tool (or similar) creates child agents.
+
+    // Build span index for O(1) parent lookup
+    const spanIdx = new Map<string, { traceId: string; harness: string; name: string }>();
+    for (const span of allSpans) {
+      spanIdx.set(span.spanId, { traceId: span.traceId, harness: span.harness, name: span.name });
+    }
+
+    // Pre-fetch sessions for display names
+    const sessionNames = new Map<string, string>();
+    const sessionRows = db.prepare('SELECT traceId, name FROM sessions').all() as { traceId: string; name: string }[];
+    for (const s of sessionRows) sessionNames.set(s.traceId, s.name);
+
+    // Per-trace stats (reuse agentMap data, aggregate by traceId)
+    const traceStatMap = new Map<string, { traceId: string; harness: string; spanCount: number; threatCount: number }>();
+    for (const span of allSpans) {
+      if (!traceStatMap.has(span.traceId)) {
+        traceStatMap.set(span.traceId, { traceId: span.traceId, harness: span.harness, spanCount: 0, threatCount: 0 });
+      }
+      const ts = traceStatMap.get(span.traceId)!;
+      ts.spanCount++;
+      if (span.severity !== 'none') ts.threatCount++;
+    }
+
+    // Find cross-trace parent-child edges (unique by parentTrace→childTrace)
+    const spawnChildMap = new Map<string, Set<string>>(); // parentTraceId → Set<childTraceId>
+    const hasSpawnParent = new Set<string>();             // traceIds that are children
+
+    for (const span of allSpans) {
+      // parentId could be a harness root id (not a real span) — skip those
+      const isHarnessRoot = HARNESSES.some(h => h.id === span.parentId);
+      if (isHarnessRoot || !span.parentId) continue;
+
+      const parentSpan = spanIdx.get(span.parentId);
+      if (parentSpan && parentSpan.traceId !== span.traceId) {
+        if (!spawnChildMap.has(parentSpan.traceId)) spawnChildMap.set(parentSpan.traceId, new Set());
+        spawnChildMap.get(parentSpan.traceId)!.add(span.traceId);
+        hasSpawnParent.add(span.traceId);
+      }
+    }
+
+    // Also detect spawn-like spans by name/attribute patterns (agent.tool.name = "Agent", sub_agent, etc.)
+    for (const span of allSpans) {
+      const isSpawnSpan = /\b(sub.?agent|spawn|agent.tool|delegate)\b/i.test(span.name);
+      if (!isSpawnSpan) continue;
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const childTraceId = attrs['agent.child_trace_id'] || attrs['subagent.trace_id'];
+        if (childTraceId && typeof childTraceId === 'string' && childTraceId !== span.traceId) {
+          if (!spawnChildMap.has(span.traceId)) spawnChildMap.set(span.traceId, new Set());
+          spawnChildMap.get(span.traceId)!.add(childTraceId);
+          hasSpawnParent.add(childTraceId);
+        }
+      } catch {}
+    }
+
+    interface SpawnTreeNode {
+      traceId: string;
+      harness: string;
+      sessionName: string;
+      spanCount: number;
+      threatCount: number;
+      children: SpawnTreeNode[];
+    }
+
+    function buildSpawnNode(traceId: string, visited = new Set<string>()): SpawnTreeNode {
+      if (visited.has(traceId)) {
+        return { traceId, harness: 'unknown', sessionName: traceId.slice(0, 8), spanCount: 0, threatCount: 0, children: [] };
+      }
+      visited.add(traceId);
+      const stats = traceStatMap.get(traceId);
+      const children = [...(spawnChildMap.get(traceId) ?? [])].map(c => buildSpawnNode(c, visited));
+      return {
+        traceId,
+        harness:     stats?.harness     ?? 'unknown',
+        sessionName: sessionNames.get(traceId) ?? traceId.slice(0, 8),
+        spanCount:   stats?.spanCount   ?? 0,
+        threatCount: stats?.threatCount ?? 0,
+        children,
+      };
+    }
+
+    // Root spawn nodes: traces that have children but are not themselves children of another
+    const rootSpawnTraces = [...traceStatMap.keys()].filter(id =>
+      spawnChildMap.has(id) && !hasSpawnParent.has(id)
+    );
+    const spawnTree = rootSpawnTraces.map(id => buildSpawnNode(id));
+
+    res.json({ agents, edges, tools, spawnTree });
   });
 
   // ── Dev / prod static ────────────────────────────────────────────────────

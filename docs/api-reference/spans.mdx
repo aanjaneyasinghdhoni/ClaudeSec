@@ -1,0 +1,54 @@
+---
+title: "Spans"
+description: "Search and retrieve recorded OTLP spans"
+---
+
+## List / Search Spans
+
+`GET /api/spans`
+
+<ParamField query="q" type="string">
+  Full-text search. Supports `key=value` syntax for attribute filtering (e.g. `gen_ai.tool.name=bash`).
+</ParamField>
+
+<ParamField query="session" type="string">
+  Filter by traceId to scope results to a single session.
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl "http://localhost:3000/api/spans?q=bash&session=abc123"
+```
+
+```json Response
+{
+  "spans": [
+    {
+      "spanId": "abc123def456",
+      "traceId": "trace001",
+      "parentId": "claude-code",
+      "name": "bash: ls -la",
+      "protocol": "HTTPS",
+      "reason": "Processing step",
+      "severity": "low",
+      "harness": "claude-code",
+      "attributes": "{\"gen_ai.tool.name\":\"bash\"}",
+      "startNano": "1700000000000000000",
+      "endNano": "1700000001500000000"
+    }
+  ]
+}
+```
+</CodeGroup>
+
+### Attribute filter syntax
+
+```bash
+# Find all bash tool calls
+curl "http://localhost:3000/api/spans?q=gen_ai.tool.name=bash"
+
+# Free-text search across name, attributes, reason
+curl "http://localhost:3000/api/spans?q=cursor"
+```
+
+Results are ordered by `startNano` ascending and capped at **500** spans.

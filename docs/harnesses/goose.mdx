@@ -1,0 +1,99 @@
+---
+title: "Goose"
+description: "Connect Block's open-source Goose AI developer agent to ClaudeSec."
+---
+
+## Overview
+
+[Goose](https://block.github.io/goose) is an open-source AI developer agent built by Block (formerly Square). It runs from the command line, supports multiple LLM providers, and can use a variety of "toolkits" for file management, shell execution, GitHub, Jira, and more.
+
+ClaudeSec identifies Goose spans by matching against `/goose/i`. Spans appear as **amber/yellow nodes** (`#f59e0b`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Export environment variables
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=goose
+```
+
+### 3. Launch Goose
+
+```bash
+goose session start
+```
+
+Goose will emit spans for each toolkit action and LLM turn.
+
+---
+
+## Persisting the configuration
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=goose
+```
+
+---
+
+## Goose-specific span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Toolkit action invoked (e.g., `shell.exec`, `github.create_pr`) |
+| `goose.session_id` | string | Goose session identifier |
+| `gen_ai.request.model` | string | LLM provider and model |
+| `gen_ai.usage.input_tokens` | int | Input tokens consumed |
+| `gen_ai.usage.output_tokens` | int | Output tokens produced |
+
+---
+
+## Toolkit-specific monitoring
+
+Goose's modular toolkit architecture means the attack surface varies with which toolkits you have enabled:
+
+| Toolkit | Risk | What ClaudeSec watches |
+|---------|------|----------------------|
+| `developer` | HIGH | Shell commands, file writes, `sudo` usage |
+| `github` | MEDIUM | Token usage, repo access patterns |
+| `computercontroller` | HIGH | Browser automation, arbitrary UI actions |
+| `jira` | LOW | API calls with potential credential exposure |
+
+Disable toolkits you don't need via `~/.config/goose/config.yaml` to minimize the attack surface.
+
+---
+
+## Troubleshooting
+
+**No spans appearing**
+
+Goose's OTLP support is available from v1.0+. Check your version:
+
+```bash
+goose --version
+```
+
+Upgrade via:
+
+```bash
+pip install --upgrade goose-ai
+# or if installed via brew:
+brew upgrade goose
+```
+
+**Session ID not visible in spans**
+
+The `goose.session_id` attribute is set at the session level (resource attribute). If it's missing, ensure you're using `goose session start` rather than running Goose in one-shot mode.

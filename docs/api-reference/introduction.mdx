@@ -1,0 +1,138 @@
+---
+title: "API Introduction"
+description: "Base URL, authentication, content types, and general conventions for the ClaudeSec REST API."
+---
+
+## Overview
+
+ClaudeSec exposes a REST API for all data operations. The API is used by the React frontend and is fully available to external scripts and integrations.
+
+---
+
+## Base URL
+
+```
+http://localhost:3000
+```
+
+All endpoints are relative to this base URL. ClaudeSec is designed to run locally — there is no hosted version and no remote base URL.
+
+The port can be changed by setting the `PORT` environment variable before starting the server:
+
+```bash
+PORT=8080 npm run dev
+```
+
+---
+
+## Authentication
+
+**None.** ClaudeSec has no authentication layer. It is designed to run on `localhost` and is only accessible from the machine it runs on (unless you explicitly expose it on a network interface).
+
+<Warning>
+  Do not expose ClaudeSec's port to the internet or an untrusted network. There is no rate limiting or authentication, and the `/api/reset` endpoint will permanently delete all stored data.
+</Warning>
+
+---
+
+## Content type
+
+All request and response bodies use JSON:
+
+```
+Content-Type: application/json
+```
+
+The OTLP ingestion endpoint (`POST /v1/traces`) also expects JSON, specifically the OTLP JSON format defined by the OpenTelemetry specification.
+
+The export endpoints (`GET /api/export/csv`) return `text/csv`.
+
+---
+
+## Versioning
+
+The API is not versioned. Breaking changes are noted in the [GitHub changelog](https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases).
+
+The current server version is embedded in JSON export payloads as the `version` field (e.g., `"version": "0.4.0"`).
+
+---
+
+## Real-time updates via Socket.io
+
+In addition to the REST API, ClaudeSec emits real-time events over [Socket.io](https://socket.io). Connect with any Socket.io client to receive live updates:
+
+```javascript
+import { io } from 'socket.io-client';
+
+const socket = io('http://localhost:3000');
+
+socket.on('graph-update', (graphData) => {
+  console.log('New graph data:', graphData);
+});
+
+socket.on('alerts-update', () => {
+  // Fetch the latest alerts
+  fetch('http://localhost:3000/api/alerts')
+    .then(r => r.json())
+    .then(data => console.log('Alerts:', data));
+});
+
+socket.on('sessions-update', () => {
+  console.log('Sessions changed');
+});
+
+socket.on('rules-update', () => {
+  console.log('Rules changed');
+});
+```
+
+### Socket.io events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `graph-update` | Full graph object (`nodes`, `edges`) | Emitted after every OTLP ingestion and after `/api/reset` |
+| `alerts-update` | _(none)_ | Emitted when alerts are created or cleared |
+| `sessions-update` | _(none)_ | Emitted when sessions are created, renamed, or cleared |
+| `rules-update` | _(none)_ | Emitted when a custom rule is added or deleted |
+
+---
+
+## Error responses
+
+All error responses use standard HTTP status codes and return a JSON body:
+
+```json
+{
+  "error": "pattern, severity, and label are required"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` / `201` | Success |
+| `400` | Bad request — missing or invalid parameters |
+| `404` | Resource not found |
+| `500` | Internal server error |
+
+---
+
+## Quick reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/traces` | Ingest OTLP spans |
+| `GET` | `/api/graph` | ReactFlow graph data |
+| `GET` | `/api/sessions` | List sessions |
+| `PATCH` | `/api/sessions/:traceId` | Rename a session |
+| `GET` | `/api/spans` | Search spans |
+| `GET` | `/api/rules` | List all rules |
+| `POST` | `/api/rules` | Create a custom rule |
+| `DELETE` | `/api/rules/:id` | Delete a custom rule |
+| `GET` | `/api/alerts` | Get alerts |
+| `DELETE` | `/api/alerts` | Clear all alerts |
+| `GET` | `/api/alerts/export` | Export alerts as JSON |
+| `GET` | `/api/export` | Export all spans as JSON |
+| `GET` | `/api/export/csv` | Export all spans as CSV |
+| `GET` | `/api/harnesses` | List active harnesses |
+| `GET` | `/api/orchestration` | Orchestration statistics |
+| `POST` | `/api/reset` | Clear all data |

@@ -1,0 +1,155 @@
+---
+title: "Quick Start"
+description: "Get ClaudeSec running and connected to an AI agent in under two minutes."
+---
+
+## Prerequisites
+
+- **Node.js 18+** (Node 20 LTS recommended)
+- An AI agent that supports OpenTelemetry OTLP export (see [Harnesses](/harnesses/claude-code))
+
+---
+
+## Step 1 — Install
+
+Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
+cd ClaudeSec
+npm install
+```
+
+<Note>
+  `better-sqlite3` requires a native build step. If you see a build error, make sure you have the Xcode Command Line Tools (macOS) or `build-essential` (Linux) installed, then re-run `npm install`.
+</Note>
+
+---
+
+## Step 2 — Start the server
+
+```bash
+npm run dev
+```
+
+This starts the Express backend with Vite HMR (hot module replacement) for the frontend simultaneously. Both are served on a single port.
+
+```
+  VITE v6.x.x  ready in 312 ms
+  ➜  Local:   http://localhost:3000/
+  ClaudeSec listening on :3000
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser. You should see an empty graph canvas — that is expected until your first agent session.
+
+---
+
+## Step 3 — Connect an agent
+
+### Claude Code (most common)
+
+In your terminal — **before** launching Claude Code — export these environment variables:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+Then run Claude Code normally:
+
+```bash
+claude
+```
+
+Every tool call and model turn will now emit spans to your local ClaudeSec instance.
+
+### Other agents
+
+See the [Harnesses](/harnesses/claude-code) section for per-agent setup instructions. The pattern is the same for all agents — set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL`, then start the agent.
+
+---
+
+## Step 4 — Verify data is flowing
+
+### Option A — Browser
+
+Open [http://localhost:3000](http://localhost:3000). Within a few seconds of the agent performing its first action you should see:
+
+- A colored root node labeled with the harness name (e.g., **Claude Code**) in the graph canvas.
+- Child span nodes connected by animated edges.
+- A session row in the Sessions sidebar.
+
+### Option B — curl
+
+Send a minimal OTLP payload manually to confirm the ingestion endpoint is working:
+
+```bash
+curl -s -X POST http://localhost:3000/v1/traces \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "resourceSpans": [{
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "test-agent"}},
+          {"key": "telemetry.sdk.name", "value": {"stringValue": "test"}}
+        ]
+      },
+      "scopeSpans": [{
+        "scope": {},
+        "spans": [{
+          "traceId": "abc123",
+          "spanId": "span001",
+          "name": "test.operation",
+          "kind": 1,
+          "startTimeUnixNano": "1700000000000000000",
+          "endTimeUnixNano":   "1700000001000000000",
+          "attributes": [
+            {"key": "reason", "value": {"stringValue": "quickstart test"}}
+          ],
+          "status": {"code": 1}
+        }]
+      }]
+    }]
+  }'
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+You should immediately see a new node in the graph canvas.
+
+---
+
+## Step 5 — Production build (optional)
+
+To serve a fully compiled build without the Vite dev server:
+
+```bash
+npm run build
+npm run preview
+```
+
+This compiles the React frontend into `dist/` and serves it from the Express server.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Claude Code harness" icon="terminal" href="/harnesses/claude-code">
+    Full guide including span attributes and what to look for in the graph.
+  </Card>
+  <Card title="Security rules" icon="shield" href="/security/rules">
+    Understand the built-in threat library and add custom rules.
+  </Card>
+  <Card title="Alerts" icon="bell" href="/security/alerts">
+    Configure desktop notifications and export threat reports.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/introduction">
+    Automate ClaudeSec with the REST API.
+  </Card>
+</CardGroup>

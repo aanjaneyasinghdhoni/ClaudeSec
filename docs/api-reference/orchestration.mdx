@@ -1,0 +1,68 @@
+---
+title: "Orchestration API"
+description: "Agent orchestration graph, spawn tree, and tool inventory"
+---
+
+## Get Orchestration Data
+
+`GET /api/orchestration`
+
+Returns all data needed to render the orchestration view: agent stats, inter-agent edges, tool inventory, and sub-agent spawn tree.
+
+```json Response
+{
+  "agents": [
+    {
+      "harness": "claude-code",
+      "spanCount": 42,
+      "threatCount": 2,
+      "tools": ["bash", "read", "edit"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "claude-code",
+      "to": "openhands",
+      "count": 3
+    }
+  ],
+  "tools": [
+    {
+      "toolName": "bash",
+      "harness": "claude-code",
+      "count": 15,
+      "threatCount": 1
+    }
+  ],
+  "spawnTree": [
+    {
+      "traceId": "trace001",
+      "harness": "claude-code",
+      "sessionName": "Claude Code · 12:00:01 PM",
+      "spanCount": 30,
+      "threatCount": 0,
+      "children": [
+        {
+          "traceId": "trace002",
+          "harness": "openhands",
+          "sessionName": "OpenHands · 12:00:05 PM",
+          "spanCount": 12,
+          "threatCount": 1,
+          "children": []
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `spawnTree`
+
+Represents cross-trace parent-child relationships — detected when a span's `parentSpanId` references a span in a **different** trace. This indicates that one agent spawned another (e.g. Claude Code's Agent tool launching a sub-agent).
+
+Each node has:
+- `traceId` — the trace this agent instance belongs to
+- `harness` — which agent type it is
+- `sessionName` — human-readable session label
+- `spanCount` / `threatCount` — aggregated stats for this trace
+- `children` — recursively nested sub-agents

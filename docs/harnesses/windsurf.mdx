@@ -1,0 +1,84 @@
+---
+title: "Windsurf"
+description: "Connect Codeium's Windsurf IDE and its Cascade AI agent to ClaudeSec."
+---
+
+## Overview
+
+[Windsurf](https://docs.codeium.com/windsurf) is Codeium's agentic IDE built on VS Code. Its **Cascade** AI agent can autonomously plan, edit, run commands, and debug code. Windsurf also includes inline completions and chat powered by Codeium's model infrastructure.
+
+ClaudeSec identifies Windsurf spans by matching against `/windsurf|codeium/i`. Spans appear as **light blue nodes** (`#38bdf8`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Export environment variables
+
+Windsurf inherits the environment from the shell it is launched from:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=windsurf
+```
+
+Restart your terminal, then launch Windsurf from it:
+
+```bash
+windsurf .
+```
+
+<Warning>
+  On macOS, launching Windsurf from the Applications folder or Dock will not pick up shell environment variables. Always launch from a terminal with the OTLP variables set.
+</Warning>
+
+### 3. Start a Cascade session
+
+Click **Cascade** in the Windsurf toolbar, submit a task (e.g., "Add unit tests to this module"), and watch the ClaudeSec graph update in real time as Cascade takes actions.
+
+---
+
+## Windsurf-specific span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Cascade tool invoked (`edit_file`, `run_command`, `search_web`) |
+| `windsurf.session_id` | string | Cascade session identifier |
+| `gen_ai.request.model` | string | Model used (e.g., `cascade-base`, `claude-3-5-sonnet`) |
+| `gen_ai.usage.input_tokens` | int | Input token count |
+| `gen_ai.usage.output_tokens` | int | Output token count |
+
+---
+
+## Cascade and security
+
+Cascade's "Flow" mode allows it to take a long sequence of actions autonomously without pausing for confirmation. During such sessions:
+
+- Multiple file writes may happen in rapid succession — watch for `.env` and credential file access (MEDIUM severity in ClaudeSec).
+- Terminal commands may include package installs — watch for `pip install --index-url` or `npm install --registry` (HIGH severity).
+- Web searches may fetch and execute content — watch for `curl | bash` patterns (HIGH severity).
+
+Enable browser desktop notifications in ClaudeSec so you are alerted even when Windsurf is in the foreground and the ClaudeSec tab is in the background.
+
+---
+
+## Troubleshooting
+
+**No spans in ClaudeSec after a Cascade session**
+
+1. Confirm Windsurf was launched from a terminal: open the integrated terminal in Windsurf and run `echo $OTEL_EXPORTER_OTLP_ENDPOINT`.
+2. If empty, close Windsurf, ensure the vars are in your shell profile, source the profile (`source ~/.zshrc`), and relaunch Windsurf from the terminal.
+3. Confirm ClaudeSec is running: `curl http://localhost:3000/api/graph`.
+
+**Spans appear as "Unknown Agent"**
+
+The resource attribute `service.name` must contain `windsurf` or `codeium`. Ensure `OTEL_RESOURCE_ATTRIBUTES=service.name=windsurf` is set.

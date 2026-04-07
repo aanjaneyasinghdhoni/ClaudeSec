@@ -1,0 +1,88 @@
+---
+title: "Cline"
+description: "Connect Cline — the autonomous VS Code coding agent — to ClaudeSec."
+---
+
+## Overview
+
+[Cline](https://github.com/cline/cline) (formerly Claude Dev) is an open-source autonomous coding agent that runs as a VS Code extension. It can read and write files, execute shell commands, control the browser, and call external APIs on your behalf.
+
+ClaudeSec identifies Cline spans by matching against `/cline/i`. Spans appear as **teal nodes** (`#14b8a6`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Configure VS Code environment
+
+Because Cline runs inside VS Code, the OTLP environment variables must be available to the VS Code process. The most reliable method is to set them in your shell profile and then launch VS Code from the terminal:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=cline
+```
+
+Then open VS Code from the terminal:
+
+```bash
+code .
+```
+
+<Warning>
+  Opening VS Code from the Dock or Spotlight on macOS does not inherit your shell environment. Always launch VS Code from a terminal that has the OTLP variables exported.
+</Warning>
+
+### 3. Start a Cline task
+
+Click the Cline extension icon in the VS Code sidebar and submit a task. Spans will appear in the ClaudeSec graph within seconds of Cline's first action.
+
+---
+
+## Cline-specific span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Tool invoked (`read_file`, `write_to_file`, `execute_command`, `browser_action`) |
+| `cline.task_id` | string | Unique identifier for the current Cline task |
+| `gen_ai.request.model` | string | LLM model powering this action |
+| `gen_ai.usage.input_tokens` | int | Input token count |
+| `gen_ai.usage.output_tokens` | int | Output token count |
+
+---
+
+## High-risk capabilities to monitor
+
+Cline has broader system access than many other agents. ClaudeSec specifically watches for:
+
+| Action | Severity | Rule triggered |
+|--------|----------|----------------|
+| `execute_command` running `sudo` | LOW | Sudo usage |
+| Shell command accessing `~/.ssh/` | MEDIUM | SSH directory access |
+| Shell command accessing `/etc/shadow` | MEDIUM | Sensitive system file access |
+| Reading `.env` files | MEDIUM | Dotenv file access |
+| `eval(` or `exec(` in generated code | HIGH | Code eval injection |
+
+Keep desktop notifications enabled when running long Cline sessions — see [Alerts](/security/alerts).
+
+---
+
+## Troubleshooting
+
+**No spans in the graph after starting a Cline task**
+
+1. Confirm VS Code was launched from a terminal with the OTLP env vars set.
+2. Open VS Code's integrated terminal and run `echo $OTEL_EXPORTER_OTLP_ENDPOINT` — it should print the ClaudeSec URL.
+3. If the variable is empty, restart VS Code from a shell that has the vars exported.
+
+**Cline version compatibility**
+
+Ensure you are running a recent Cline version from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev). Older versions may not ship the OpenTelemetry SDK.

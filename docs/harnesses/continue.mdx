@@ -1,0 +1,103 @@
+---
+title: "Continue.dev"
+description: "Connect Continue.dev — the open-source AI code assistant for VS Code and JetBrains — to ClaudeSec."
+---
+
+## Overview
+
+[Continue.dev](https://docs.continue.dev) is an open-source AI code assistant that integrates with VS Code and JetBrains IDEs. It supports dozens of LLM providers through a unified configuration file and can be extended with custom context providers and slash commands.
+
+ClaudeSec identifies Continue.dev spans by matching against `/continue/i`. Spans appear as **sky blue nodes** (`#0ea5e9`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Configure environment variables
+
+Continue.dev runs inside your IDE process. Set the variables in your shell profile and launch the IDE from a terminal:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_RESOURCE_ATTRIBUTES=service.name=continue
+```
+
+Launch VS Code from the terminal:
+
+```bash
+code .
+```
+
+<Warning>
+  Like Cline, Continue.dev runs inside the IDE process. Opening VS Code from the Dock or Spotlight on macOS will not inherit your shell environment. Always launch from a terminal.
+</Warning>
+
+### 3. Use Continue.dev
+
+Open the Continue sidebar (default shortcut: `Cmd+L` / `Ctrl+L`) and start a chat or use an inline edit. Spans will appear in ClaudeSec as actions are taken.
+
+---
+
+## Continue.dev configuration file
+
+You can also configure telemetry directly in `~/.continue/config.json`:
+
+```json
+{
+  "telemetry": {
+    "otlpEndpoint": "http://localhost:3000/v1/traces",
+    "otlpProtocol": "http/json"
+  }
+}
+```
+
+<Note>
+  Config file-based telemetry configuration is supported in Continue.dev v0.9+. Check your extension version in the VS Code marketplace.
+</Note>
+
+---
+
+## Key span attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Action type (e.g., `chat`, `edit`, `autocomplete`) |
+| `gen_ai.request.model` | string | Model handling the request |
+| `gen_ai.usage.input_tokens` | int | Input token count |
+| `gen_ai.usage.output_tokens` | int | Output token count |
+
+---
+
+## Context providers and security
+
+Continue.dev's context providers can pull data from many sources into the LLM prompt:
+
+- `@codebase` — embeddings search over your entire codebase
+- `@terminal` — recent terminal output
+- `@web` — web search results
+- `@docs` — documentation pages
+
+ClaudeSec will flag any span attributes that contain sensitive patterns, regardless of which context provider supplied the content. Pay particular attention to `@terminal` context, which may inadvertently include API keys or credentials printed to stdout.
+
+---
+
+## Troubleshooting
+
+**No spans appearing after using Continue.dev**
+
+1. Verify VS Code was opened from a terminal with the env vars exported.
+2. Check the Continue.dev output panel (View → Output → Continue) for any OTLP-related errors.
+3. Confirm your Continue.dev version supports OTLP telemetry.
+
+**Spans classified as "Unknown Agent"**
+
+Set `OTEL_RESOURCE_ATTRIBUTES=service.name=continue` in your shell environment before launching the IDE.

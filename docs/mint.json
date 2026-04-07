@@ -1,0 +1,66 @@
+{
+  "name": "ClaudeSec",
+  "logo": {
+    "dark": "/logo/dark.svg",
+    "light": "/logo/light.svg"
+  },
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#3b82f6",
+    "light": "#60a5fa",
+    "dark": "#1d4ed8"
+  },
+  "topbarLinks": [
+    {
+      "name": "GitHub",
+      "url": "https://github.com/aanjaneyasinghdhoni/ClaudeSec"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": [
+        "index",
+        "quickstart"
+      ]
+    },
+    {
+      "group": "Harnesses",
+      "pages": [
+        "harnesses/claude-code",
+        "harnesses/copilot",
+        "harnesses/openhands",
+        "harnesses/cursor",
+        "harnesses/aider",
+        "harnesses/cline",
+        "harnesses/goose",
+        "harnesses/continue",
+        "harnesses/windsurf"
+      ]
+    },
+    {
+      "group": "Security",
+      "pages": [
+        "security/rules",
+        "security/alerts"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "api-reference/introduction",
+        "api-reference/otlp",
+        "api-reference/graph",
+        "api-reference/sessions",
+        "api-reference/spans",
+        "api-reference/rules-api",
+        "api-reference/alerts-api",
+        "api-reference/orchestration",
+        "api-reference/export"
+      ]
+    }
+  ],
+  "footerSocials": {
+    "github": "https://github.com/aanjaneyasinghdhoni/ClaudeSec"
+  }
+}
