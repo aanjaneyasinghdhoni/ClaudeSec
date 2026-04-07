@@ -8,7 +8,7 @@ import {
   Shield, AlertTriangle, Activity, Terminal, Trash2,
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
-  Bell, BellOff, Upload, Settings, StickyNote,
+  Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
@@ -18,6 +18,9 @@ import { CostTab } from './CostTab';
 import { ActivitySparkline } from './Sparkline';
 import { SettingsTab } from './SettingsTab';
 import { HarnessTab } from './HarnessTab';
+import { HeatmapTab } from './HeatmapTab';
+import { GraphSearch } from './GraphSearch';
+import { SpanAttributes } from './SpanAttributes';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -65,7 +68,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap';
 
 interface Workflow {
   id: string;
@@ -85,6 +88,7 @@ interface Session {
   traceId: string;
   name: string;
   createdAt: string;
+  pinned: number;
   spanCount: number;
   threatCount: number;
   maxSeverityRank: number;
@@ -105,6 +109,11 @@ const HARNESS_COLORS: Record<string, string> = {
   'goose':          '#f59e0b',
   'continue':       '#0ea5e9',
   'windsurf':       '#38bdf8',
+  'codex':          '#10b981',
+  'amazon-q':       '#f59e0b',
+  'gemini-cli':     '#4f46e5',
+  'roo-code':       '#8b5cf6',
+  'bolt':           '#06b6d4',
   'unknown':        '#64748b',
 };
 
@@ -118,6 +127,11 @@ const HARNESS_NAMES: Record<string, string> = {
   'goose':          'Goose',
   'continue':       'Continue.dev',
   'windsurf':       'Windsurf',
+  'codex':          'Codex CLI',
+  'amazon-q':       'Amazon Q Dev',
+  'gemini-cli':     'Gemini CLI',
+  'roo-code':       'Roo-Code',
+  'bolt':           'Bolt.new',
   'unknown':        'Unknown Agent',
 };
 
@@ -311,6 +325,11 @@ export default function App() {
   // ── Import ────────────────────────────────────────────────────────────────
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importStatus, setImportStatus] = useState<{ msg: string; ok: boolean } | null>(null);
+
+  // ── Graph search (s46) ────────────────────────────────────────────────────
+  const [graphSearchOpen,  setGraphSearchOpen]  = useState(false);
+  const [graphSearchQuery, setGraphSearchQuery] = useState('');
+  const [graphSearchIdx,   setGraphSearchIdx]   = useState(0);
 
   // ── Annotations ───────────────────────────────────────────────────────────
   interface Annotation { id: number; spanId: string; text: string; author: string; createdAt: string }
@@ -639,6 +658,48 @@ export default function App() {
     if (n) setSelectedNode(n);
   };
 
+  // ── Graph search derived state ────────────────────────────────────────────
+  const graphSearchMatchIds = useMemo(() => {
+    const q = graphSearchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return nodes
+      .filter(n => {
+        if (n.id === 'agent') return false;
+        const label = String(n.data.label ?? '').toLowerCase();
+        const attrs = JSON.stringify((n.data as any).attributes ?? {}).toLowerCase();
+        return label.includes(q) || attrs.includes(q);
+      })
+      .map(n => n.id);
+  }, [graphSearchQuery, nodes]);
+
+  // Apply search highlighting: dim non-matching nodes
+  const displayNodes = useMemo(() => {
+    if (!graphSearchQuery.trim() || graphSearchMatchIds.length === 0) return nodes;
+    const matchSet = new Set(graphSearchMatchIds);
+    const current  = graphSearchMatchIds[graphSearchIdx];
+    return nodes.map(n => ({
+      ...n,
+      style: {
+        ...n.style,
+        opacity: matchSet.has(n.id) ? 1 : 0.15,
+        outline: n.id === current ? '2px solid #3b82f6' : undefined,
+        outlineOffset: n.id === current ? '2px' : undefined,
+      },
+    }));
+  }, [nodes, graphSearchMatchIds, graphSearchIdx, graphSearchQuery]);
+
+  // Keyboard shortcut: Ctrl/Cmd+F opens graph search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && activeTab === 'graph') {
+        e.preventDefault();
+        setGraphSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeTab]);
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -744,16 +805,22 @@ export default function App() {
               {sessions.map(s => {
                 const sev = SEV_RANK[s.maxSeverityRank] ?? 'none';
                 const sevCol = sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
-                const isActive = activeSession === s.traceId;
+                const isActive  = activeSession === s.traceId;
                 const isEditing = editingSession === s.traceId;
+                const isPinned  = !!s.pinned;
                 return (
                   <div
                     key={s.traceId}
                     className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors group ${
-                      isActive ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                      isActive
+                        ? 'bg-blue-600 text-white'
+                        : isPinned
+                        ? 'bg-yellow-900/20 border border-yellow-700/30 text-slate-300 hover:bg-yellow-900/30'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
                   >
-                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: sevCol }} />
+                    {isPinned && !isActive && <Star className="w-2 h-2 text-yellow-400 shrink-0" />}
+                    {!isPinned && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: sevCol }} />}
                     {isEditing ? (
                       <form
                         className="flex-1 flex items-center gap-1"
@@ -776,6 +843,22 @@ export default function App() {
                           {s.name}
                         </button>
                         <span className="shrink-0 text-[9px] opacity-50">{s.spanCount}</span>
+                        {/* Pin / unpin */}
+                        <button
+                          onClick={async e => {
+                            e.stopPropagation();
+                            await fetch(`/api/sessions/${encodeURIComponent(s.traceId)}`, {
+                              method: 'PATCH',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ pinned: !isPinned }),
+                            });
+                            fetchSessions();
+                          }}
+                          className={`shrink-0 transition-opacity ${isPinned ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-100'} hover:text-yellow-400`}
+                          title={isPinned ? 'Unpin session' : 'Pin session'}
+                        >
+                          <Star className="w-2.5 h-2.5" />
+                        </button>
                         <button
                           onClick={e => { e.stopPropagation(); startRename(s); }}
                           className="shrink-0 opacity-0 group-hover:opacity-100 hover:text-white transition-opacity"
@@ -1017,6 +1100,14 @@ export default function App() {
               <Cpu className="w-3.5 h-3.5" /> Harnesses
             </button>
             <button
+              onClick={() => setActiveTab('heatmap')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'heatmap' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Flame className="w-3.5 h-3.5" /> Heatmap
+            </button>
+            <button
               onClick={() => setActiveTab('settings')}
               className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ml-auto ${
                 activeTab === 'settings' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
@@ -1030,7 +1121,7 @@ export default function App() {
           {activeTab === 'graph' && (
             <main className="flex-1 relative bg-slate-950 min-h-0" style={{ height: '100%' }}>
               <ReactFlow
-                nodes={nodes} edges={edges}
+                nodes={displayNodes} edges={edges}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
                 onConnect={onConnect} onNodeClick={onNodeClick}
                 fitView colorMode="dark"
@@ -1038,10 +1129,22 @@ export default function App() {
               >
                 <Background color="#1e293b" gap={20} size={1} />
                 <Controls className="bg-slate-800 border-slate-700 fill-slate-300" />
+                <GraphSearch
+                  query={graphSearchQuery} setQuery={setGraphSearchQuery}
+                  open={graphSearchOpen} setOpen={o => { setGraphSearchOpen(o); if (!o) setGraphSearchQuery(''); }}
+                  matchIds={graphSearchMatchIds} matchIndex={graphSearchIdx} setMatchIndex={setGraphSearchIdx}
+                />
                 <Panel position="top-right" className="bg-slate-900/80 backdrop-blur-md border border-slate-800 p-3 rounded-xl shadow-2xl">
                   <div className="flex items-center gap-2 mb-2">
                     <Activity className="w-3.5 h-3.5 text-blue-400" />
-                    <h3 className="text-xs font-bold">Stats</h3>
+                    <h3 className="text-xs font-bold flex-1">Stats</h3>
+                    <button
+                      onClick={() => setGraphSearchOpen(true)}
+                      title="Search nodes (Ctrl+F)"
+                      className="p-0.5 rounded hover:bg-slate-700 text-slate-500 hover:text-slate-300"
+                    >
+                      <Search className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                     <div>
@@ -1182,16 +1285,7 @@ export default function App() {
 
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Attributes</p>
-                        <div className="space-y-1.5">
-                          {Object.entries((selectedNode.data as any).attributes || {})
-                            .filter(([k]) => k !== 'claudesec.threat.rule')
-                            .map(([key, value]) => (
-                              <div key={key} className="p-2 bg-slate-950 rounded border border-slate-800">
-                                <p className="text-[9px] text-slate-600 font-mono mb-0.5">{key}</p>
-                                <p className="text-[11px] text-slate-300 font-mono break-all">{String(value)}</p>
-                              </div>
-                            ))}
-                        </div>
+                        <SpanAttributes attrs={(selectedNode.data as any).attributes || {}} />
                       </div>
 
                       {/* Annotations */}
@@ -1284,6 +1378,9 @@ export default function App() {
 
           {/* Settings view */}
           {activeTab === 'settings' && <SettingsTab />}
+
+          {/* Heatmap view */}
+          {activeTab === 'heatmap' && <HeatmapTab />}
         </div>
       </div>
 

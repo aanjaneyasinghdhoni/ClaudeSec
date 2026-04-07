@@ -1,0 +1,128 @@
+---
+title: "Bolt.new"
+description: "Connect the open-source Bolt.new codebase to ClaudeSec for real-time observability and security monitoring."
+icon: "code"
+---
+
+## Overview
+
+[Bolt.new](https://bolt.new) by StackBlitz is an AI-powered full-stack development environment that runs entirely in the browser. The open-source version of Bolt can be run locally, enabling OTLP instrumentation for observability.
+
+ClaudeSec identifies Bolt spans by matching the `service.name` resource attribute against `/bolt|stackblitz/i`. Spans appear as **cyan nodes** (`#06b6d4`).
+
+---
+
+## Prerequisites
+
+- ClaudeSec running locally (`npm run dev`)
+- The open-source [Bolt codebase](https://github.com/stackblitz/bolt.new) cloned and running locally
+
+<Note>
+  Bolt.new at [bolt.new](https://bolt.new) is browser-based and does not support custom OTLP endpoints. These instructions apply to users running the **open-source Bolt codebase locally**. If you are using the hosted version, OTLP export is not available.
+</Note>
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+The OTLP collector is now listening at `http://localhost:3000/v1/traces`.
+
+### 2. Export environment variables
+
+In the same terminal session where you will run the local Bolt server, export:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="bolt"
+```
+
+### 3. Launch the local Bolt server
+
+```bash
+cd bolt.new
+npm run dev
+```
+
+Spans will appear in the ClaudeSec graph as Bolt processes AI requests.
+
+---
+
+## Quickstart (one-liner)
+
+```bash
+npx claudesec init
+```
+
+Select **Bolt.new** to get copy-paste export commands.
+
+---
+
+## Persisting the configuration
+
+Add the exports to the `.env` file in the root of your local Bolt repository, or to your shell profile:
+
+```bash
+# bolt.new/.env or ~/.zshrc
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_SERVICE_NAME=bolt
+```
+
+---
+
+## What gets traced
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | AI tool or action invoked (e.g., `write_file`, `shell_command`) |
+| `bolt.project_id` | string | Identifier for the active Bolt project |
+
+---
+
+## Detection
+
+ClaudeSec identifies this harness when `service.name` matches `/bolt|stackblitz/i`.
+
+---
+
+## Threat detection
+
+All spans are scanned for ClaudeSec's 31+ built-in threat rules, including prompt injection, credential leaks, and suspicious file access patterns.
+
+| Scenario | Severity | Rule |
+|----------|----------|------|
+| Agent writes to system paths outside workspace | HIGH | Path traversal detected |
+| Agent reads `.env` file | MEDIUM | Dotenv file access |
+| Shell command using `curl` to exfiltrate data | HIGH | Data exfiltration pattern |
+| Prompt contains "ignore previous instructions" | HIGH | Prompt injection attempt |
+| npm install with `--registry` flag | HIGH | Supply-chain: custom npm registry |
+
+---
+
+## Troubleshooting
+
+**No spans appearing in the graph**
+
+1. Confirm ClaudeSec is running: `curl http://localhost:3000/api/graph` should return JSON.
+2. Confirm the env vars are exported: `echo $OTEL_EXPORTER_OTLP_ENDPOINT`.
+3. Confirm you are running the open-source local Bolt server and not the hosted bolt.new.
+
+**Spans appear as "Unknown Agent"**
+
+Ensure `OTEL_SERVICE_NAME=bolt` is set before launching the local Bolt server.
+
+---
+
+## Resources
+
+- [Official docs](https://bolt.new)
+- [Open-source repo](https://github.com/stackblitz/bolt.new)
+- [ClaudeSec threat rules](/security/rules)

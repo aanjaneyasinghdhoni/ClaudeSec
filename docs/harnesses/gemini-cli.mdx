@@ -1,0 +1,136 @@
+---
+title: "Google Gemini CLI"
+description: "Connect Google Gemini CLI to ClaudeSec for real-time observability and security monitoring."
+icon: "terminal"
+---
+
+## Overview
+
+[Google Gemini CLI](https://github.com/google-gemini/gemini-cli) is Google's open-source command-line agent powered by Gemini models. It can read and write files, execute shell commands, and autonomously complete software engineering tasks using either the Gemini API or Vertex AI.
+
+ClaudeSec identifies Gemini CLI spans by matching the `service.name` resource attribute against `/gemini-cli|gemini/i`. Spans appear as **indigo nodes** (`#4f46e5`).
+
+---
+
+## Prerequisites
+
+- ClaudeSec running locally (`npm run dev`)
+- Gemini CLI installed — see the [installation guide](https://github.com/google-gemini/gemini-cli#installation)
+- A valid `GEMINI_API_KEY` (Gemini API) or a configured Google Cloud project with Vertex AI enabled
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+The OTLP collector is now listening at `http://localhost:3000/v1/traces`.
+
+### 2. Export environment variables
+
+In the same terminal session where you will run Gemini CLI, export:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="gemini-cli"
+```
+
+If you are using Vertex AI instead of the Gemini API, also export your Google Cloud project:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
+```
+
+### 3. Launch Gemini CLI
+
+```bash
+gemini
+```
+
+Spans will appear in the ClaudeSec graph as soon as the CLI performs its first action.
+
+---
+
+## Quickstart (one-liner)
+
+```bash
+npx claudesec init
+```
+
+Select **Google Gemini CLI** to get copy-paste export commands.
+
+---
+
+## Persisting the configuration
+
+Add the exports to your shell profile:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="gemini-cli"
+
+# Vertex AI users only
+export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
+```
+
+<Warning>
+  When using Vertex AI, `GOOGLE_CLOUD_PROJECT` must be set and the project must have the Vertex AI API enabled. Authenticate with `gcloud auth application-default login` before running the CLI.
+</Warning>
+
+---
+
+## What gets traced
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.request.model` | string | Gemini model requested (e.g., `gemini-2.5-pro`, `gemini-2.0-flash`) |
+| `google.project_id` | string | Google Cloud project ID (present when using Vertex AI) |
+
+---
+
+## Detection
+
+ClaudeSec identifies this harness when `service.name` matches `/gemini-cli|gemini/i`.
+
+---
+
+## Threat detection
+
+All spans are scanned for ClaudeSec's 31+ built-in threat rules, including prompt injection, credential leaks, and suspicious file access patterns.
+
+| Scenario | Severity | Rule |
+|----------|----------|------|
+| Google service account key in span attributes | HIGH | Credential leak detected |
+| Agent reads `.env` file | MEDIUM | Dotenv file access |
+| Agent uses `sudo` | LOW | Sudo usage |
+| Prompt contains "ignore previous instructions" | HIGH | Prompt injection attempt |
+| Agent accesses `~/.config/gcloud/` | MEDIUM | GCloud credentials directory access |
+
+---
+
+## Troubleshooting
+
+**No spans appearing in the graph**
+
+1. Confirm ClaudeSec is running: `curl http://localhost:3000/api/graph` should return JSON.
+2. Confirm the env vars are exported: `echo $OTEL_EXPORTER_OTLP_ENDPOINT`.
+3. For Vertex AI, confirm GCloud authentication: `gcloud auth application-default print-access-token`.
+
+**Spans appear as "Unknown Agent"**
+
+Ensure `OTEL_SERVICE_NAME=gemini-cli` is set before launching the CLI.
+
+---
+
+## Resources
+
+- [Official docs](https://github.com/google-gemini/gemini-cli)
+- [ClaudeSec threat rules](/security/rules)

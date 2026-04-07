@@ -1,0 +1,138 @@
+---
+title: "Roo-Code"
+description: "Connect Roo-Code VS Code extension to ClaudeSec for real-time observability and security monitoring."
+icon: "code"
+---
+
+## Overview
+
+[Roo-Code](https://github.com/RooVetGit/Roo-Code) is an open-source autonomous coding agent that runs as a VS Code extension, forked from Cline. It supports multiple AI providers and can read and write files, execute shell commands, and complete complex engineering tasks inside VS Code.
+
+ClaudeSec identifies Roo-Code spans by matching the `service.name` resource attribute against `/roo-code|roo-cline/i`. Spans appear as **violet nodes** (`#8b5cf6`).
+
+---
+
+## Prerequisites
+
+- ClaudeSec running locally (`npm run dev`)
+- [Roo-Code VS Code extension](https://github.com/RooVetGit/Roo-Code) installed from the VS Code Marketplace
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+The OTLP collector is now listening at `http://localhost:3000/v1/traces`.
+
+### 2. Set environment variables
+
+Because Roo-Code runs inside the VS Code process, environment variables must be available to VS Code at launch time. There are two approaches:
+
+**Option A — Shell profile (recommended)**
+
+Add the following to your shell profile and then launch VS Code from a terminal:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="roo-code"
+```
+
+Then open VS Code from the terminal:
+
+```bash
+code .
+```
+
+**Option B — Workspace `.env` file**
+
+Create a `.env` file in the root of your workspace:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_SERVICE_NAME=roo-code
+```
+
+Configure VS Code to load `.env` files by adding the following to your `settings.json`:
+
+```json
+{
+  "roo-cline.envFile": "${workspaceFolder}/.env"
+}
+```
+
+### 3. Start a Roo-Code task
+
+Click the Roo-Code icon in the VS Code sidebar and submit a task. Spans will appear in the ClaudeSec graph within seconds of Roo-Code's first action.
+
+<Warning>
+  Opening VS Code from the Dock or Spotlight on macOS does not inherit your shell environment. Always launch VS Code from a terminal that has the OTLP variables exported, or use the `.env` file approach.
+</Warning>
+
+---
+
+## Quickstart (one-liner)
+
+```bash
+npx claudesec init
+```
+
+Select **Roo-Code** to get copy-paste export commands and `.env` file content.
+
+---
+
+## What gets traced
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.tool.name` | string | Tool invoked (e.g., `read_file`, `write_to_file`, `execute_command`, `browser_action`) |
+| `roo.task_id` | string | Unique identifier for the current Roo-Code task |
+
+---
+
+## Detection
+
+ClaudeSec identifies this harness when `service.name` matches `/roo-code|roo-cline/i`.
+
+---
+
+## Threat detection
+
+All spans are scanned for ClaudeSec's 31+ built-in threat rules, including prompt injection, credential leaks, and suspicious file access patterns.
+
+| Scenario | Severity | Rule |
+|----------|----------|------|
+| `execute_command` running `sudo` | LOW | Sudo usage |
+| Shell command accessing `~/.ssh/` | MEDIUM | SSH directory access |
+| Agent reads `.env` file | MEDIUM | Dotenv file access |
+| `eval(` or `exec(` in generated code | HIGH | Code eval injection |
+| Prompt contains "ignore previous instructions" | HIGH | Prompt injection attempt |
+
+---
+
+## Troubleshooting
+
+**No spans in the graph after starting a Roo-Code task**
+
+1. Confirm VS Code was launched from a terminal with the OTLP env vars set.
+2. Open VS Code's integrated terminal and run `echo $OTEL_EXPORTER_OTLP_ENDPOINT` — it should print the ClaudeSec URL.
+3. If using the `.env` approach, verify `roo-cline.envFile` is set correctly in `settings.json`.
+
+**Spans appear as "Unknown Agent"**
+
+Ensure `OTEL_SERVICE_NAME=roo-code` is set. If using `OTEL_RESOURCE_ATTRIBUTES`, the value should include `service.name=roo-code`.
+
+---
+
+## Resources
+
+- [Official docs](https://github.com/RooVetGit/Roo-Code)
+- [ClaudeSec threat rules](/security/rules)

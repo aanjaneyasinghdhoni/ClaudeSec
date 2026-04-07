@@ -91,9 +91,12 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     traceId   TEXT PRIMARY KEY,
     name      TEXT NOT NULL,
-    createdAt TEXT NOT NULL
+    createdAt TEXT NOT NULL,
+    pinned    INTEGER NOT NULL DEFAULT 0
   );
 `);
+// Safe migration for existing databases
+try { db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); } catch {}
 
 const insertSpan = db.prepare(`
   INSERT OR IGNORE INTO spans
@@ -900,6 +903,32 @@ async function startServer() {
     res.json({ buckets: activityRing.map(b => ({ ts: b.ts, spans: b.spans, tokensIn: b.tokensIn, tokensOut: b.tokensOut })) });
   });
 
+  // ── Threat heatmap — 7×24 day-of-week × hour matrix ─────────────────────
+  app.get('/api/heatmap', (_req, res) => {
+    // Matrix: grid[dayOfWeek 0-6][hour 0-23] = { spans, threats }
+    const grid: { spans: number; threats: number }[][] = Array.from({ length: 7 }, () =>
+      Array.from({ length: 24 }, () => ({ spans: 0, threats: 0 })),
+    );
+
+    const allSpans = getAllSpans.all() as SpanRecord[];
+    for (const span of allSpans) {
+      try {
+        const nanoMs = Number(BigInt(span.startNano) / 1_000_000n);
+        if (!nanoMs) continue;
+        const d = new Date(nanoMs);
+        const dow  = d.getDay();   // 0 = Sunday
+        const hour = d.getHours(); // 0–23
+        grid[dow][hour].spans++;
+        if (span.severity !== 'none') grid[dow][hour].threats++;
+      } catch {}
+    }
+
+    const maxThreats = Math.max(1, ...grid.flatMap(row => row.map(c => c.threats)));
+    const maxSpans   = Math.max(1, ...grid.flatMap(row => row.map(c => c.spans)));
+
+    res.json({ grid, maxThreats, maxSpans, totalSpans: allSpans.length });
+  });
+
   // ── Trace import ─────────────────────────────────────────────────────────
   app.post('/api/import', (req, res) => {
     const body = req.body;
@@ -982,6 +1011,7 @@ async function startServer() {
         se.traceId,
         se.name,
         se.createdAt,
+        se.pinned,
         COUNT(s.spanId) AS spanCount,
         SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
         MAX(CASE s.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
@@ -989,15 +1019,27 @@ async function startServer() {
       FROM sessions se
       LEFT JOIN spans s ON s.traceId = se.traceId
       GROUP BY se.traceId
-      ORDER BY se.createdAt DESC
+      ORDER BY se.pinned DESC, se.createdAt DESC
     `).all();
     res.json({ sessions: rows });
   });
 
   app.patch('/api/sessions/:traceId', (req, res) => {
-    const { name } = req.body as { name?: string };
-    if (!name?.trim()) return res.status(400).json({ error: 'name required' }) as any;
-    db.prepare('UPDATE sessions SET name = ? WHERE traceId = ?').run(name.trim(), req.params.traceId);
+    const { name, pinned } = req.body as { name?: string; pinned?: boolean };
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ error: 'name cannot be empty' }) as any;
+      db.prepare('UPDATE sessions SET name = ? WHERE traceId = ?').run(name.trim(), req.params.traceId);
+    }
+    if (pinned !== undefined) {
+      // Enforce max 10 pinned sessions
+      if (pinned) {
+        const pinnedCount = (db.prepare('SELECT COUNT(*) as c FROM sessions WHERE pinned = 1').get() as any).c as number;
+        if (pinnedCount >= 10) {
+          return res.status(409).json({ error: 'Maximum 10 pinned sessions reached. Unpin one first.' }) as any;
+        }
+      }
+      db.prepare('UPDATE sessions SET pinned = ? WHERE traceId = ?').run(pinned ? 1 : 0, req.params.traceId);
+    }
     io.emit('sessions-update');
     res.json({ status: 'ok' });
   });

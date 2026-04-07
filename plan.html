@@ -564,6 +564,65 @@
   </div>
 </div>
 
+<!-- PHASE 11 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#f9731622;color:#f97316">11</div>
+    <div>
+      <div class="phase-title">Ecosystem Expansion &amp; UX Polish</div>
+      <div class="phase-desc">New harnesses, threat heatmap, in-graph search, session pinning, and semantic attribute enrichment</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p11" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step done" id="s44">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">New harnesses — Codex CLI, Amazon Q, Gemini CLI, Roo-Code, Bolt.new</div>
+        <div class="step-desc">Add 5 new harness entries to harnesses.ts: OpenAI Codex CLI (service.name: codex), Amazon Q Developer (amazon-q/q-developer), Google Gemini CLI (gemini-cli), Roo-Code VS Code extension (roo-code/roo-cline), Bolt.new/StackBlitz (bolt). Each with detection patterns, envVars, color, and docsUrl. Add setup docs page per harness in docs/harnesses/. Update HARNESS_COLORS/HARNESS_NAMES throughout the codebase.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">ecosystem</span>
+      </div>
+    </div>
+    <div class="step done" id="s45">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Threat heatmap — hourly threat density grid</div>
+        <div class="step-desc">GET /api/heatmap returns a 7×24 matrix (dayOfWeek × hour) of { spans, threats } counts, computed from span startNano timestamps. New Heatmap tab in the dashboard: colored grid cells (green→yellow→red by threat ratio), hoverable cells showing exact counts, day/hour axis labels. Helps detect "threat spikes always happen Tuesday evenings."</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step done" id="s46">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">In-graph node search &amp; highlight</div>
+        <div class="step-desc">Ctrl+F / ⌘+F opens a floating search overlay in the graph canvas. Typed query filters node label, span name, and attributes in real-time. Matching nodes glow with a colored ring; non-matching nodes fade to 20% opacity. Up/Down arrows or Enter cycles through matches and centers (fitView) on each. ESC or ✕ clears the search and restores all nodes.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step done" id="s47">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Session pinning &amp; favorites</div>
+        <div class="step-desc">Add pinned BOOLEAN column to sessions table (default 0). PATCH /api/sessions/:traceId accepts { pinned: true/false }. Sidebar shows a star (⭐) button on each session; pinned sessions float to the top with a gold star badge and a subtle highlight. Pinned state survives server restarts. Max 10 pinned sessions enforced server-side.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step done" id="s48">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Semantic attribute enrichment in span detail panel</div>
+        <div class="step-desc">Span detail panel groups attributes by OTel semantic namespace with icons: gen_ai.* (robot icon, token gauge bars for input/output), http.* (globe icon, method+status badges), db.* (database icon), file.* (file icon), process.* (terminal icon), tool.* (wrench icon). Unrecognized attributes fall into a collapsible "Other" section. Human-readable labels replace raw attribute keys.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -577,6 +636,7 @@ function recalc() {
     { steps: ['s29','s30','s31','s32','s33'], bar: 'p8' },
     { steps: ['s34','s35','s36','s37','s38'], bar: 'p9' },
     { steps: ['s39','s40','s41','s42','s43'], bar: 'p10' },
+    { steps: ['s44','s45','s46','s47','s48'], bar: 'p11' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {

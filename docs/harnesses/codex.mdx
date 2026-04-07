@@ -1,0 +1,123 @@
+---
+title: "OpenAI Codex CLI"
+description: "Connect OpenAI Codex CLI to ClaudeSec for real-time observability and security monitoring."
+icon: "terminal"
+---
+
+## Overview
+
+[OpenAI Codex CLI](https://github.com/openai/codex) is OpenAI's open-source command-line agent for software engineering tasks. It can read and write files, run shell commands, and call OpenAI models to autonomously complete coding tasks.
+
+ClaudeSec identifies Codex CLI spans by matching the `service.name` resource attribute against `/codex/i`. Spans appear as **emerald nodes** (`#10b981`).
+
+---
+
+## Prerequisites
+
+- ClaudeSec running locally (`npm run dev`)
+- Codex CLI installed (`npm install -g @openai/codex`) and configured with a valid `OPENAI_API_KEY`
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+The OTLP collector is now listening at `http://localhost:3000/v1/traces`.
+
+### 2. Export environment variables
+
+In the same terminal session where you will run Codex, export:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="codex"
+```
+
+### 3. Launch Codex CLI
+
+```bash
+codex
+```
+
+As soon as Codex performs its first action, spans will appear in the ClaudeSec graph.
+
+---
+
+## Quickstart (one-liner)
+
+```bash
+npx claudesec init
+```
+
+Select **OpenAI Codex CLI** to get copy-paste export commands.
+
+---
+
+## Persisting the configuration
+
+Add the exports to your shell profile so they apply automatically to every new terminal session:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="codex"
+```
+
+---
+
+## What gets traced
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.request.model` | string | OpenAI model requested (e.g., `gpt-4o`, `o3`) |
+| `gen_ai.usage.input_tokens` | int | Prompt tokens consumed in this turn |
+| `gen_ai.usage.output_tokens` | int | Completion tokens produced |
+
+---
+
+## Detection
+
+ClaudeSec identifies this harness when `service.name` matches `/codex/i`.
+
+---
+
+## Threat detection
+
+All spans are scanned for ClaudeSec's 31+ built-in threat rules, including prompt injection, credential leaks, and suspicious file access patterns.
+
+| Scenario | Severity | Rule |
+|----------|----------|------|
+| Agent runs `rm -rf` | HIGH | Recursive root deletion |
+| Agent reads `.env` file | MEDIUM | Dotenv file access |
+| Agent uses `sudo` | LOW | Sudo usage |
+| `OPENAI_API_KEY` pattern in span attributes | HIGH | API key detected |
+| Prompt contains "ignore previous instructions" | HIGH | Prompt injection attempt |
+
+---
+
+## Troubleshooting
+
+**No spans appearing in the graph**
+
+1. Confirm ClaudeSec is running: `curl http://localhost:3000/api/graph` should return JSON.
+2. Confirm the env vars are exported: `echo $OTEL_EXPORTER_OTLP_ENDPOINT`.
+3. Confirm `OTEL_EXPORTER_OTLP_PROTOCOL` is exactly `http/json` (not `grpc`).
+
+**Spans appear as "Unknown Agent"**
+
+Ensure `OTEL_SERVICE_NAME=codex` is set before launching Codex.
+
+---
+
+## Resources
+
+- [Official docs](https://github.com/openai/codex)
+- [ClaudeSec threat rules](/security/rules)

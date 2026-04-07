@@ -35,7 +35,12 @@
         "harnesses/cline",
         "harnesses/goose",
         "harnesses/continue",
-        "harnesses/windsurf"
+        "harnesses/windsurf",
+        "harnesses/codex",
+        "harnesses/amazon-q",
+        "harnesses/gemini-cli",
+        "harnesses/roo-code",
+        "harnesses/bolt"
       ]
     },
     {
