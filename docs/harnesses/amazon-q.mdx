@@ -1,0 +1,127 @@
+---
+title: "Amazon Q Developer CLI"
+description: "Connect Amazon Q Developer CLI to ClaudeSec for real-time observability and security monitoring."
+icon: "terminal"
+---
+
+## Overview
+
+[Amazon Q Developer CLI](https://aws.amazon.com/q/developer/) is AWS's AI-powered developer assistant for the command line. It assists with shell commands, AWS resource management, and code generation using AWS-hosted foundation models.
+
+ClaudeSec identifies Amazon Q spans by matching the `service.name` resource attribute against `/amazon-q|q-developer/i`. Spans appear as **amber nodes** (`#f59e0b`).
+
+---
+
+## Prerequisites
+
+- ClaudeSec running locally (`npm run dev`)
+- `q` CLI installed — see the [Amazon Q Developer installation guide](https://aws.amazon.com/q/developer/)
+- Valid AWS credentials configured (via `aws configure` or environment variables)
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+The OTLP collector is now listening at `http://localhost:3000/v1/traces`.
+
+### 2. Export environment variables
+
+In the same terminal session where you will run Amazon Q, export:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="amazon-q"
+```
+
+### 3. Launch Amazon Q CLI
+
+```bash
+q chat
+```
+
+Spans will appear in the ClaudeSec graph as soon as Q makes its first model request or tool call.
+
+---
+
+## Quickstart (one-liner)
+
+```bash
+npx claudesec init
+```
+
+Select **Amazon Q Developer CLI** to get copy-paste export commands.
+
+---
+
+## Persisting the configuration
+
+Add the exports to your shell profile so they apply automatically to every new terminal session:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_SERVICE_NAME="amazon-q"
+```
+
+<Warning>
+  Amazon Q Developer CLI requires valid AWS credentials. If the CLI fails to authenticate, no spans will be emitted. Confirm your credentials are valid with `aws sts get-caller-identity` before starting a session.
+</Warning>
+
+---
+
+## What gets traced
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.request.model` | string | Foundation model requested (e.g., `amazon.titan-text-express-v1`) |
+| `aws.service` | string | AWS service invoked (e.g., `BedrockRuntime`, `Q`) |
+
+---
+
+## Detection
+
+ClaudeSec identifies this harness when `service.name` matches `/amazon-q|q-developer/i`.
+
+---
+
+## Threat detection
+
+All spans are scanned for ClaudeSec's 31+ built-in threat rules, including prompt injection, credential leaks, and suspicious file access patterns.
+
+| Scenario | Severity | Rule |
+|----------|----------|------|
+| AWS access key pattern in span attributes | HIGH | AWS access key detected |
+| Agent accesses `~/.aws/credentials` | HIGH | AWS credentials file access |
+| Agent uses `sudo` | LOW | Sudo usage |
+| Prompt contains "ignore previous instructions" | HIGH | Prompt injection attempt |
+| Agent reads `.env` file | MEDIUM | Dotenv file access |
+
+---
+
+## Troubleshooting
+
+**No spans appearing in the graph**
+
+1. Confirm ClaudeSec is running: `curl http://localhost:3000/api/graph` should return JSON.
+2. Confirm the env vars are exported: `echo $OTEL_EXPORTER_OTLP_ENDPOINT`.
+3. Confirm AWS credentials are valid: `aws sts get-caller-identity`.
+
+**Spans appear as "Unknown Agent"**
+
+Ensure `OTEL_SERVICE_NAME=amazon-q` is set before launching the `q` CLI.
+
+---
+
+## Resources
+
+- [Official docs](https://aws.amazon.com/q/developer/)
+- [ClaudeSec threat rules](/security/rules)

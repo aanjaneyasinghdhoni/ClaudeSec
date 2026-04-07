@@ -16,6 +16,11 @@ const HARNESS_COLORS: Record<string, string> = {
   'goose':          '#f59e0b',
   'continue':       '#0ea5e9',
   'windsurf':       '#38bdf8',
+  'codex':          '#10b981',
+  'amazon-q':       '#f59e0b',
+  'gemini-cli':     '#4f46e5',
+  'roo-code':       '#8b5cf6',
+  'bolt':           '#06b6d4',
   'unknown':        '#64748b',
 };
 
@@ -29,6 +34,11 @@ const HARNESS_NAMES: Record<string, string> = {
   'goose':          'Goose',
   'continue':       'Continue.dev',
   'windsurf':       'Windsurf',
+  'codex':          'Codex CLI',
+  'amazon-q':       'Amazon Q Dev',
+  'gemini-cli':     'Gemini CLI',
+  'roo-code':       'Roo-Code',
+  'bolt':           'Bolt.new',
   'unknown':        'Unknown Agent',
 };
 
