@@ -151,8 +151,8 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">graph</span>
       </div>
     </div>
-    <div class="step" id="s10">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s10">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Session isolation — track concurrent agent sessions</div>
         <div class="step-desc">Use traceId to group spans into sessions. Show session switcher in sidebar. Each session gets its own graph, timeline, and threat summary.</div>
@@ -174,8 +174,8 @@
   </div>
   <div class="progress-bar"><div class="progress-fill" id="p3" style="width:0%"></div></div>
   <div class="steps">
-    <div class="step" id="s11">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s11">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Timeline view — Gantt-style span visualization</div>
         <div class="step-desc">Second tab alongside the graph: horizontal timeline with spans as bars, colored by severity, grouped by trace. Click bar to open detail panel. Uses startNano/endNano from SQLite.</div>
@@ -183,16 +183,16 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
       </div>
     </div>
-    <div class="step" id="s12">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s12">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Metrics panel — tokens, latency, tool-call counts</div>
         <div class="step-desc">Aggregate OTel attributes: llm.usage.input_tokens, llm.usage.output_tokens, duration. Show running totals in header stats panel with sparklines (canvas/SVG, no chart lib).</div>
         <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
       </div>
     </div>
-    <div class="step" id="s13">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s13">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Span search with attribute filtering</div>
         <div class="step-desc">Extend search to filter by any attribute key/value (e.g. tool.name=bash). Add GET /api/spans?q= endpoint with SQLite LIKE query.</div>
@@ -200,8 +200,8 @@
         <span class="tag" style="background:#1e293b;color:#94a3b8">API</span>
       </div>
     </div>
-    <div class="step" id="s14">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s14">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Persistent sessions — named snapshots</div>
         <div class="step-desc">Allow naming and saving snapshots of the current session. Store in separate SQLite table. Load/switch sessions from UI. Add GET/POST /api/sessions endpoints.</div>
