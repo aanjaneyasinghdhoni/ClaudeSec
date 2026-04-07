@@ -613,6 +613,74 @@ function buildGraph(sessionFilter?: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Rate limiting — token bucket per IP for /v1/traces
+// ---------------------------------------------------------------------------
+
+const RATE_LIMIT_RPS     = Number(process.env.CLAUDESEC_RATE_LIMIT_RPS ?? 50);
+const RATE_LIMIT_BURST   = Number(process.env.CLAUDESEC_RATE_LIMIT_BURST ?? 200);
+const MAX_SPANS_PER_BATCH = Number(process.env.CLAUDESEC_MAX_SPANS_BATCH ?? 500);
+
+interface TokenBucket { tokens: number; lastRefill: number }
+const ipBuckets = new Map<string, TokenBucket>();
+
+function allowRequest(ip: string): { allowed: boolean; retryAfterMs: number } {
+  const now = Date.now();
+  let bucket = ipBuckets.get(ip);
+  if (!bucket) {
+    bucket = { tokens: RATE_LIMIT_BURST, lastRefill: now };
+    ipBuckets.set(ip, bucket);
+  }
+  // Refill tokens based on elapsed time
+  const elapsed = (now - bucket.lastRefill) / 1000;
+  bucket.tokens = Math.min(RATE_LIMIT_BURST, bucket.tokens + elapsed * RATE_LIMIT_RPS);
+  bucket.lastRefill = now;
+
+  if (bucket.tokens >= 1) {
+    bucket.tokens -= 1;
+    return { allowed: true, retryAfterMs: 0 };
+  }
+  const retryAfterMs = Math.ceil((1 - bucket.tokens) / RATE_LIMIT_RPS * 1000);
+  return { allowed: false, retryAfterMs };
+}
+
+// Periodically evict stale buckets (> 5 min idle)
+setInterval(() => {
+  const cutoff = Date.now() - 5 * 60 * 1000;
+  for (const [ip, b] of ipBuckets) if (b.lastRefill < cutoff) ipBuckets.delete(ip);
+}, 60_000).unref();
+
+// ---------------------------------------------------------------------------
+// Activity ring-buffer — 60 one-second buckets for sparkline
+// ---------------------------------------------------------------------------
+
+interface ActivityBucket { ts: number; spans: number; tokensIn: number; tokensOut: number }
+const ACTIVITY_WINDOW = 60;
+const activityRing: ActivityBucket[] = Array.from({ length: ACTIVITY_WINDOW }, (_, i) => ({
+  ts: Date.now() - (ACTIVITY_WINDOW - 1 - i) * 1000,
+  spans: 0, tokensIn: 0, tokensOut: 0,
+}));
+
+function recordActivity(spans: number, tokensIn: number, tokensOut: number) {
+  const now = Date.now();
+  const nowSec = Math.floor(now / 1000);
+  const last = activityRing[activityRing.length - 1];
+  const lastSec = Math.floor(last.ts / 1000);
+
+  if (nowSec > lastSec) {
+    // Advance ring buffer, filling gaps with zeros
+    const gap = Math.min(nowSec - lastSec, ACTIVITY_WINDOW);
+    for (let i = 0; i < gap; i++) {
+      activityRing.shift();
+      activityRing.push({ ts: (lastSec + i + 1) * 1000, spans: 0, tokensIn: 0, tokensOut: 0 });
+    }
+  }
+  const cur = activityRing[activityRing.length - 1];
+  cur.spans    += spans;
+  cur.tokensIn  += tokensIn;
+  cur.tokensOut += tokensOut;
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -626,7 +694,32 @@ async function startServer() {
 
   // ── OTLP ingestion ──────────────────────────────────────────────────────
   app.post('/v1/traces', (req, res) => {
+    // --- Rate limiting ---
+    const clientIp = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown').split(',')[0].trim();
+    const { allowed, retryAfterMs } = allowRequest(clientIp);
+    if (!allowed) {
+      res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      res.status(429).json({ error: 'Too Many Requests', retryAfterMs });
+      return;
+    }
+
+    // --- Circuit breaker: pause ingestion when DB is ≥ 90% full ---
+    const maxSpans = getMaxSpans();
+    const currentSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
+    if (currentSpans >= maxSpans * 0.9) {
+      res.status(503).json({ error: 'Service Unavailable', detail: 'Span buffer near capacity. Try again after pruning.' });
+      return;
+    }
+
     const traceData: TraceData = req.body;
+
+    // --- Span count guard per batch ---
+    let batchSpanCount = 0;
+    traceData.resourceSpans?.forEach(rs => rs.scopeSpans?.forEach(ss => { batchSpanCount += ss.spans?.length ?? 0; }));
+    if (batchSpanCount > MAX_SPANS_PER_BATCH) {
+      res.status(400).json({ error: 'Bad Request', detail: `Batch exceeds max ${MAX_SPANS_PER_BATCH} spans. Got ${batchSpanCount}.` });
+      return;
+    }
     let newSessions   = false;
     let alertsChanged = false;
 
@@ -704,6 +797,19 @@ async function startServer() {
       });
     });
 
+    // Activity ring-buffer update
+    {
+      let batchTokensIn = 0, batchTokensOut = 0, batchCount = 0;
+      traceData.resourceSpans?.forEach(rs => rs.scopeSpans?.forEach(ss => ss.spans?.forEach(span => {
+        batchCount++;
+        (span.attributes || []).forEach(attr => {
+          if (attr.key === 'gen_ai.usage.input_tokens'  || attr.key === 'llm.usage.input_tokens')  batchTokensIn  += Number(attr.value?.intValue ?? 0);
+          if (attr.key === 'gen_ai.usage.output_tokens' || attr.key === 'llm.usage.output_tokens') batchTokensOut += Number(attr.value?.intValue ?? 0);
+        });
+      })));
+      recordActivity(batchCount, batchTokensIn, batchTokensOut);
+    }
+
     // Behavioral anomaly detection — run per affected session
     const affectedTraces = new Set<string>();
     traceData.resourceSpans?.forEach(rs => {
@@ -733,6 +839,82 @@ async function startServer() {
     if (newSessions)   io.emit('sessions-update');
     if (alertsChanged) io.emit('alerts-update');
     res.status(200).json({ status: 'ok' });
+  });
+
+  // ── Activity sparkline data ──────────────────────────────────────────────
+  app.get('/api/activity', (_req, res) => {
+    // Return a fresh snapshot: advance ring buffer to now first
+    recordActivity(0, 0, 0);
+    res.json({ buckets: activityRing.map(b => ({ ts: b.ts, spans: b.spans, tokensIn: b.tokensIn, tokensOut: b.tokensOut })) });
+  });
+
+  // ── Trace import ─────────────────────────────────────────────────────────
+  app.post('/api/import', (req, res) => {
+    const body = req.body;
+    let imported = 0;
+    let alertsAdded = 0;
+    let newSessions = false;
+
+    // Detect format: ClaudeSec export ({ spans: SpanRecord[] }) or raw OTLP ({ resourceSpans: [...] })
+    if (Array.isArray(body?.spans)) {
+      // ClaudeSec JSON export format
+      for (const span of body.spans as SpanRecord[]) {
+        try {
+          if (!span.spanId || !span.traceId) continue;
+          if (!db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(span.traceId)) {
+            upsertSession.run(span.traceId, `Import · ${new Date().toLocaleTimeString()}`, new Date().toISOString());
+            newSessions = true;
+          }
+          const attrs = typeof span.attributes === 'string' ? JSON.parse(span.attributes) : span.attributes;
+          const searchText = JSON.stringify(attrs) + ' ' + span.name;
+          const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
+          insertSpan.run({ ...span, severity, attributes: JSON.stringify(attrs) } satisfies SpanRecord);
+          if (matchedLabel) {
+            insertAlert.run({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: span.name, matchedText });
+            alertsAdded++;
+          }
+          imported++;
+        } catch {}
+      }
+    } else if (Array.isArray(body?.resourceSpans)) {
+      // Raw OTLP format — re-use ingestion logic
+      const traceData: TraceData = body;
+      traceData.resourceSpans?.forEach(rs => {
+        const serviceName = String(rs.resource?.attributes?.find?.((a: any) => a.key === 'service.name')?.value?.stringValue ?? '');
+        const sdkName     = String(rs.resource?.attributes?.find?.((a: any) => a.key === 'telemetry.sdk.name')?.value?.stringValue ?? '');
+        const harness = detectHarness(serviceName, sdkName);
+        rs.scopeSpans?.forEach(ss => {
+          ss.spans?.forEach(span => {
+            const attrs: Record<string, any> = {};
+            (span.attributes || []).forEach(attr => {
+              attrs[attr.key] = attr.value?.stringValue ?? attr.value?.intValue ?? attr.value?.boolValue ?? JSON.stringify(attr.value);
+            });
+            const traceId  = span.traceId  || 'unknown';
+            const parentId = span.parentSpanId || harness.id;
+            if (!db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(traceId)) {
+              upsertSession.run(traceId, `Import · ${new Date().toLocaleTimeString()}`, new Date().toISOString());
+              newSessions = true;
+            }
+            const searchText = JSON.stringify(attrs) + ' ' + span.name;
+            const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
+            insertSpan.run({ spanId: span.spanId, traceId, parentId, name: span.name, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0') } satisfies SpanRecord);
+            if (matchedLabel) {
+              insertAlert.run({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: span.name, matchedText });
+              alertsAdded++;
+            }
+            imported++;
+          });
+        });
+      });
+    } else {
+      res.status(400).json({ error: 'Unrecognized format. Expected { spans: [...] } or { resourceSpans: [...] }' });
+      return;
+    }
+
+    io.emit('graph-update', buildGraph());
+    if (newSessions) io.emit('sessions-update');
+    if (alertsAdded) io.emit('alerts-update');
+    res.json({ status: 'ok', imported, alertsAdded });
   });
 
   // ── Graph ────────────────────────────────────────────────────────────────

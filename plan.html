@@ -446,6 +446,65 @@
   </div>
 </div>
 
+<!-- PHASE 9 -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#a855f722;color:#a855f7">9</div>
+    <div>
+      <div class="phase-title">Resilience, DX &amp; Release Polish</div>
+      <div class="phase-desc">Rate limiting, trace import, enhanced CLI subcommands, live activity sparkline, and npm publish workflow</div>
+    </div>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="p9" style="width:0%"></div></div>
+  <div class="steps">
+    <div class="step done" id="s34">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Rate limiting + ingestion safeguards</div>
+        <div class="step-desc">Per-IP token-bucket rate limiter on POST /v1/traces (configurable via CLAUDESEC_RATE_LIMIT_RPS, default 50 req/s burst 200). Circuit breaker auto-pauses ingestion when DB exceeds 90% of max_spans. Span-count guard per request (max 500 spans/batch). Returns 429 with Retry-After header.</div>
+        <span class="tag" style="background:#eab30822;color:#eab308">security</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">resilience</span>
+      </div>
+    </div>
+    <div class="step done" id="s35">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Trace import — POST /api/import + UI file drop zone</div>
+        <div class="step-desc">POST /api/import accepts ClaudeSec JSON export or raw OTLP JSON (auto-detected). Re-runs threat detection on imported spans. UI drag-and-drop zone in the sidebar (or import button) to import a saved .json export file directly in the browser.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">core</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step done" id="s36">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Enhanced CLI — claudesec status / export / reset / open</div>
+        <div class="step-desc">Add subcommand routing to cli/init.ts: `claudesec status` (hits /api/health, prints counts+uptime), `claudesec export [file]` (saves /api/export JSON), `claudesec reset` (confirms + calls /api/reset), `claudesec open` (opens dashboard in browser). `claudesec init` remains the default with no args.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+        <span class="tag" style="background:#1e293b;color:#94a3b8">CLI</span>
+      </div>
+    </div>
+    <div class="step done" id="s37">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Live activity sparkline in dashboard header</div>
+        <div class="step-desc">Real-time mini chart in the dashboard header showing spans/min and tokens/min over the last 60 seconds. Backed by GET /api/activity (returns last 60 one-second buckets). Updated on every graph-update socket event. Rendered as inline SVG path — no extra chart library.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+      </div>
+    </div>
+    <div class="step done" id="s38">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">npm publish GitHub Actions workflow</div>
+        <div class="step-desc">Add .github/workflows/publish.yml triggered on push of v* tags. Builds the project, runs lint, then publishes to npm with provenance (--provenance flag). Uses NODE_AUTH_TOKEN secret. Also bumps the version in package.json from the tag. Includes a release-notes step that creates a GitHub Release from CHANGELOG.md.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">release</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">CI/CD</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -457,6 +516,7 @@ function recalc() {
     { steps: ['s22','s23','s24','s25'], bar: 'p6' },
     { steps: ['s26','s27','s28'], bar: 'p7' },
     { steps: ['s29','s30','s31','s32','s33'], bar: 'p8' },
+    { steps: ['s34','s35','s36','s37','s38'], bar: 'p9' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {
