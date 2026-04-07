@@ -46,6 +46,12 @@
       ]
     },
     {
+      "group": "Integrations",
+      "pages": [
+        "mcp"
+      ]
+    },
+    {
       "group": "API Reference",
       "pages": [
         "api-reference/introduction",

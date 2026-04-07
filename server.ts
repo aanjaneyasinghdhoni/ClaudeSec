@@ -136,6 +136,29 @@ const insertAlert = db.prepare(`
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
 
 // ---------------------------------------------------------------------------
+// Annotations table — user investigation notes on spans
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS annotations (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    spanId    TEXT NOT NULL,
+    text      TEXT NOT NULL,
+    author    TEXT NOT NULL DEFAULT 'analyst',
+    createdAt TEXT NOT NULL
+  );
+`);
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_annotations_spanId ON annotations(spanId)`); } catch {}
+
+const insertAnnotation = db.prepare(`
+  INSERT INTO annotations (spanId, text, author, createdAt)
+  VALUES (@spanId, @text, @author, @createdAt)
+`);
+const deleteAnnotation = db.prepare(`DELETE FROM annotations WHERE id = ? AND spanId = ?`);
+const deleteAllAnnotations = db.prepare(`DELETE FROM annotations`);
+const getAnnotationsBySpan = db.prepare(`SELECT * FROM annotations WHERE spanId = ? ORDER BY id ASC`);
+
+// ---------------------------------------------------------------------------
 // Config table (webhook URL, thresholds, etc.)
 // ---------------------------------------------------------------------------
 
@@ -613,6 +636,33 @@ function buildGraph(sessionFilter?: string) {
 }
 
 // ---------------------------------------------------------------------------
+// SSE live tail — registry of active streaming clients
+// ---------------------------------------------------------------------------
+
+interface SseClient {
+  id: string;
+  res: import('express').Response;
+  harnessFilter: string | null;
+  severityFilter: string | null;
+}
+
+const sseClients = new Map<string, SseClient>();
+
+function pushToSse(spanRecord: SpanRecord) {
+  if (sseClients.size === 0) return;
+  const payload = JSON.stringify(spanRecord) + '\n';
+  for (const client of sseClients.values()) {
+    if (client.harnessFilter && client.harnessFilter !== spanRecord.harness) continue;
+    if (client.severityFilter && client.severityFilter !== spanRecord.severity) continue;
+    try {
+      client.res.write(`data: ${payload}\n`);
+    } catch {
+      sseClients.delete(client.id);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rate limiting — token bucket per IP for /v1/traces
 // ---------------------------------------------------------------------------
 
@@ -757,7 +807,7 @@ async function startServer() {
             newSessions = true;
           }
 
-          insertSpan.run({
+          const spanRecord: SpanRecord = {
             spanId:    span.spanId,
             traceId,
             parentId,
@@ -769,7 +819,9 @@ async function startServer() {
             attributes: JSON.stringify(attrs),
             startNano:  String(span.startTimeUnixNano ?? '0'),
             endNano:    String(span.endTimeUnixNano   ?? '0'),
-          } satisfies SpanRecord);
+          };
+          insertSpan.run(spanRecord);
+          pushToSse(spanRecord);
 
           if (matchedLabel) {
             insertAlert.run({
@@ -979,9 +1031,10 @@ async function startServer() {
 
   // ── Export ───────────────────────────────────────────────────────────────
   app.get('/api/export', (_req, res) => {
-    const records = getAllSpans.all() as SpanRecord[];
+    const records     = getAllSpans.all() as SpanRecord[];
+    const annotations = db.prepare('SELECT * FROM annotations ORDER BY id ASC').all();
     res.setHeader('Content-Disposition', `attachment; filename="claudesec-${Date.now()}.json"`);
-    res.json({ exportedAt: new Date().toISOString(), version: '0.4.0', spans: records });
+    res.json({ exportedAt: new Date().toISOString(), version: '1.0.0', spans: records, annotations });
   });
 
   app.get('/api/export/csv', (_req, res) => {
@@ -1001,12 +1054,229 @@ async function startServer() {
     res.send(header + rows);
   });
 
-  // ── Active harnesses ─────────────────────────────────────────────────────
+  // ── Harness profiles (full per-agent stats) ──────────────────────────────
   app.get('/api/harnesses', (_req, res) => {
-    res.json({
-      harnesses: (db.prepare('SELECT DISTINCT harness FROM spans').all() as { harness: string }[])
-        .map(r => r.harness),
+    const rows = db.prepare(`
+      SELECT
+        s.harness,
+        COUNT(s.spanId)                                                          AS spanCount,
+        COUNT(DISTINCT s.traceId)                                                AS sessionCount,
+        SUM(CASE s.severity WHEN 'high'   THEN 1 ELSE 0 END)                    AS threatHigh,
+        SUM(CASE s.severity WHEN 'medium' THEN 1 ELSE 0 END)                    AS threatMedium,
+        SUM(CASE s.severity WHEN 'low'    THEN 1 ELSE 0 END)                    AS threatLow,
+        MIN(s.startNano)                                                         AS firstSeenNano,
+        MAX(s.startNano)                                                         AS lastSeenNano
+      FROM spans s
+      GROUP BY s.harness
+      ORDER BY spanCount DESC
+    `).all() as any[];
+
+    // Compute token totals per harness by iterating attributes
+    const tokenMap = new Map<string, { tokensIn: number; tokensOut: number }>();
+    const allSpans = getAllSpans.all() as SpanRecord[];
+    for (const span of allSpans) {
+      try {
+        const a = JSON.parse(span.attributes);
+        const ti = Number(a['gen_ai.usage.input_tokens']  ?? a['llm.usage.input_tokens']  ?? 0);
+        const to = Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
+        if (!ti && !to) continue;
+        const entry = tokenMap.get(span.harness) ?? { tokensIn: 0, tokensOut: 0 };
+        entry.tokensIn  += ti;
+        entry.tokensOut += to;
+        tokenMap.set(span.harness, entry);
+      } catch {}
+    }
+
+    const harnesses = rows.map(r => {
+      const tokens = tokenMap.get(r.harness) ?? { tokensIn: 0, tokensOut: 0 };
+      // Convert nanosecond strings to ISO dates for display
+      const nanoToIso = (nano: string | null) => {
+        if (!nano || nano === '0') return null;
+        try { return new Date(Number(BigInt(nano) / 1_000_000n)).toISOString(); } catch { return null; }
+      };
+      return {
+        harness:       r.harness,
+        spanCount:     r.spanCount,
+        sessionCount:  r.sessionCount,
+        threatHigh:    r.threatHigh,
+        threatMedium:  r.threatMedium,
+        threatLow:     r.threatLow,
+        tokensIn:      tokens.tokensIn,
+        tokensOut:     tokens.tokensOut,
+        firstSeen:     nanoToIso(r.firstSeenNano),
+        lastSeen:      nanoToIso(r.lastSeenNano),
+      };
     });
+
+    res.json({ harnesses });
+  });
+
+  // ── SSE live tail ────────────────────────────────────────────────────────
+  app.get('/api/tail', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const clientId       = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const harnessFilter  = req.query.harness  ? String(req.query.harness)  : null;
+    const severityFilter = req.query.severity ? String(req.query.severity) : null;
+
+    sseClients.set(clientId, { id: clientId, res, harnessFilter, severityFilter });
+
+    // Send a comment heartbeat every 15s to keep connection alive
+    const heartbeat = setInterval(() => {
+      try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); sseClients.delete(clientId); }
+    }, 15_000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      sseClients.delete(clientId);
+    });
+  });
+
+  // ── MCP server (Model Context Protocol JSON-RPC 2.0 over HTTP) ───────────
+  app.post('/mcp', async (req, res) => {
+    const { jsonrpc, id, method, params } = req.body as {
+      jsonrpc: string; id: unknown; method: string; params?: Record<string, unknown>;
+    };
+
+    if (jsonrpc !== '2.0') {
+      res.json({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid Request' } });
+      return;
+    }
+
+    const ok = (result: unknown) => res.json({ jsonrpc: '2.0', id, result });
+    const err = (code: number, message: string) => res.json({ jsonrpc: '2.0', id, error: { code, message } });
+
+    try {
+      switch (method) {
+        case 'tools/list': {
+          ok({
+            tools: [
+              { name: 'get_health',   description: 'Server health, span/session/alert counts, DB size', inputSchema: { type: 'object', properties: {} } },
+              { name: 'get_sessions', description: 'List all recorded sessions', inputSchema: { type: 'object', properties: {} } },
+              { name: 'get_spans',    description: 'Get spans for a session by traceId', inputSchema: { type: 'object', properties: { traceId: { type: 'string' } }, required: ['traceId'] } },
+              { name: 'get_alerts',   description: 'Get recent security alerts', inputSchema: { type: 'object', properties: { limit: { type: 'number' }, severity: { type: 'string' } } } },
+              { name: 'search_spans', description: 'Full-text search across all spans', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
+            ],
+          });
+          break;
+        }
+        case 'tools/call': {
+          const toolName = String(params?.name ?? '');
+          const args     = (params?.arguments ?? {}) as Record<string, unknown>;
+          switch (toolName) {
+            case 'get_health': {
+              const spanCount    = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c;
+              const sessionCount = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c;
+              const alertCount2  = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c;
+              const threatCount  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c;
+              let dbSizeBytes = 0;
+              try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
+              ok({ content: [{ type: 'text', text: JSON.stringify({ status: 'ok', version: '1.0.0', uptime: Date.now() - SERVER_START_MS, spanCount, sessionCount, alertCount: alertCount2, threatCount, dbSizeBytes }) }] });
+              break;
+            }
+            case 'get_sessions': {
+              const sessions = db.prepare(`
+                SELECT se.traceId, se.name, se.createdAt,
+                  COUNT(s.spanId) AS spanCount,
+                  SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
+                  GROUP_CONCAT(DISTINCT s.harness) AS harnesses
+                FROM sessions se LEFT JOIN spans s ON s.traceId = se.traceId
+                GROUP BY se.traceId ORDER BY se.createdAt DESC LIMIT 50
+              `).all();
+              ok({ content: [{ type: 'text', text: JSON.stringify(sessions) }] });
+              break;
+            }
+            case 'get_spans': {
+              const traceId = String(args.traceId ?? '');
+              if (!traceId) { err(-32602, 'traceId required'); break; }
+              const spans = db.prepare('SELECT spanId, name, severity, harness, startNano, endNano FROM spans WHERE traceId = ? ORDER BY startNano ASC LIMIT 200').all(traceId);
+              ok({ content: [{ type: 'text', text: JSON.stringify(spans) }] });
+              break;
+            }
+            case 'get_alerts': {
+              const limit    = Math.min(Number(args.limit ?? 50), 200);
+              const severity = args.severity ? String(args.severity) : null;
+              const alertRows = severity
+                ? db.prepare('SELECT * FROM alerts WHERE severity = ? ORDER BY id DESC LIMIT ?').all(severity, limit)
+                : db.prepare('SELECT * FROM alerts ORDER BY id DESC LIMIT ?').all(limit);
+              ok({ content: [{ type: 'text', text: JSON.stringify(alertRows) }] });
+              break;
+            }
+            case 'search_spans': {
+              const query = String(args.query ?? '').trim();
+              const limit = Math.min(Number(args.limit ?? 50), 200);
+              if (!query) { err(-32602, 'query required'); break; }
+              const results = (getAllSpans.all() as SpanRecord[])
+                .filter(s => (s.name + ' ' + s.attributes).toLowerCase().includes(query.toLowerCase()))
+                .slice(0, limit)
+                .map(s => ({ spanId: s.spanId, traceId: s.traceId, name: s.name, severity: s.severity, harness: s.harness }));
+              ok({ content: [{ type: 'text', text: JSON.stringify(results) }] });
+              break;
+            }
+            default:
+              err(-32601, `Unknown tool: ${toolName}`);
+          }
+          break;
+        }
+        // MCP initialize handshake
+        case 'initialize': {
+          ok({
+            protocolVersion: '2024-11-05',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'claudesec', version: '1.0.0' },
+          });
+          break;
+        }
+        default:
+          err(-32601, `Method not found: ${method}`);
+      }
+    } catch (e: unknown) {
+      err(-32603, e instanceof Error ? e.message : 'Internal error');
+    }
+  });
+
+  // ── Config read/write ─────────────────────────────────────────────────────
+  app.get('/api/config', (_req, res) => {
+    res.json({
+      maxSpans:       getMaxSpans(),
+      retentionDays:  getRetentionDays(),
+      rateLimitRps:   RATE_LIMIT_RPS,
+      rateLimitBurst: RATE_LIMIT_BURST,
+      maxSpansBatch:  MAX_SPANS_PER_BATCH,
+      webhookUrl:     getWebhookUrl() ? '***' : null,
+      webhookThreshold: getWebhookThreshold(),
+    });
+  });
+
+  // ── Annotations ──────────────────────────────────────────────────────────
+  app.get('/api/spans/:spanId/annotations', (req, res) => {
+    const rows = getAnnotationsBySpan.all(req.params.spanId);
+    res.json({ annotations: rows });
+  });
+
+  app.post('/api/spans/:spanId/annotations', (req, res) => {
+    const { text, author } = req.body as { text?: string; author?: string };
+    if (!text?.trim()) return res.status(400).json({ error: 'text is required' }) as any;
+    const result = insertAnnotation.run({
+      spanId:    req.params.spanId,
+      text:      text.trim(),
+      author:    (author?.trim() || 'analyst'),
+      createdAt: new Date().toISOString(),
+    });
+    const row = db.prepare('SELECT * FROM annotations WHERE id = ?').get(result.lastInsertRowid);
+    io.emit('annotation-update', { spanId: req.params.spanId });
+    res.status(201).json(row);
+  });
+
+  app.delete('/api/spans/:spanId/annotations/:id', (req, res) => {
+    const changes = deleteAnnotation.run(Number(req.params.id), req.params.spanId).changes;
+    if (!changes) return res.status(404).json({ error: 'Not found' }) as any;
+    io.emit('annotation-update', { spanId: req.params.spanId });
+    res.json({ status: 'ok' });
   });
 
   // ── Reset ────────────────────────────────────────────────────────────────
@@ -1014,6 +1284,7 @@ async function startServer() {
     deleteAllSpans.run();
     deleteAllSessions.run();
     deleteAllAlerts.run();
+    deleteAllAnnotations.run();
     io.emit('graph-update', buildGraph());
     io.emit('sessions-update');
     io.emit('alerts-update');
@@ -1467,20 +1738,32 @@ ${alerts.length > 0 ? `
     const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
     let dbSizeBytes = 0;
     try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
+    const annotationsTotal = (db.prepare('SELECT COUNT(*) as c FROM annotations').get() as any).c as number;
     res.json({
       status:      'ok',
       version:     '1.0.0',
       uptimeMs:    Date.now() - SERVER_START_MS,
+      uptime:      (Date.now() - SERVER_START_MS) / 1000,
+      spans:       spansTotal,
       spansTotal,
+      threats:     threatsTotal,
       threatsTotal,
+      sessions:    sessionsTotal,
       sessionsTotal,
+      alerts:      alertsTotal,
       alertsTotal,
+      annotations: annotationsTotal,
       dbSizeBytes,
       webhookConfigured: !!getWebhookUrl(),
       webhookThreshold:  getWebhookThreshold(),
       retention: {
         maxSpans:      getMaxSpans(),
         retentionDays: getRetentionDays(),
+      },
+      rateLimiting: {
+        rps:           RATE_LIMIT_RPS,
+        burst:         RATE_LIMIT_BURST,
+        maxSpansBatch: MAX_SPANS_PER_BATCH,
       },
     });
   });
