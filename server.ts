@@ -134,14 +134,43 @@ db.exec(`
   );
 `);
 
-// Safe migrations for alert triage columns (Phase 14)
-try { db.exec(`ALTER TABLE alerts ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0`); } catch {}
-try { db.exec(`ALTER TABLE alerts ADD COLUMN fp        INTEGER NOT NULL DEFAULT 0`); } catch {}
+// Safe migrations for alert triage columns (Phase 14) and deduplication (Phase 15 / s66)
+try { db.exec(`ALTER TABLE alerts ADD COLUMN dismissed    INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE alerts ADD COLUMN fp           INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE alerts ADD COLUMN fingerprint  TEXT    NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE alerts ADD COLUMN count        INTEGER NOT NULL DEFAULT 1`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_alerts_fingerprint ON alerts(fingerprint, ts)`); } catch {}
 
-const insertAlert = db.prepare(`
-  INSERT INTO alerts (ts, ruleLabel, severity, spanId, traceId, harness, spanName, matchedText)
-  VALUES (@ts, @ruleLabel, @severity, @spanId, @traceId, @harness, @spanName, @matchedText)
-`);
+/**
+ * Deduplication window: if the same rule fires in the same session within
+ * DEDUP_WINDOW_MS, increment the existing alert's count rather than inserting
+ * a new row.  Returns the affected alert id.
+ */
+const DEDUP_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+function insertOrDedupeAlert(alert: {
+  ts: string; ruleLabel: string; severity: string; spanId: string;
+  traceId: string; harness: string; spanName: string; matchedText: string;
+}): number | bigint {
+  const fingerprint = `${alert.ruleLabel}::${alert.traceId}::${alert.harness}`;
+  const windowStart = new Date(Date.now() - DEDUP_WINDOW_MS).toISOString();
+
+  const existing = db.prepare(
+    `SELECT id FROM alerts WHERE fingerprint = ? AND ts > ? AND dismissed = 0 LIMIT 1`
+  ).get(fingerprint, windowStart) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(`UPDATE alerts SET count = count + 1, ts = ?, spanId = ? WHERE id = ?`)
+      .run(alert.ts, alert.spanId, existing.id);
+    return existing.id;
+  }
+
+  const result = db.prepare(`
+    INSERT INTO alerts (ts, ruleLabel, severity, spanId, traceId, harness, spanName, matchedText, fingerprint, count)
+    VALUES (@ts, @ruleLabel, @severity, @spanId, @traceId, @harness, @spanName, @matchedText, @fingerprint, 1)
+  `).run({ ...alert, fingerprint });
+  return result.lastInsertRowid;
+}
 
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
 
@@ -277,7 +306,7 @@ function evaluateThresholdRules(traceId: string, harness: string): void {
     if (exceeded) {
       thresholdFiredCache.set(cacheKey, Date.now());
       const label = `Threshold: ${rule.name} (${rule.metric} ${rule.operator} ${rule.value})`;
-      insertAlert.run({
+      insertOrDedupeAlert({
         ts: new Date().toISOString(), ruleLabel: label, severity: 'medium',
         spanId: 'threshold', traceId, harness, spanName: 'threshold-check',
         matchedText: `actual=${actual}`,
@@ -531,7 +560,7 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
         `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Token spike detected' AND ts > datetime('now', '-5 minutes')`
       ).get(traceId);
       if (!alreadyFlagged) {
-        insertAlert.run({
+        insertOrDedupeAlert({
           ts: now,
           ruleLabel:   'Token spike detected',
           severity:    'medium' as Severity,
@@ -552,7 +581,7 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
       `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Threat burst detected' AND ts > datetime('now', '-10 minutes')`
     ).get(traceId);
     if (!alreadyFlagged) {
-      insertAlert.run({
+      insertOrDedupeAlert({
         ts: now,
         ruleLabel:   'Threat burst detected',
         severity:    'high' as Severity,
@@ -579,7 +608,7 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
       `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Excessive tool calls' AND ts > datetime('now', '-30 minutes')`
     ).get(traceId);
     if (!alreadyFlagged) {
-      insertAlert.run({
+      insertOrDedupeAlert({
         ts: now,
         ruleLabel:   'Excessive tool calls',
         severity:    'low' as Severity,
@@ -599,7 +628,7 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
       `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Off-hours agent activity' AND ts > datetime('now', '-60 minutes')`
     ).get(traceId);
     if (!alreadyFlagged) {
-      insertAlert.run({
+      insertOrDedupeAlert({
         ts: now,
         ruleLabel:   'Off-hours agent activity',
         severity:    'low' as Severity,
@@ -1230,7 +1259,7 @@ async function startServer() {
           });
 
           if (matchedLabel) {
-            insertAlert.run({
+            insertOrDedupeAlert({
               ts:          new Date().toISOString(),
               ruleLabel:   matchedLabel,
               severity,
@@ -1355,7 +1384,7 @@ async function startServer() {
           const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
           insertSpan.run({ ...span, severity, attributes: JSON.stringify(attrs) } satisfies SpanRecord);
           if (matchedLabel) {
-            insertAlert.run({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: span.name, matchedText });
+            insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: span.name, matchedText });
             alertsAdded++;
           }
           imported++;
@@ -1384,7 +1413,7 @@ async function startServer() {
             const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
             insertSpan.run({ spanId: span.spanId, traceId, parentId, name: span.name, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0') } satisfies SpanRecord);
             if (matchedLabel) {
-              insertAlert.run({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: span.name, matchedText });
+              insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: span.name, matchedText });
               alertsAdded++;
             }
             imported++;
@@ -1641,11 +1670,18 @@ async function startServer() {
         case 'tools/list': {
           ok({
             tools: [
-              { name: 'get_health',   description: 'Server health, span/session/alert counts, DB size', inputSchema: { type: 'object', properties: {} } },
-              { name: 'get_sessions', description: 'List all recorded sessions', inputSchema: { type: 'object', properties: {} } },
-              { name: 'get_spans',    description: 'Get spans for a session by traceId', inputSchema: { type: 'object', properties: { traceId: { type: 'string' } }, required: ['traceId'] } },
-              { name: 'get_alerts',   description: 'Get recent security alerts', inputSchema: { type: 'object', properties: { limit: { type: 'number' }, severity: { type: 'string' } } } },
-              { name: 'search_spans', description: 'Full-text search across all spans', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
+              { name: 'get_health',           description: 'Server health, span/session/alert counts, DB size', inputSchema: { type: 'object', properties: {} } },
+              { name: 'get_sessions',         description: 'List all recorded sessions', inputSchema: { type: 'object', properties: { label: { type: 'string', description: 'Filter by label: normal|incident|investigation|automated|other' } } } },
+              { name: 'get_spans',            description: 'Get spans for a session by traceId', inputSchema: { type: 'object', properties: { traceId: { type: 'string' } }, required: ['traceId'] } },
+              { name: 'get_alerts',           description: 'Get recent security alerts', inputSchema: { type: 'object', properties: { limit: { type: 'number' }, severity: { type: 'string' } } } },
+              { name: 'search_spans',         description: 'Full-text search across all spans', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
+              // Phase 15 / s68 — expanded tool coverage
+              { name: 'tag_span',             description: 'Add a tag to a span', inputSchema: { type: 'object', properties: { spanId: { type: 'string' }, tag: { type: 'string' } }, required: ['spanId', 'tag'] } },
+              { name: 'suppress_rule',        description: 'Snooze a detection rule for a duration', inputSchema: { type: 'object', properties: { ruleKey: { type: 'string', description: 'e.g. builtin-0 or custom:<id>' }, durationMs: { type: 'number', description: 'Snooze duration in milliseconds' } }, required: ['ruleKey', 'durationMs'] } },
+              { name: 'bookmark_span',        description: 'Bookmark a span with an optional note', inputSchema: { type: 'object', properties: { spanId: { type: 'string' }, traceId: { type: 'string' }, note: { type: 'string' } }, required: ['spanId'] } },
+              { name: 'get_processes',        description: 'List running AI agent processes on the local machine', inputSchema: { type: 'object', properties: {} } },
+              { name: 'get_incident_summary', description: 'Summarise a session: spans, alerts, top threats, tags', inputSchema: { type: 'object', properties: { traceId: { type: 'string' } }, required: ['traceId'] } },
+              { name: 'list_bookmarks',       description: 'List saved span bookmarks', inputSchema: { type: 'object', properties: { traceId: { type: 'string', description: 'Optional: filter by session traceId' } } } },
             ],
           });
           break;
@@ -1665,12 +1701,15 @@ async function startServer() {
               break;
             }
             case 'get_sessions': {
+              const labelFilter2 = args.label ? String(args.label) : null;
+              const labelWhere   = labelFilter2 ? `WHERE se.label = '${labelFilter2.replace(/'/g, "''")}'` : '';
               const sessions = db.prepare(`
-                SELECT se.traceId, se.name, se.createdAt,
+                SELECT se.traceId, se.name, se.createdAt, se.label, se.notes,
                   COUNT(s.spanId) AS spanCount,
                   SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
                   GROUP_CONCAT(DISTINCT s.harness) AS harnesses
                 FROM sessions se LEFT JOIN spans s ON s.traceId = se.traceId
+                ${labelWhere}
                 GROUP BY se.traceId ORDER BY se.createdAt DESC LIMIT 50
               `).all();
               ok({ content: [{ type: 'text', text: JSON.stringify(sessions) }] });
@@ -1703,6 +1742,103 @@ async function startServer() {
               ok({ content: [{ type: 'text', text: JSON.stringify(results) }] });
               break;
             }
+
+            // ── Phase 15 / s68 — expanded MCP tools ──────────────────────────
+
+            case 'tag_span': {
+              const spanId = String(args.spanId ?? '').trim();
+              const tag    = String(args.tag    ?? '').trim();
+              if (!spanId || !tag) { err(-32602, 'spanId and tag required'); break; }
+              const span = db.prepare('SELECT spanId FROM spans WHERE spanId = ?').get(spanId);
+              if (!span) { err(-32602, `Span not found: ${spanId}`); break; }
+              try {
+                db.prepare('INSERT OR IGNORE INTO span_tags (spanId, tag, createdAt) VALUES (?, ?, ?)').run(spanId, tag, new Date().toISOString());
+                ok({ content: [{ type: 'text', text: JSON.stringify({ ok: true, spanId, tag }) }] });
+              } catch (e: unknown) {
+                err(-32603, e instanceof Error ? e.message : 'Insert failed');
+              }
+              break;
+            }
+
+            case 'suppress_rule': {
+              const ruleKey    = String(args.ruleKey    ?? '').trim();
+              const durationMs = Number(args.durationMs ?? 0);
+              if (!ruleKey || durationMs <= 0) { err(-32602, 'ruleKey and positive durationMs required'); break; }
+              const suppressUntil = new Date(Date.now() + durationMs).toISOString();
+              db.prepare(
+                `INSERT INTO suppressions (ruleKey, suppressUntil, createdAt) VALUES (?, ?, ?)
+                 ON CONFLICT(ruleKey) DO UPDATE SET suppressUntil = excluded.suppressUntil, createdAt = excluded.createdAt`
+              ).run(ruleKey, suppressUntil, new Date().toISOString());
+              io.emit('suppressions-update');
+              ok({ content: [{ type: 'text', text: JSON.stringify({ ok: true, ruleKey, suppressUntil }) }] });
+              break;
+            }
+
+            case 'bookmark_span': {
+              const spanId  = String(args.spanId  ?? '').trim();
+              const traceId = String(args.traceId ?? '');
+              const note    = String(args.note    ?? '');
+              if (!spanId) { err(-32602, 'spanId required'); break; }
+              const result2 = db.prepare(
+                'INSERT INTO span_bookmarks (spanId, traceId, note, createdAt) VALUES (?, ?, ?, ?)'
+              ).run(spanId, traceId, note, new Date().toISOString());
+              io.emit('bookmarks-update');
+              ok({ content: [{ type: 'text', text: JSON.stringify({ ok: true, id: result2.lastInsertRowid, spanId, traceId, note }) }] });
+              break;
+            }
+
+            case 'get_processes': {
+              const procData = scanAgentProcesses();
+              ok({ content: [{ type: 'text', text: JSON.stringify(procData) }] });
+              break;
+            }
+
+            case 'get_incident_summary': {
+              const traceId2 = String(args.traceId ?? '').trim();
+              if (!traceId2) { err(-32602, 'traceId required'); break; }
+              const session3 = db.prepare('SELECT * FROM sessions WHERE traceId = ?').get(traceId2) as any;
+              if (!session3) { err(-32602, `Session not found: ${traceId2}`); break; }
+              const spans3   = db.prepare('SELECT * FROM spans WHERE traceId = ? ORDER BY startNano ASC').all(traceId2) as SpanRecord[];
+              const alerts3  = db.prepare('SELECT * FROM alerts WHERE traceId = ? ORDER BY id DESC').all(traceId2) as any[];
+              const tags3    = db.prepare('SELECT DISTINCT tag FROM span_tags WHERE spanId IN (SELECT spanId FROM spans WHERE traceId = ?)').all(traceId2) as any[];
+              const bmarks3  = db.prepare('SELECT * FROM span_bookmarks WHERE traceId = ?').all(traceId2) as any[];
+
+              const threatsByRule: Record<string, number> = {};
+              for (const a of alerts3) { threatsByRule[a.ruleLabel] = (threatsByRule[a.ruleLabel] ?? 0) + 1; }
+              const topThreats = Object.entries(threatsByRule).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([rule, count]) => ({ rule, count }));
+
+              const harnesses = [...new Set(spans3.map(s => s.harness))];
+              const severity = alerts3.some(a => a.severity === 'high') ? 'high'
+                : alerts3.some(a => a.severity === 'medium') ? 'medium'
+                : alerts3.some(a => a.severity === 'low') ? 'low'
+                : 'none';
+
+              ok({ content: [{ type: 'text', text: JSON.stringify({
+                traceId:   traceId2,
+                name:      session3.name,
+                label:     session3.label,
+                notes:     session3.notes,
+                severity,
+                spanCount: spans3.length,
+                alertCount: alerts3.length,
+                harnesses,
+                topThreats,
+                tags:       tags3.map((t: any) => t.tag),
+                bookmarks:  bmarks3.length,
+                startTime:  spans3[0]?.startNano ? new Date(Number(BigInt(spans3[0].startNano) / 1_000_000n)).toISOString() : null,
+              }) }] });
+              break;
+            }
+
+            case 'list_bookmarks': {
+              const filterTraceId = args.traceId ? String(args.traceId) : null;
+              const bmarks = filterTraceId
+                ? db.prepare('SELECT * FROM span_bookmarks WHERE traceId = ? ORDER BY id DESC').all(filterTraceId)
+                : db.prepare('SELECT * FROM span_bookmarks ORDER BY id DESC LIMIT 100').all();
+              ok({ content: [{ type: 'text', text: JSON.stringify(bmarks) }] });
+              break;
+            }
+
             default:
               err(-32601, `Unknown tool: ${toolName}`);
           }
@@ -1980,6 +2116,8 @@ service:
     const limit          = Math.min(Number(req.query.limit ?? 200), 1000);
     const severity       = req.query.severity      ? String(req.query.severity)      : null;
     const showDismissed  = req.query.showDismissed === 'true';
+    // groupBy=rule collapses duplicate alerts into a single row per fingerprint
+    const groupBy        = req.query.groupBy === 'rule';
 
     const conditions: string[] = [];
     const params: unknown[]    = [];
@@ -1988,7 +2126,24 @@ service:
     if (!showDismissed)                 { conditions.push('dismissed = 0'); }
 
     const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
-    const alerts = db.prepare(`SELECT * FROM alerts${where} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+
+    let alerts: unknown[];
+    if (groupBy) {
+      // Grouped view: one row per unique (ruleLabel, traceId, harness), SUM(count)
+      alerts = db.prepare(`
+        SELECT
+          MIN(id) as id, MAX(ts) as ts, ruleLabel, severity,
+          MAX(spanId) as spanId, traceId, harness, spanName,
+          MAX(matchedText) as matchedText, MAX(dismissed) as dismissed,
+          MAX(fp) as fp, fingerprint, SUM(count) as count
+        FROM alerts${where}
+        GROUP BY ruleLabel, traceId, harness
+        ORDER BY MAX(id) DESC
+        LIMIT ?
+      `).all(...params, limit);
+    } else {
+      alerts = db.prepare(`SELECT * FROM alerts${where} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+    }
     const total  = (db.prepare(`SELECT COUNT(*) as c FROM alerts${where}`).get(...params) as any).c;
 
     res.json({ alerts, total });

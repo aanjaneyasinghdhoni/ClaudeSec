@@ -85,6 +85,7 @@
         "api-reference/alerts-api",
         "api-reference/search",
         "api-reference/orchestration",
+        "api-reference/bookmarks",
         "api-reference/export"
       ]
     }

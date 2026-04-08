@@ -509,6 +509,39 @@ async function cmdProcesses(_args: string[]) {
   );
 }
 
+async function cmdBookmarks(args: string[]) {
+  const sessionFilter = args.includes('--session') ? args[args.indexOf('--session') + 1] : null;
+  const deleteId      = args.includes('--delete')  ? args[args.indexOf('--delete') + 1]  : null;
+
+  if (deleteId) {
+    const res = await apiFetch(`/api/bookmarks/${deleteId}`, { method: 'DELETE' });
+    if (res.ok) console.log('\x1b[32m✓ Bookmark deleted\x1b[0m');
+    else console.error('\x1b[31mFailed to delete bookmark\x1b[0m');
+    return;
+  }
+
+  const params = new URLSearchParams();
+  if (sessionFilter) params.set('session', sessionFilter);
+  const bookmarks: any[] = await apiFetch(`/api/bookmarks?${params}`).then(r => r.json()).catch(() => []);
+
+  if (!bookmarks?.length) {
+    console.log('\x1b[90mNo bookmarks found.\x1b[0m');
+    return;
+  }
+
+  console.log(`\n\x1b[1m\x1b[33m● Bookmarked Spans\x1b[0m  (${bookmarks.length} total)\n`);
+  printTable(
+    ['ID', 'Span ID', 'Session', 'Note', 'Created'],
+    bookmarks.map((b: any) => [
+      String(b.id),
+      b.spanId.length > 24 ? b.spanId.slice(0, 24) + '…' : b.spanId,
+      b.traceId ? (b.traceId.length > 16 ? b.traceId.slice(0, 16) + '…' : b.traceId) : '—',
+      b.note || '—',
+      new Date(b.createdAt).toLocaleString(),
+    ]),
+  );
+}
+
 function printHelp() {
   console.log(`
 \x1b[1m\x1b[35mClaudeSec CLI\x1b[0m
@@ -525,6 +558,7 @@ function printHelp() {
   \x1b[33mclaudesec reset\x1b[0m                   Wipe all data (with confirmation)
   \x1b[33mclaudesec search\x1b[0m <query> [--severity X] [--harness X] [--limit N]
   \x1b[33mclaudesec sessions\x1b[0m [--json]        List all sessions with health scores
+  \x1b[33mclaudesec bookmarks\x1b[0m [--session ID] [--delete ID]   View or delete bookmarks
 
 \x1b[1mAnalytics:\x1b[0m
   \x1b[33mclaudesec top\x1b[0m [--by spans|threats|health] [--limit N]
@@ -553,7 +587,8 @@ async function main() {
     case 'search':   await cmdSearch(rest);          break;
     case 'sessions': await cmdSessions(rest);        break;
     case 'report':    await cmdReport(rest);          break;
-    case 'processes': await cmdProcesses(rest);       break;
+    case 'processes':  await cmdProcesses(rest);        break;
+    case 'bookmarks':  await cmdBookmarks(rest);        break;
     case '--help':
     case '-h':
     case 'help':     printHelp();                    break;

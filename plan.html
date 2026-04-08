@@ -837,8 +837,8 @@
         <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
       </div>
     </div>
-    <div class="step" id="s66">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s66">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Alert deduplication &amp; grouping</div>
         <div class="step-desc">Group alerts by (ruleLabel, traceId) in AlertsTab: collapsed group rows show rule name + harness + count badge + first/last seen times. Click to expand individual alerts. Prevents alert fatigue from repetitive patterns. GET /api/alerts/grouped returns pre-aggregated groups. Also: "Silence rule" quick-action from group header (creates 1h suppression). Session health score excludes deduplicated duplicates.</div>
@@ -846,8 +846,8 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
       </div>
     </div>
-    <div class="step" id="s67">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s67">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Span bookmarks</div>
         <div class="step-desc">New span_bookmarks table (id, spanId, traceId, note TEXT, createdAt). Star icon in span detail panel and timeline rows. GET /api/bookmarks, POST /api/bookmarks {spanId, traceId, note}, DELETE /api/bookmarks/:id. BookmarksTab.tsx: list of starred spans sorted by createdAt, click to navigate to span in graph. CLI: claudesec bookmarks [--session X] prints table. Useful for marking suspicious spans during live investigations.</div>
@@ -855,8 +855,8 @@
         <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
       </div>
     </div>
-    <div class="step" id="s68">
-      <input type="checkbox" onchange="recalc()" />
+    <div class="step done" id="s68">
+      <input type="checkbox" checked onchange="recalc()" />
       <div class="step-body">
         <div class="step-title">Expanded MCP tool coverage</div>
         <div class="step-desc">Add 6 new MCP tools to POST /mcp: tag_span {spanId, tag}, suppress_rule {ruleKey, durationMs}, bookmark_span {spanId, traceId, note}, get_processes (returns running agent PIDs), get_incident_summary {traceId} (returns health + top threats + alerts + bookmarked spans), list_bookmarks. Enables other AI agents (e.g. Claude in another terminal) to query and interact with ClaudeSec programmatically. Update docs/mcp.mdx with new tool specs.</div>
