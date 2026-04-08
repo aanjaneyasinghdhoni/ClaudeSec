@@ -58,6 +58,13 @@
       ]
     },
     {
+      "group": "Observatory",
+      "pages": [
+        "observatory/processes",
+        "observatory/session-labels"
+      ]
+    },
+    {
       "group": "Integrations",
       "pages": [
         "mcp",

@@ -473,6 +473,42 @@ async function cmdReport(args: string[]) {
   }
 }
 
+async function cmdProcesses(_args: string[]) {
+  let data: any;
+  try {
+    data = await apiFetch('/api/processes');
+  } catch (e: any) {
+    console.error(`\x1b[31mFailed to reach ClaudeSec at ${BASE_URL}: ${e.message}\x1b[0m`);
+    process.exit(1);
+  }
+
+  if (!data.supported) {
+    console.log(`\x1b[33mProcess scanning is only supported on macOS and Linux (current: ${data.platform})\x1b[0m\n`);
+    return;
+  }
+
+  const procs: any[] = data.processes ?? [];
+
+  if (procs.length === 0) {
+    console.log(`\x1b[90mNo agent processes detected. (Scanned at ${new Date(data.scannedAt).toLocaleTimeString()})\x1b[0m\n`);
+    return;
+  }
+
+  console.log(`\n\x1b[1m\x1b[36m● Local Agent Processes\x1b[0m  (${procs.length} detected · ${new Date(data.scannedAt).toLocaleTimeString()})\n`);
+
+  printTable(
+    ['PID', 'Agent', 'User', 'CPU%', 'Mem MB', 'Command'],
+    procs.map(p => [
+      String(p.pid),
+      p.harnessName,
+      p.user,
+      p.cpuPct.toFixed(1) + '%',
+      p.memMb.toFixed(0),
+      p.cmd.length > 60 ? p.cmd.slice(0, 60) + '…' : p.cmd,
+    ]),
+  );
+}
+
 function printHelp() {
   console.log(`
 \x1b[1m\x1b[35mClaudeSec CLI\x1b[0m
@@ -482,6 +518,7 @@ function printHelp() {
   \x1b[33mclaudesec status\x1b[0m                  Show server health and span counts
   \x1b[33mclaudesec open\x1b[0m                    Open the dashboard in default browser
   \x1b[33mclaudesec tail\x1b[0m [--harness X] [--severity Y]   Stream live spans
+  \x1b[33mclaudesec processes\x1b[0m               List running agent processes (macOS/Linux)
 
 \x1b[1mData:\x1b[0m
   \x1b[33mclaudesec export\x1b[0m [file]           Download all spans as JSON
@@ -515,7 +552,8 @@ async function main() {
     case 'top':      await cmdTop(rest);             break;
     case 'search':   await cmdSearch(rest);          break;
     case 'sessions': await cmdSessions(rest);        break;
-    case 'report':   await cmdReport(rest);          break;
+    case 'report':    await cmdReport(rest);          break;
+    case 'processes': await cmdProcesses(rest);       break;
     case '--help':
     case '-h':
     case 'help':     printHelp();                    break;

@@ -1,0 +1,131 @@
+---
+title: "Session Labels & Notes"
+description: "Classify sessions by incident type and attach free-text investigation notes"
+icon: "tag"
+---
+
+## Overview
+
+**Session Labels** let you categorize any trace session into one of five operational states. **Session Notes** attach free-text context — root-cause hypotheses, links to tickets, or remediation steps — directly to a session so the context travels with the data.
+
+Together they turn ClaudeSec from a passive observer into a lightweight incident-management layer that lives alongside your agent telemetry.
+
+## Labels
+
+| Label | Color | Meaning |
+|-------|-------|---------|
+| `normal` | Gray | Routine operation — no action required |
+| `incident` | Red | Active security incident or anomaly requiring immediate attention |
+| `investigation` | Orange | Under active review; root cause not yet determined |
+| `automated` | Blue | Fully automated pipeline run — suppress noise from dashboards |
+| `other` | Purple | Catch-all for custom workflows |
+
+### Setting a label
+
+**In the dashboard** — click the sticky-note icon on any session row in the sidebar. An inline panel expands with five colored label buttons. Click a button to apply it instantly (auto-saved via `PATCH /api/sessions/:traceId`).
+
+**Via the API:**
+
+```bash
+curl -X PATCH http://localhost:3000/api/sessions/TRACE_ID \
+  -H "Content-Type: application/json" \
+  -d '{"label":"incident"}'
+```
+
+### Filtering by label
+
+Use the label filter pills above the session list in the dashboard to show only sessions matching a specific label.
+
+**Via the API** — pass `?label=incident` to the sessions endpoint:
+
+```bash
+curl "http://localhost:3000/api/sessions?label=incident"
+```
+
+## Session Notes
+
+Notes are free-text fields attached to a session. They support multi-line text and are ideal for:
+
+- Recording the initial hypothesis for an anomaly
+- Linking to a Jira/Linear ticket (`PROJ-1234`)
+- Capturing remediation steps taken
+- Noting false-positive confirmations
+
+### Adding notes
+
+Open the inline notes panel (sticky-note icon on any session row) and type in the text area. Notes are **auto-saved when the text area loses focus** — no save button required.
+
+### Via the API
+
+```bash
+# Set notes
+curl -X PATCH http://localhost:3000/api/sessions/TRACE_ID \
+  -H "Content-Type: application/json" \
+  -d '{"notes":"Investigated — prompt injection attempt from user input. Mitigated by input sanitization in v2.1.3."}'
+
+# Read notes (included in sessions list response)
+curl "http://localhost:3000/api/sessions" | jq '.[0].notes'
+```
+
+## API Reference
+
+### PATCH /api/sessions/:traceId
+
+Updates label and/or notes for a session.
+
+**Request body:**
+```json
+{
+  "label": "incident",
+  "notes": "Free-text investigation notes"
+}
+```
+
+Both fields are optional and can be updated independently.
+
+**Valid label values:** `normal`, `incident`, `investigation`, `automated`, `other`
+
+**Response:**
+```json
+{ "ok": true }
+```
+
+Returns `400` with `{ "error": "Invalid label" }` if an unknown label string is provided.
+
+### GET /api/sessions
+
+Sessions now include `label` and `notes` in every response object.
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `label` | Filter to sessions with this label (e.g. `?label=incident`) |
+
+**Response shape (per session):**
+```json
+{
+  "traceId": "abc123",
+  "name": "Claude Code · 2:31:00 PM",
+  "spanCount": 42,
+  "alertCount": 3,
+  "startTime": "2026-04-08T14:31:00.000Z",
+  "endTime": "2026-04-08T14:35:12.000Z",
+  "label": "incident",
+  "notes": "Prompt injection attempt — user input not sanitized"
+}
+```
+
+## Workflow Example
+
+A typical incident workflow using labels and notes:
+
+```
+1. Alert fires → session auto-receives high severity
+2. Analyst opens session → sets label to "investigation"
+3. Analyst adds note: "Possible SSRF via tool call to internal endpoint"
+4. After root-cause found → label updated to "incident", note updated with fix
+5. After resolution → label set back to "normal"
+```
+
+This workflow is fully auditable: the `PATCH` calls are timestamped in server logs and the final state persists in SQLite.

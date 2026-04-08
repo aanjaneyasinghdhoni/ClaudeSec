@@ -9,7 +9,7 @@ import {
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
-  Sun, Moon, Server, GitCompare,
+  Sun, Moon, Server, GitCompare, Monitor,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
@@ -25,6 +25,7 @@ import { SpanAttributes } from './SpanAttributes';
 import { GraphReplay, type ReplayState } from './GraphReplay';
 import { ComparePanel } from './ComparePanel';
 import { SearchTab } from './SearchTab';
+import { ProcessesTab } from './ProcessesTab';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes';
 
 interface Workflow {
   id: string;
@@ -88,17 +89,29 @@ interface Workflow {
   timestamp: string;
 }
 
+type SessionLabel = 'normal' | 'incident' | 'investigation' | 'automated' | 'other';
+
 interface Session {
   traceId: string;
   name: string;
   createdAt: string;
   pinned: number;
+  label: SessionLabel;
+  notes: string;
   spanCount: number;
   threatCount: number;
   maxSeverityRank: number;
   harnesses: string | null;
   healthScore?: number;
 }
+
+const LABEL_COLORS: Record<SessionLabel, { dot: string; bg: string; text: string }> = {
+  normal:        { dot: '#64748b', bg: 'bg-slate-800',       text: 'text-slate-400' },
+  incident:      { dot: '#ef4444', bg: 'bg-red-900/30',      text: 'text-red-300'   },
+  investigation: { dot: '#f97316', bg: 'bg-orange-900/30',   text: 'text-orange-300'},
+  automated:     { dot: '#3b82f6', bg: 'bg-blue-900/30',     text: 'text-blue-300'  },
+  other:         { dot: '#a855f7', bg: 'bg-purple-900/30',   text: 'text-purple-300'},
+};
 
 interface TickerSpan {
   spanId: string;
@@ -389,6 +402,12 @@ export default function App() {
   // ── Graph export menu ─────────────────────────────────────────────────────
   const [showGraphExport, setShowGraphExport] = useState(false);
   const graphExportRef = useRef<HTMLDivElement>(null);
+
+  // ── Session labels & notes ────────────────────────────────────────────────
+  const [labelFilter,      setLabelFilter]      = useState<SessionLabel | 'all'>('all');
+  const [notesSession,     setNotesSession]      = useState<string | null>(null); // traceId with notes panel open
+  const [notesText,        setNotesText]         = useState('');
+  const [labelMenuSession, setLabelMenuSession]  = useState<string | null>(null);
 
   const seenIds      = useRef<Set<string>>(new Set());
   const prevWorkflows = useRef<Workflow[]>([]);
@@ -1010,7 +1029,25 @@ export default function App() {
                 <span className="text-[9px] text-slate-600 font-mono">{sessions.length}</span>
               </div>
             </div>
-            <div className="space-y-1 max-h-28 overflow-y-auto">
+            {/* Label filter pills */}
+            <div className="flex flex-wrap gap-1 mb-2">
+              {(['all', 'incident', 'investigation', 'automated', 'other'] as const).map(l => (
+                <button
+                  key={l}
+                  onClick={() => setLabelFilter(l)}
+                  className={`px-1.5 py-0.5 rounded-full text-[9px] font-medium transition-colors capitalize ${
+                    labelFilter === l
+                      ? 'bg-slate-600 text-white'
+                      : 'bg-slate-800/60 text-slate-600 hover:text-slate-400'
+                  }`}
+                  style={labelFilter === l && l !== 'all' ? { background: LABEL_COLORS[l as SessionLabel]?.dot + '33', color: LABEL_COLORS[l as SessionLabel]?.dot } : {}}
+                >
+                  {l === 'all' ? 'All' : l}
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-1 max-h-36 overflow-y-auto">
               <button
                 onClick={() => setActiveSession(null)}
                 className={`w-full text-left px-2 py-1 rounded text-[10px] transition-colors ${
@@ -1021,15 +1058,17 @@ export default function App() {
               >
                 All sessions · {workflows.length} spans
               </button>
-              {sessions.map(s => {
+              {sessions.filter(s => labelFilter === 'all' || (s.label ?? 'normal') === labelFilter).map(s => {
                 const sev = SEV_RANK[s.maxSeverityRank] ?? 'none';
                 const sevCol = sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
                 const isActive  = activeSession === s.traceId;
                 const isEditing = editingSession === s.traceId;
                 const isPinned  = !!s.pinned;
+                const sessionLabel = (s.label ?? 'normal') as SessionLabel;
+                const lc = LABEL_COLORS[sessionLabel];
                 return (
+                  <React.Fragment key={s.traceId}>
                   <div
-                    key={s.traceId}
                     className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors group ${
                       isActive
                         ? 'bg-blue-600 text-white'
@@ -1041,7 +1080,17 @@ export default function App() {
                     }`}
                   >
                     {isPinned && !isActive && <Star className="w-2 h-2 text-yellow-400 shrink-0" />}
-                    {!isPinned && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: sevCol }} />}
+                    {!isPinned && !isActive && (
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0 border"
+                        style={{
+                          background: sessionLabel !== 'normal' ? lc.dot + '33' : sevCol + '33',
+                          borderColor: sessionLabel !== 'normal' ? lc.dot : sevCol,
+                        }}
+                        title={`Label: ${sessionLabel}`}
+                      />
+                    )}
+                    {!isPinned && isActive && <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-white/60" />}
                     {s.healthScore !== undefined && !isActive && (
                       <span
                         className={`shrink-0 text-[8px] font-mono font-bold px-1 rounded ${
@@ -1124,9 +1173,77 @@ export default function App() {
                         >
                           <FileText className="w-2.5 h-2.5" />
                         </a>
+                        {/* Notes / label toggle */}
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            setNotesSession(notesSession === s.traceId ? null : s.traceId);
+                            setNotesText(s.notes ?? '');
+                          }}
+                          className={`shrink-0 transition-opacity ${notesSession === s.traceId ? 'opacity-100 text-yellow-400' : 'opacity-0 group-hover:opacity-100 hover:text-yellow-400'}`}
+                          title="Session notes & label"
+                        >
+                          <StickyNote className="w-2.5 h-2.5" />
+                        </button>
                       </>
                     )}
                   </div>
+                  {/* Inline notes + label panel */}
+                  {notesSession === s.traceId && (
+                    <div className="mx-1 mb-1 p-2 bg-slate-800/80 border border-slate-700 rounded-lg space-y-2">
+                      {/* Label selector */}
+                      <div>
+                        <p className="text-[9px] text-slate-600 uppercase font-bold mb-1">Label</p>
+                        <div className="flex flex-wrap gap-1">
+                          {(Object.keys(LABEL_COLORS) as SessionLabel[]).map(l => (
+                            <button
+                              key={l}
+                              onClick={async () => {
+                                await fetch(`/api/sessions/${encodeURIComponent(s.traceId)}`, {
+                                  method: 'PATCH',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ label: l }),
+                                });
+                                fetchSessions();
+                              }}
+                              className={`px-1.5 py-0.5 rounded text-[9px] capitalize transition-colors ${
+                                sessionLabel === l
+                                  ? 'font-bold'
+                                  : 'opacity-60 hover:opacity-100'
+                              }`}
+                              style={{
+                                background: LABEL_COLORS[l].dot + '22',
+                                color: LABEL_COLORS[l].dot,
+                                border: sessionLabel === l ? `1px solid ${LABEL_COLORS[l].dot}` : '1px solid transparent',
+                              }}
+                            >
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Notes textarea */}
+                      <div>
+                        <p className="text-[9px] text-slate-600 uppercase font-bold mb-1">Notes</p>
+                        <textarea
+                          value={notesText}
+                          onChange={e => setNotesText(e.target.value)}
+                          onBlur={async () => {
+                            await fetch(`/api/sessions/${encodeURIComponent(s.traceId)}`, {
+                              method: 'PATCH',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ notes: notesText }),
+                            });
+                            fetchSessions();
+                          }}
+                          placeholder="Add investigation notes…"
+                          rows={3}
+                          className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500/50"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </div>
@@ -1362,6 +1479,14 @@ export default function App() {
               }`}
             >
               <Search className="w-3.5 h-3.5" /> Search
+            </button>
+            <button
+              onClick={() => setActiveTab('processes')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'processes' ? 'border-cyan-500 text-cyan-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Monitor className="w-3.5 h-3.5" /> Processes
             </button>
             <button
               onClick={() => setActiveTab('settings')}
@@ -1747,6 +1872,16 @@ export default function App() {
 
           {/* Search view */}
           {activeTab === 'search' && <SearchTab />}
+
+          {/* Processes view */}
+          {activeTab === 'processes' && (
+            <ProcessesTab
+              onSelectSession={traceId => {
+                setActiveSession(traceId);
+                setActiveTab('graph');
+              }}
+            />
+          )}
         </div>
       </div>
 
