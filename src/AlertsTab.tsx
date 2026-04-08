@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Trash2, ShieldOff } from 'lucide-react';
+import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye } from 'lucide-react';
 import { socket } from './socket';
 
 type Severity = 'none' | 'low' | 'medium' | 'high';
@@ -15,6 +15,8 @@ interface AlertRow {
   harness: string;
   spanName: string;
   matchedText: string;
+  dismissed: number;
+  fp: number;
 }
 
 const HARNESS_COLORS: Record<string, string> = {
@@ -58,13 +60,16 @@ const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
 ];
 
 export function AlertsTab() {
-  const [alerts,        setAlerts]        = useState<AlertRow[]>([]);
-  const [total,         setTotal]         = useState(0);
-  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
+  const [alerts,          setAlerts]          = useState<AlertRow[]>([]);
+  const [total,           setTotal]           = useState(0);
+  const [severityFilter,  setSeverityFilter]  = useState<SeverityFilter>('all');
+  const [showDismissed,   setShowDismissed]   = useState(false);
+  const [triaging,        setTriaging]        = useState<Set<number>>(new Set());
 
-  const fetchAlerts = (sev: SeverityFilter = severityFilter) => {
+  const fetchAlerts = (sev: SeverityFilter = severityFilter, sd = showDismissed) => {
     const params = new URLSearchParams({ limit: '200' });
     if (sev !== 'all') params.set('severity', sev);
+    if (sd) params.set('showDismissed', 'true');
     fetch(`/api/alerts?${params}`)
       .then(r => r.json())
       .then(({ alerts: a, total: t }: { alerts: AlertRow[]; total: number }) => {
@@ -75,14 +80,27 @@ export function AlertsTab() {
   };
 
   useEffect(() => {
-    fetchAlerts(severityFilter);
-  }, [severityFilter]);
+    fetchAlerts(severityFilter, showDismissed);
+  }, [severityFilter, showDismissed]);
 
   useEffect(() => {
-    const handler = () => fetchAlerts(severityFilter);
+    const handler = () => fetchAlerts(severityFilter, showDismissed);
     socket.on('alerts-update', handler);
     return () => { socket.off('alerts-update', handler); };
-  }, [severityFilter]);
+  }, [severityFilter, showDismissed]);
+
+  const triage = async (id: number, patch: { dismissed?: boolean; fp?: boolean }) => {
+    setTriaging(prev => new Set(prev).add(id));
+    try {
+      await fetch(`/api/alerts/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      fetchAlerts(severityFilter, showDismissed);
+    } catch {}
+    setTriaging(prev => { const s = new Set(prev); s.delete(id); return s; });
+  };
 
   const handleClear = async () => {
     if (!window.confirm('Clear all alerts? This cannot be undone.')) return;
@@ -122,6 +140,19 @@ export function AlertsTab() {
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
+          {/* Show/hide dismissed toggle */}
+          <button
+            onClick={() => setShowDismissed(v => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+              showDismissed
+                ? 'bg-slate-700 border-slate-600 text-slate-300'
+                : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
+            }`}
+            title={showDismissed ? 'Hide dismissed alerts' : 'Show dismissed alerts'}
+          >
+            {showDismissed ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            Dismissed
+          </button>
           <button
             onClick={() => window.open('/api/alerts/export', '_blank')}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
@@ -157,50 +188,95 @@ export function AlertsTab() {
                 <th className="px-4 py-2.5 text-left">Agent</th>
                 <th className="px-4 py-2.5 text-left">Span Name</th>
                 <th className="px-4 py-2.5 text-left">Snippet</th>
+                <th className="px-4 py-2.5 text-left w-20">Triage</th>
               </tr>
             </thead>
             <tbody>
-              {alerts.map(alert => (
-                <tr
-                  key={alert.id}
-                  className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
-                >
-                  <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
-                    {formatTime(alert.ts)}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
-                      {alert.severity}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-200 font-medium max-w-[180px] truncate" title={alert.ruleLabel}>
-                    {alert.ruleLabel}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: HARNESS_COLORS[alert.harness] ?? '#64748b' }}
-                      />
-                      <span className="text-slate-400 truncate max-w-[100px]" title={HARNESS_NAMES[alert.harness]}>
-                        {HARNESS_NAMES[alert.harness] ?? alert.harness}
+              {alerts.map(alert => {
+                const isDismissed = !!alert.dismissed;
+                const isFP        = !!alert.fp;
+                const isTriaging  = triaging.has(alert.id);
+                return (
+                  <tr
+                    key={alert.id}
+                    className={`border-b border-slate-800/50 transition-colors ${
+                      isDismissed
+                        ? 'opacity-40 bg-slate-900/30'
+                        : 'hover:bg-slate-800/30'
+                    }`}
+                  >
+                    <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
+                      {formatTime(alert.ts)}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
+                        {alert.severity}
                       </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-400 max-w-[160px] truncate" title={alert.spanName}>
-                    {alert.spanName}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    {alert.matchedText ? (
-                      <code className="text-[10px] font-mono text-red-300 bg-red-900/20 px-1.5 py-0.5 rounded max-w-[200px] truncate block" title={alert.matchedText}>
-                        {alert.matchedText}
-                      </code>
-                    ) : (
-                      <span className="text-slate-700">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                      {isFP && (
+                        <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-900/30 text-orange-400 border border-orange-700/30">
+                          FP
+                        </span>
+                      )}
+                    </td>
+                    <td className={`px-4 py-2.5 font-medium max-w-[180px] truncate ${isDismissed ? 'line-through text-slate-600' : 'text-slate-200'}`} title={alert.ruleLabel}>
+                      {alert.ruleLabel}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: HARNESS_COLORS[alert.harness] ?? '#64748b' }}
+                        />
+                        <span className="text-slate-400 truncate max-w-[100px]" title={HARNESS_NAMES[alert.harness]}>
+                          {HARNESS_NAMES[alert.harness] ?? alert.harness}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-400 max-w-[160px] truncate" title={alert.spanName}>
+                      {alert.spanName}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {alert.matchedText ? (
+                        <code className="text-[10px] font-mono text-red-300 bg-red-900/20 px-1.5 py-0.5 rounded max-w-[200px] truncate block" title={alert.matchedText}>
+                          {alert.matchedText}
+                        </code>
+                      ) : (
+                        <span className="text-slate-700">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1">
+                        {/* Dismiss toggle */}
+                        <button
+                          disabled={isTriaging}
+                          onClick={() => triage(alert.id, { dismissed: !isDismissed })}
+                          className={`p-1 rounded transition-colors ${
+                            isDismissed
+                              ? 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                              : 'text-slate-600 hover:bg-slate-700 hover:text-slate-300'
+                          }`}
+                          title={isDismissed ? 'Restore alert' : 'Dismiss alert'}
+                        >
+                          <EyeOff className="w-3 h-3" />
+                        </button>
+                        {/* False-positive toggle */}
+                        <button
+                          disabled={isTriaging}
+                          onClick={() => triage(alert.id, { fp: !isFP })}
+                          className={`p-1 rounded transition-colors ${
+                            isFP
+                              ? 'bg-orange-900/40 text-orange-400 hover:bg-orange-900/60'
+                              : 'text-slate-600 hover:bg-slate-700 hover:text-orange-400'
+                          }`}
+                          title={isFP ? 'Unmark false positive' : 'Mark as false positive'}
+                        >
+                          <AlertCircle className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

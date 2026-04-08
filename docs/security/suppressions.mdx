@@ -1,0 +1,204 @@
+---
+title: "Rule Suppression"
+description: "Temporarily silence specific threat rules to reduce noise during known maintenance"
+icon: "bell-slash"
+---
+
+## Overview
+
+Rule suppressions let you temporarily prevent a specific threat rule from generating alerts. This is useful when you are performing known maintenance — for example, running a database migration that triggers the "SQL destructive operation" rule — and do not want to be flooded with false-positive alerts.
+
+Suppressions are precise: they target one rule at a time by its label string. All other rules continue to fire normally. Suppressed rules still classify spans (the `severity` field on a span is still set), but no `alerts` row is written and no webhook delivery is triggered while the suppression is active.
+
+Suppressions survive server restarts because they are stored in the `suppressions` table in SQLite.
+
+---
+
+## The suppressions table
+
+```sql
+CREATE TABLE IF NOT EXISTS suppressions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  ruleKey       TEXT NOT NULL,
+  suppressUntil TEXT NOT NULL  -- ISO 8601 timestamp
+);
+```
+
+| Column | Description |
+|--------|-------------|
+| `id` | Auto-increment integer primary key |
+| `ruleKey` | The rule's label string for built-in rules, or UUID for custom rules |
+| `suppressUntil` | ISO 8601 datetime — suppression expires at this time |
+
+Active suppressions are those where `suppressUntil > datetime('now')`.
+
+### Referencing rules
+
+- **Built-in rules** are referenced by their label string exactly as shown in the Rules tab (e.g., `"SQL destructive operation"`, `"Recursive root deletion"`).
+- **Custom rules** are referenced by their UUID (e.g., `"custom-1700000000000-abc12"`).
+
+---
+
+## Endpoints
+
+### GET /api/suppressions
+
+List all current suppression entries, including expired ones.
+
+```
+GET /api/suppressions
+```
+
+#### Response
+
+```json
+{
+  "suppressions": [
+    {
+      "id":            1,
+      "ruleKey":       "SQL destructive operation",
+      "suppressUntil": "2024-01-15T18:00:00.000Z"
+    },
+    {
+      "id":            2,
+      "ruleKey":       "Python package install",
+      "suppressUntil": "2024-01-16T14:30:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### POST /api/suppressions
+
+Create a new suppression for a rule.
+
+```
+POST /api/suppressions
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "ruleKey":     "SQL destructive operation",
+  "durationMin": 60
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ruleKey` | string | Yes | Label of the rule to suppress |
+| `durationMin` | integer | Yes | Duration in minutes. Common values: `60`, `240`, `1440`, `10080` |
+
+#### Response
+
+```json
+{
+  "id":            3,
+  "ruleKey":       "SQL destructive operation",
+  "suppressUntil": "2024-01-15T15:35:00.000Z"
+}
+```
+
+#### Error responses
+
+| Status | Body | Reason |
+|--------|------|--------|
+| `400` | `{"error": "ruleKey required"}` | `ruleKey` was missing or blank |
+| `400` | `{"error": "durationMin must be a positive integer"}` | Invalid duration |
+
+---
+
+### DELETE /api/suppressions/:id
+
+Remove a suppression before it expires.
+
+```
+DELETE /api/suppressions/:id
+```
+
+#### Path parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | The suppression ID returned when it was created |
+
+#### Response
+
+`204 No Content` on success.
+
+#### Error responses
+
+| Status | Body | Reason |
+|--------|------|--------|
+| `404` | `{"error": "suppression not found"}` | No suppression with that ID |
+
+---
+
+## Examples
+
+### Suppress a built-in rule for 1 hour
+
+```bash
+curl -X POST http://localhost:3000/api/suppressions \
+  -H 'Content-Type: application/json' \
+  -d '{"ruleKey": "SQL destructive operation", "durationMin": 60}'
+```
+
+### Suppress a rule for 4 hours during a deployment window
+
+```bash
+curl -X POST http://localhost:3000/api/suppressions \
+  -H 'Content-Type: application/json' \
+  -d '{"ruleKey": "Python package install", "durationMin": 240}'
+```
+
+### Suppress a custom rule by UUID for 24 hours
+
+```bash
+curl -X POST http://localhost:3000/api/suppressions \
+  -H 'Content-Type: application/json' \
+  -d '{"ruleKey": "custom-1700000000000-abc12", "durationMin": 1440}'
+```
+
+### List all active suppressions
+
+```bash
+curl -s http://localhost:3000/api/suppressions | \
+  jq '.suppressions[] | select(.suppressUntil > now | todate)'
+```
+
+### Delete a suppression by ID
+
+```bash
+curl -X DELETE http://localhost:3000/api/suppressions/3
+```
+
+---
+
+## Dashboard UI
+
+The **Rules** tab in the ClaudeSec dashboard shows a snooze button next to each rule. Clicking it opens a duration picker with four options:
+
+| Option | Duration |
+|--------|----------|
+| 1h | 60 minutes |
+| 4h | 240 minutes |
+| 24h | 1440 minutes |
+| 7d | 10080 minutes |
+
+While a suppression is active, the rule row shows an orange **"Snoozed until HH:MM"** badge in place of the alert count. The badge disappears automatically when the suppression expires (checked on each page load and after each OTLP batch).
+
+To cancel a suppression early, click the badge — it opens a confirmation dialog that calls `DELETE /api/suppressions/:id`.
+
+---
+
+## Notes
+
+- Suppressions do not retroactively delete existing alerts. Alerts created before the suppression was added remain in the `alerts` table.
+- If you suppress a rule while the agent is actively triggering it, in-flight alerts may still be written for spans that arrived in the same batch before the suppression check ran. This is a small race window of under one second.
+- A rule can have multiple active suppressions (e.g., if you add a second snooze before the first expires). The server checks for any active suppression by `ruleKey` — the rule is suppressed if at least one active row exists.
+- Suppressions do not affect span severity classification. A span can still be `severity: high` even when its matching rule is suppressed; it simply will not generate an `alerts` row.
