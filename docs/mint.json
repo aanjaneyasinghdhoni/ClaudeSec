@@ -60,6 +60,7 @@
     {
       "group": "Observatory",
       "pages": [
+        "observatory/welcome",
         "observatory/processes",
         "observatory/session-labels"
       ]
