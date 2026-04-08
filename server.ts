@@ -8,6 +8,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
+import { execSync } from 'child_process';
 import { detectHarness, HARNESSES } from './src/harnesses.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -95,8 +96,10 @@ db.exec(`
     pinned    INTEGER NOT NULL DEFAULT 0
   );
 `);
-// Safe migration for existing databases
+// Safe migrations for existing databases
 try { db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN label TEXT NOT NULL DEFAULT 'normal'`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN notes TEXT NOT NULL DEFAULT ''`); } catch {}
 
 const insertSpan = db.prepare(`
   INSERT OR IGNORE INTO spans
@@ -141,6 +144,22 @@ const insertAlert = db.prepare(`
 `);
 
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
+
+// ---------------------------------------------------------------------------
+// Span bookmarks table (Phase 15 / s67)
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS span_bookmarks (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    spanId    TEXT NOT NULL,
+    traceId   TEXT NOT NULL DEFAULT '',
+    note      TEXT NOT NULL DEFAULT '',
+    createdAt TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_bookmarks_spanId  ON span_bookmarks(spanId);
+  CREATE INDEX IF NOT EXISTS idx_bookmarks_traceId ON span_bookmarks(traceId);
+`);
 
 // ---------------------------------------------------------------------------
 // Suppressions table — snooze a security rule until suppressUntil (Phase 14)
@@ -974,6 +993,111 @@ setInterval(() => {
 }, 60_000).unref();
 
 // ---------------------------------------------------------------------------
+// Local agent process scanner (s64) — detects running CLI agent processes
+// ---------------------------------------------------------------------------
+
+interface AgentProcess {
+  pid:        number;
+  harness:    string;
+  harnessName: string;
+  cmd:        string;
+  cpuPct:     number;
+  memMb:      number;
+  startedAt:  string | null;
+  user:       string;
+}
+
+// Patterns that identify each harness in a process command line
+const PROCESS_PATTERNS: { pattern: RegExp; harness: string }[] = [
+  { pattern: /\bclaude\b(?!.*goose)/i,              harness: 'claude-code'    },
+  { pattern: /\bcopilot[-_]language[-_]server\b/i,  harness: 'github-copilot' },
+  { pattern: /\bghcopilot\b/i,                      harness: 'github-copilot' },
+  { pattern: /\bopenhands\b/i,                      harness: 'openhands'      },
+  { pattern: /\bcursor\b/i,                         harness: 'cursor'         },
+  { pattern: /\baider\b/i,                          harness: 'aider'          },
+  { pattern: /\bcline\b/i,                          harness: 'cline'          },
+  { pattern: /\bgoose\b/i,                          harness: 'goose'          },
+  { pattern: /\bcontinue[-_]server\b/i,             harness: 'continue'       },
+  { pattern: /\bwindsurf\b/i,                       harness: 'windsurf'       },
+  { pattern: /\bcodex\b/i,                          harness: 'codex'          },
+  { pattern: /\bamazon[-_]q\b|q\s+developer\b/i,   harness: 'amazon-q'       },
+  { pattern: /\bgemini[-_]cli\b/i,                  harness: 'gemini-cli'     },
+  { pattern: /\broo[-_]cline\b|roocode\b/i,         harness: 'roo-code'       },
+  { pattern: /\bbolt\b/i,                           harness: 'bolt'           },
+  { pattern: /\bopeninterpreter\b/i,                harness: 'unknown'        },
+  { pattern: /\bdevin\b/i,                          harness: 'unknown'        },
+  { pattern: /\bswe[-_]agent\b/i,                   harness: 'unknown'        },
+];
+
+function scanAgentProcesses(): AgentProcess[] {
+  try {
+    const isLinux  = process.platform === 'linux';
+    const isMac    = process.platform === 'darwin';
+    if (!isLinux && !isMac) return []; // Windows not supported
+
+    // ps output: PID  USER  %CPU  RSS_KB  LSTART(24)  COMMAND
+    const raw = execSync(
+      `ps aux 2>/dev/null || ps -eo pid,user,%cpu,rss,lstart,args 2>/dev/null`,
+      { maxBuffer: 4 * 1024 * 1024, timeout: 5000 }
+    ).toString();
+
+    const results: AgentProcess[] = [];
+    const seen = new Set<number>();
+
+    for (const line of raw.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 6) continue;
+
+      // ps aux: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+      // ps -eo: PID USER %CPU RSS LSTART... ARGS
+      let pid: number, user: string, cpuPct: number, memKb: number, cmd: string;
+
+      // Detect ps aux format (USER is first column)
+      const firstNum = Number(parts[1]);
+      if (!isNaN(firstNum) && firstNum > 0) {
+        // ps aux format
+        user   = parts[0];
+        pid    = firstNum;
+        cpuPct = parseFloat(parts[2]) || 0;
+        memKb  = parseFloat(parts[5]) || 0; // RSS in KB
+        cmd    = parts.slice(10).join(' ');
+      } else {
+        // Fallback
+        pid    = parseInt(parts[0]) || 0;
+        user   = parts[1] || '';
+        cpuPct = parseFloat(parts[2]) || 0;
+        memKb  = parseFloat(parts[3]) || 0;
+        cmd    = parts.slice(8).join(' ');
+      }
+
+      if (!pid || isNaN(pid) || seen.has(pid)) continue;
+
+      // Match against known agent patterns
+      const match = PROCESS_PATTERNS.find(p => p.pattern.test(cmd));
+      if (!match) continue;
+
+      seen.add(pid);
+      const h = HARNESSES.find(h => h.id === match.harness) ?? HARNESSES[HARNESSES.length - 1];
+
+      results.push({
+        pid,
+        harness:     match.harness,
+        harnessName: h.name,
+        cmd:         cmd.slice(0, 200), // truncate long commands
+        cpuPct:      Math.round(cpuPct * 10) / 10,
+        memMb:       Math.round(memKb / 1024 * 10) / 10,
+        startedAt:   null, // hard to parse reliably cross-platform
+        user,
+      });
+    }
+
+    return results.sort((a, b) => b.cpuPct - a.cpuPct);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Activity ring-buffer — 60 one-second buckets for sparkline
 // ---------------------------------------------------------------------------
 
@@ -1285,13 +1409,16 @@ async function startServer() {
   });
 
   // ── Sessions ─────────────────────────────────────────────────────────────
-  app.get('/api/sessions', (_req, res) => {
+  app.get('/api/sessions', (req, res) => {
+    const labelFilter = req.query.label ? String(req.query.label) : null;
     const rows = db.prepare(`
       SELECT
         se.traceId,
         se.name,
         se.createdAt,
         se.pinned,
+        COALESCE(se.label, 'normal') AS label,
+        COALESCE(se.notes, '')       AS notes,
         COUNT(DISTINCT s.spanId) AS spanCount,
         SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
         MAX(CASE s.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
@@ -1307,13 +1434,18 @@ async function startServer() {
       ORDER BY se.pinned DESC, se.createdAt DESC
     `).all() as any[];
 
-    const sessions = rows.map(r => ({
+    let sessions = rows.map(r => ({
       ...r,
       healthScore: Math.max(0,
         100 - (r.threatHigh ?? 0) * 15 - (r.threatMedium ?? 0) * 8 - (r.threatLow ?? 0) * 3
             - Math.min((r.alertCount ?? 0) * 10, 30)
       ),
     }));
+
+    if (labelFilter) {
+      sessions = sessions.filter(s => s.label === labelFilter);
+    }
+
     res.json({ sessions });
   });
 
@@ -1325,13 +1457,17 @@ async function startServer() {
   });
 
   app.patch('/api/sessions/:traceId', (req, res) => {
-    const { name, pinned } = req.body as { name?: string; pinned?: boolean };
+    const { name, pinned, label, notes } = req.body as {
+      name?: string; pinned?: boolean; label?: string; notes?: string;
+    };
+    const exists = db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(req.params.traceId);
+    if (!exists) return res.status(404).json({ error: 'session not found' }) as any;
+
     if (name !== undefined) {
       if (!name.trim()) return res.status(400).json({ error: 'name cannot be empty' }) as any;
       db.prepare('UPDATE sessions SET name = ? WHERE traceId = ?').run(name.trim(), req.params.traceId);
     }
     if (pinned !== undefined) {
-      // Enforce max 10 pinned sessions
       if (pinned) {
         const pinnedCount = (db.prepare('SELECT COUNT(*) as c FROM sessions WHERE pinned = 1').get() as any).c as number;
         if (pinnedCount >= 10) {
@@ -1339,6 +1475,14 @@ async function startServer() {
         }
       }
       db.prepare('UPDATE sessions SET pinned = ? WHERE traceId = ?').run(pinned ? 1 : 0, req.params.traceId);
+    }
+    if (label !== undefined) {
+      const valid = ['normal', 'incident', 'investigation', 'automated', 'other'];
+      if (!valid.includes(label)) return res.status(400).json({ error: `label must be one of: ${valid.join(', ')}` }) as any;
+      db.prepare('UPDATE sessions SET label = ? WHERE traceId = ?').run(label, req.params.traceId);
+    }
+    if (notes !== undefined) {
+      db.prepare('UPDATE sessions SET notes = ? WHERE traceId = ?').run(notes, req.params.traceId);
     }
     io.emit('sessions-update');
     res.json({ status: 'ok' });
@@ -1776,6 +1920,7 @@ service:
     db.prepare('DELETE FROM spans_fts').run();
     db.prepare('DELETE FROM webhook_deliveries').run();
     db.prepare('DELETE FROM span_tags').run();
+    db.prepare('DELETE FROM span_bookmarks').run();
     io.emit('graph-update', buildGraph());
     io.emit('sessions-update');
     io.emit('alerts-update');
@@ -2583,6 +2728,94 @@ ${alerts.length > 0 ? `
 
   app.delete('/api/webhook-deliveries', (_req, res) => {
     db.prepare('DELETE FROM webhook_deliveries').run();
+    res.json({ status: 'ok' });
+  });
+
+  // ── Local agent process scanner (s64) ────────────────────────────────────
+  app.get('/api/processes', (_req, res) => {
+    const procs = scanAgentProcesses();
+    // Enrich with active session correlation: find sessions whose harness matches
+    const activeSessions = db.prepare(`
+      SELECT se.traceId, se.name, se.createdAt, s.harness
+      FROM sessions se
+      JOIN spans s ON s.traceId = se.traceId
+      WHERE se.createdAt > datetime('now', '-2 hours')
+      GROUP BY se.traceId
+    `).all() as { traceId: string; name: string; createdAt: string; harness: string }[];
+
+    const sessionsByHarness = new Map<string, { traceId: string; name: string }[]>();
+    for (const s of activeSessions) {
+      if (!sessionsByHarness.has(s.harness)) sessionsByHarness.set(s.harness, []);
+      sessionsByHarness.get(s.harness)!.push({ traceId: s.traceId, name: s.name });
+    }
+
+    const enriched = procs.map(p => ({
+      ...p,
+      recentSessions: sessionsByHarness.get(p.harness) ?? [],
+    }));
+
+    res.json({
+      processes:  enriched,
+      total:      enriched.length,
+      scannedAt:  new Date().toISOString(),
+      platform:   process.platform,
+      supported:  process.platform === 'darwin' || process.platform === 'linux',
+    });
+  });
+
+  // ── Span bookmarks (s67) ──────────────────────────────────────────────────
+  app.get('/api/bookmarks', (req, res) => {
+    const session = req.query.session ? String(req.query.session) : null;
+    const rows = session
+      ? db.prepare(`
+          SELECT b.*, s.name AS spanName, s.severity, s.harness
+          FROM span_bookmarks b
+          LEFT JOIN spans s ON s.spanId = b.spanId
+          WHERE b.traceId = ?
+          ORDER BY b.id DESC
+        `).all(session)
+      : db.prepare(`
+          SELECT b.*, s.name AS spanName, s.severity, s.harness
+          FROM span_bookmarks b
+          LEFT JOIN spans s ON s.spanId = b.spanId
+          ORDER BY b.id DESC LIMIT 200
+        `).all();
+    res.json({ bookmarks: rows });
+  });
+
+  app.post('/api/bookmarks', (req, res) => {
+    const { spanId, traceId, note } = req.body as { spanId?: string; traceId?: string; note?: string };
+    if (!spanId?.trim()) return res.status(400).json({ error: 'spanId required' }) as any;
+    const result = db.prepare(`
+      INSERT INTO span_bookmarks (spanId, traceId, note, createdAt)
+      VALUES (?, ?, ?, ?)
+    `).run(spanId.trim(), traceId?.trim() ?? '', (note ?? '').trim(), new Date().toISOString());
+    const row = db.prepare('SELECT * FROM span_bookmarks WHERE id = ?').get(result.lastInsertRowid);
+    io.emit('bookmarks-update');
+    res.status(201).json(row);
+  });
+
+  app.patch('/api/bookmarks/:id', (req, res) => {
+    const { note } = req.body as { note?: string };
+    if (note === undefined) return res.status(400).json({ error: 'note required' }) as any;
+    const changes = db.prepare('UPDATE span_bookmarks SET note = ? WHERE id = ?')
+      .run(note.trim(), Number(req.params.id)).changes;
+    if (!changes) return res.status(404).json({ error: 'bookmark not found' }) as any;
+    res.json({ status: 'ok' });
+  });
+
+  app.delete('/api/bookmarks/:id', (req, res) => {
+    const changes = db.prepare('DELETE FROM span_bookmarks WHERE id = ?')
+      .run(Number(req.params.id)).changes;
+    if (!changes) return res.status(404).json({ error: 'bookmark not found' }) as any;
+    io.emit('bookmarks-update');
+    res.json({ status: 'ok' });
+  });
+
+  // Delete bookmark by spanId (convenient for toggle-off)
+  app.delete('/api/bookmarks/span/:spanId', (req, res) => {
+    db.prepare('DELETE FROM span_bookmarks WHERE spanId = ?').run(req.params.spanId);
+    io.emit('bookmarks-update');
     res.json({ status: 'ok' });
   });
 

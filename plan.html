@@ -806,6 +806,67 @@
   </div>
 </div>
 
+<!-- PHASE 15 -->
+<div class="phase" id="phase15">
+  <div class="phase-header">
+    <div class="phase-num" style="background:#06b6d422;color:#06b6d4">15</div>
+    <div>
+      <div class="phase-title">Process Monitor, Session Labels, Alert Groups, Bookmarks &amp; MCP+</div>
+      <div class="phase-desc">Real-time local agent process scanner, session notes &amp; color labels, alert deduplication/grouping, span bookmarks, and expanded MCP tool coverage</div>
+    </div>
+    <div style="margin-left:auto;height:6px;width:120px;background:#1e293b;border-radius:3px;overflow:hidden">
+      <div style="height:100%;background:#06b6d4;border-radius:3px;transition:width .3s" id="p15"></div>
+    </div>
+  </div>
+  <div class="steps">
+    <div class="step done" id="s64">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Local agent process scanner</div>
+        <div class="step-desc">GET /api/processes scans the OS process table (ps aux on macOS/Linux) for known agent CLI patterns (claude, aider, goose, cursor, copilot-language-server, openhands, cline, continue, etc.). Returns [{pid, name, harness, cmd, cpuPct, memMb, startedAt}]. New ProcessesTab.tsx: live-updating table (5s poll), shows PID, harness icon+name, CPU bar, memory, uptime. Correlates PIDs with active sessions. Essential for "thousands of agents running locally without notice" observability.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#a855f722;color:#a855f7">multi-harness</span>
+      </div>
+    </div>
+    <div class="step done" id="s65">
+      <input type="checkbox" onchange="recalc()" checked />
+      <div class="step-body">
+        <div class="step-title">Session notes &amp; colored labels</div>
+        <div class="step-desc">Add label TEXT (incident/investigation/automated/normal/other) and notes TEXT columns to sessions. PATCH /api/sessions/:traceId accepts {label?, notes?}. Sidebar: color-coded label dot per session. Session detail slide-out: notes textarea (auto-save on blur). Filter sessions by label in sidebar. Helps analysts track which sessions are under investigation vs normal.</div>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step" id="s66">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Alert deduplication &amp; grouping</div>
+        <div class="step-desc">Group alerts by (ruleLabel, traceId) in AlertsTab: collapsed group rows show rule name + harness + count badge + first/last seen times. Click to expand individual alerts. Prevents alert fatigue from repetitive patterns. GET /api/alerts/grouped returns pre-aggregated groups. Also: "Silence rule" quick-action from group header (creates 1h suppression). Session health score excludes deduplicated duplicates.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step" id="s67">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Span bookmarks</div>
+        <div class="step-desc">New span_bookmarks table (id, spanId, traceId, note TEXT, createdAt). Star icon in span detail panel and timeline rows. GET /api/bookmarks, POST /api/bookmarks {spanId, traceId, note}, DELETE /api/bookmarks/:id. BookmarksTab.tsx: list of starred spans sorted by createdAt, click to navigate to span in graph. CLI: claudesec bookmarks [--session X] prints table. Useful for marking suspicious spans during live investigations.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step" id="s68">
+      <input type="checkbox" onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Expanded MCP tool coverage</div>
+        <div class="step-desc">Add 6 new MCP tools to POST /mcp: tag_span {spanId, tag}, suppress_rule {ruleKey, durationMs}, bookmark_span {spanId, traceId, note}, get_processes (returns running agent PIDs), get_incident_summary {traceId} (returns health + top threats + alerts + bookmarked spans), list_bookmarks. Enables other AI agents (e.g. Claude in another terminal) to query and interact with ClaudeSec programmatically. Update docs/mcp.mdx with new tool specs.</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">integration</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -823,6 +884,7 @@ function recalc() {
     { steps: ['s49','s50','s51','s52','s53'], bar: 'p12' },
     { steps: ['s54','s55','s56','s57','s58'], bar: 'p13' },
     { steps: ['s59','s60','s61','s62','s63'], bar: 'p14' },
+    { steps: ['s64','s65','s66','s67','s68'], bar: 'p15' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {
