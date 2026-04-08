@@ -9,7 +9,7 @@ import {
   Play, CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
-  Sun, Moon, Server, GitCompare, Monitor,
+  Sun, Moon, Server, GitCompare, Monitor, Bookmark,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
@@ -26,6 +26,7 @@ import { GraphReplay, type ReplayState } from './GraphReplay';
 import { ComparePanel } from './ComparePanel';
 import { SearchTab } from './SearchTab';
 import { ProcessesTab } from './ProcessesTab';
+import { BookmarksTab } from './BookmarksTab';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -73,7 +74,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes';
+type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
 
 interface Workflow {
   id: string;
@@ -399,6 +400,9 @@ export default function App() {
   const [tagAdding,   setTagAdding]   = useState(false);
   const [showTagInput, setShowTagInput] = useState(false);
 
+  // ── Span Bookmarks ────────────────────────────────────────────────────────
+  const [isBookmarked, setIsBookmarked] = useState(false);
+
   // ── Graph export menu ─────────────────────────────────────────────────────
   const [showGraphExport, setShowGraphExport] = useState(false);
   const graphExportRef = useRef<HTMLDivElement>(null);
@@ -514,12 +518,22 @@ export default function App() {
       .catch(() => {});
   }, [selectedNode]);
 
-  // Fetch span tags when a span is selected
+  // Fetch span tags + bookmark state when a span is selected
   useEffect(() => {
-    if (!selectedNode || selectedNode.id === 'agent') { setSpanTags([]); setTagInput(''); setShowTagInput(false); return; }
-    fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/tags`)
+    if (!selectedNode || selectedNode.id === 'agent') {
+      setSpanTags([]); setTagInput(''); setShowTagInput(false); setIsBookmarked(false);
+      return;
+    }
+    const sid = encodeURIComponent(selectedNode.id);
+    fetch(`/api/spans/${sid}/tags`)
       .then(r => r.json())
       .then(({ tags }: { tags: string[] }) => setSpanTags(tags ?? []))
+      .catch(() => {});
+    fetch(`/api/bookmarks?session=${encodeURIComponent((selectedNode.data as any).traceId ?? '')}`)
+      .then(r => r.json())
+      .then((rows: { spanId: string }[]) => {
+        setIsBookmarked((rows ?? []).some(b => b.spanId === selectedNode.id));
+      })
       .catch(() => {});
   }, [selectedNode]);
 
@@ -1489,6 +1503,14 @@ export default function App() {
               <Monitor className="w-3.5 h-3.5" /> Processes
             </button>
             <button
+              onClick={() => setActiveTab('bookmarks')}
+              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
+                activeTab === 'bookmarks' ? 'border-yellow-500 text-yellow-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Bookmark className="w-3.5 h-3.5" /> Bookmarks
+            </button>
+            <button
               onClick={() => setActiveTab('settings')}
               className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ml-auto ${
                 activeTab === 'settings' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
@@ -1608,9 +1630,39 @@ export default function App() {
                   >
                     <div className="flex items-center justify-between mb-5">
                       <h3 className="font-bold">Span Details</h3>
-                      <button onClick={() => setSelectedNode(null)} className="p-1 hover:bg-slate-800 rounded-md text-slate-500">
-                        <X className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {/* Bookmark toggle */}
+                        <button
+                          onClick={async () => {
+                            if (!selectedNode) return;
+                            if (isBookmarked) {
+                              await fetch(`/api/bookmarks/span/${encodeURIComponent(selectedNode.id)}`, { method: 'DELETE' });
+                              setIsBookmarked(false);
+                            } else {
+                              await fetch('/api/bookmarks', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  spanId: selectedNode.id,
+                                  traceId: (selectedNode.data as any).traceId ?? '',
+                                }),
+                              });
+                              setIsBookmarked(true);
+                            }
+                          }}
+                          className={`p-1.5 rounded-md transition-colors ${
+                            isBookmarked
+                              ? 'bg-yellow-900/40 text-yellow-400 hover:bg-yellow-900/60'
+                              : 'hover:bg-slate-800 text-slate-500 hover:text-yellow-400'
+                          }`}
+                          title={isBookmarked ? 'Remove bookmark' : 'Bookmark this span'}
+                        >
+                          <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-yellow-400' : ''}`} />
+                        </button>
+                        <button onClick={() => setSelectedNode(null)} className="p-1 hover:bg-slate-800 rounded-md text-slate-500">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-3">
@@ -1876,6 +1928,16 @@ export default function App() {
           {/* Processes view */}
           {activeTab === 'processes' && (
             <ProcessesTab
+              onSelectSession={traceId => {
+                setActiveSession(traceId);
+                setActiveTab('graph');
+              }}
+            />
+          )}
+
+          {/* Bookmarks view */}
+          {activeTab === 'bookmarks' && (
+            <BookmarksTab
               onSelectSession={traceId => {
                 setActiveSession(traceId);
                 setActiveTab('graph');

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye } from 'lucide-react';
+import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers } from 'lucide-react';
 import { socket } from './socket';
 
 type Severity = 'none' | 'low' | 'medium' | 'high';
@@ -17,6 +17,8 @@ interface AlertRow {
   matchedText: string;
   dismissed: number;
   fp: number;
+  count: number;
+  fingerprint: string;
 }
 
 const HARNESS_COLORS: Record<string, string> = {
@@ -29,6 +31,11 @@ const HARNESS_COLORS: Record<string, string> = {
   'goose':          '#f59e0b',
   'continue':       '#0ea5e9',
   'windsurf':       '#38bdf8',
+  'codex':          '#10b981',
+  'amazon-q':       '#f59e0b',
+  'gemini-cli':     '#4f46e5',
+  'roo-code':       '#8b5cf6',
+  'bolt':           '#06b6d4',
   'unknown':        '#64748b',
 };
 
@@ -42,6 +49,11 @@ const HARNESS_NAMES: Record<string, string> = {
   'goose':          'Goose',
   'continue':       'Continue.dev',
   'windsurf':       'Windsurf',
+  'codex':          'Codex CLI',
+  'amazon-q':       'Amazon Q',
+  'gemini-cli':     'Gemini CLI',
+  'roo-code':       'Roo-Code',
+  'bolt':           'Bolt.new',
   'unknown':        'Unknown',
 };
 
@@ -50,6 +62,13 @@ const SEV_BADGE: Record<string, string> = {
   medium: 'bg-orange-900/40 text-orange-300 border border-orange-700/40',
   low:    'bg-yellow-900/40 text-yellow-300 border border-yellow-700/40',
   none:   'bg-slate-800 text-slate-400',
+};
+
+const SEV_COUNT_COLOR: Record<string, string> = {
+  high:   'bg-red-600 text-white',
+  medium: 'bg-orange-500 text-white',
+  low:    'bg-yellow-500 text-black',
+  none:   'bg-slate-600 text-white',
 };
 
 const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
@@ -64,12 +83,18 @@ export function AlertsTab() {
   const [total,           setTotal]           = useState(0);
   const [severityFilter,  setSeverityFilter]  = useState<SeverityFilter>('all');
   const [showDismissed,   setShowDismissed]   = useState(false);
+  const [groupByRule,     setGroupByRule]     = useState(false);
   const [triaging,        setTriaging]        = useState<Set<number>>(new Set());
 
-  const fetchAlerts = (sev: SeverityFilter = severityFilter, sd = showDismissed) => {
+  const fetchAlerts = (
+    sev: SeverityFilter = severityFilter,
+    sd  = showDismissed,
+    grp = groupByRule,
+  ) => {
     const params = new URLSearchParams({ limit: '200' });
     if (sev !== 'all') params.set('severity', sev);
-    if (sd) params.set('showDismissed', 'true');
+    if (sd)  params.set('showDismissed', 'true');
+    if (grp) params.set('groupBy', 'rule');
     fetch(`/api/alerts?${params}`)
       .then(r => r.json())
       .then(({ alerts: a, total: t }: { alerts: AlertRow[]; total: number }) => {
@@ -80,14 +105,14 @@ export function AlertsTab() {
   };
 
   useEffect(() => {
-    fetchAlerts(severityFilter, showDismissed);
-  }, [severityFilter, showDismissed]);
+    fetchAlerts(severityFilter, showDismissed, groupByRule);
+  }, [severityFilter, showDismissed, groupByRule]);
 
   useEffect(() => {
-    const handler = () => fetchAlerts(severityFilter, showDismissed);
+    const handler = () => fetchAlerts(severityFilter, showDismissed, groupByRule);
     socket.on('alerts-update', handler);
     return () => { socket.off('alerts-update', handler); };
-  }, [severityFilter, showDismissed]);
+  }, [severityFilter, showDismissed, groupByRule]);
 
   const triage = async (id: number, patch: { dismissed?: boolean; fp?: boolean }) => {
     setTriaging(prev => new Set(prev).add(id));
@@ -97,7 +122,7 @@ export function AlertsTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       });
-      fetchAlerts(severityFilter, showDismissed);
+      fetchAlerts(severityFilter, showDismissed, groupByRule);
     } catch {}
     setTriaging(prev => { const s = new Set(prev); s.delete(id); return s; });
   };
@@ -140,6 +165,19 @@ export function AlertsTab() {
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
+          {/* Group by rule toggle */}
+          <button
+            onClick={() => setGroupByRule(v => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+              groupByRule
+                ? 'bg-blue-900/30 border-blue-700/40 text-blue-400'
+                : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
+            }`}
+            title={groupByRule ? 'Showing grouped view' : 'Group duplicate alerts by rule'}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            {groupByRule ? 'Grouped' : 'Group'}
+          </button>
           {/* Show/hide dismissed toggle */}
           <button
             onClick={() => setShowDismissed(v => !v)}
@@ -196,6 +234,7 @@ export function AlertsTab() {
                 const isDismissed = !!alert.dismissed;
                 const isFP        = !!alert.fp;
                 const isTriaging  = triaging.has(alert.id);
+                const hitCount    = alert.count ?? 1;
                 return (
                   <tr
                     key={alert.id}
@@ -209,14 +248,24 @@ export function AlertsTab() {
                       {formatTime(alert.ts)}
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
-                        {alert.severity}
-                      </span>
-                      {isFP && (
-                        <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-900/30 text-orange-400 border border-orange-700/30">
-                          FP
+                      <div className="flex items-center gap-1.5">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
+                          {alert.severity}
                         </span>
-                      )}
+                        {hitCount > 1 && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold tabular-nums ${SEV_COUNT_COLOR[alert.severity] ?? SEV_COUNT_COLOR.none}`}
+                            title={`Fired ${hitCount} times`}
+                          >
+                            {hitCount}×
+                          </span>
+                        )}
+                        {isFP && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-900/30 text-orange-400 border border-orange-700/30">
+                            FP
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className={`px-4 py-2.5 font-medium max-w-[180px] truncate ${isDismissed ? 'line-through text-slate-600' : 'text-slate-200'}`} title={alert.ruleLabel}>
                       {alert.ruleLabel}
