@@ -131,12 +131,55 @@ db.exec(`
   );
 `);
 
+// Safe migrations for alert triage columns (Phase 14)
+try { db.exec(`ALTER TABLE alerts ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE alerts ADD COLUMN fp        INTEGER NOT NULL DEFAULT 0`); } catch {}
+
 const insertAlert = db.prepare(`
   INSERT INTO alerts (ts, ruleLabel, severity, spanId, traceId, harness, spanName, matchedText)
   VALUES (@ts, @ruleLabel, @severity, @spanId, @traceId, @harness, @spanName, @matchedText)
 `);
 
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
+
+// ---------------------------------------------------------------------------
+// Suppressions table — snooze a security rule until suppressUntil (Phase 14)
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS suppressions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ruleKey       TEXT NOT NULL,
+    suppressUntil TEXT NOT NULL,
+    reason        TEXT NOT NULL DEFAULT '',
+    createdAt     TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_suppressions_ruleKey ON suppressions(ruleKey);
+`);
+
+function isRuleSuppressed(ruleKey: string): boolean {
+  const now = new Date().toISOString();
+  const row = db.prepare(
+    `SELECT 1 FROM suppressions WHERE ruleKey = ? AND suppressUntil > ? LIMIT 1`
+  ).get(ruleKey, now);
+  return !!row;
+}
+
+// ---------------------------------------------------------------------------
+// Span tags table — custom labels on spans (Phase 14)
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS span_tags (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    spanId    TEXT NOT NULL,
+    tag       TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    UNIQUE (spanId, tag)
+  );
+  CREATE INDEX IF NOT EXISTS idx_span_tags_spanId ON span_tags(spanId);
+  CREATE INDEX IF NOT EXISTS idx_span_tags_tag    ON span_tags(tag);
+`);
 
 // ---------------------------------------------------------------------------
 // Threshold alert rules — numeric trigger conditions
@@ -775,6 +818,7 @@ const SEVERITY_RULES: { pattern: RegExp; severity: Severity; label: string }[] =
 function detectSeverity(text: string): { severity: Severity; matchedLabel: string; matchedText: string } {
   // Check custom rules first
   for (const rule of customRules) {
+    if (isRuleSuppressed(`custom:${rule.id}`)) continue;
     try {
       const re = new RegExp(rule.pattern, rule.flags);
       const m = re.exec(text);
@@ -782,7 +826,9 @@ function detectSeverity(text: string): { severity: Severity; matchedLabel: strin
     } catch { /* invalid regex — skip */ }
   }
   // Built-in rules
-  for (const rule of SEVERITY_RULES) {
+  for (let i = 0; i < SEVERITY_RULES.length; i++) {
+    const rule = SEVERITY_RULES[i];
+    if (isRuleSuppressed(`builtin-${i}`)) continue;
     const m = rule.pattern.exec(text);
     if (m) return { severity: rule.severity, matchedLabel: rule.label, matchedText: m[0].slice(0, 100) };
   }
@@ -1729,6 +1775,7 @@ service:
     deleteAllAnnotations.run();
     db.prepare('DELETE FROM spans_fts').run();
     db.prepare('DELETE FROM webhook_deliveries').run();
+    db.prepare('DELETE FROM span_tags').run();
     io.emit('graph-update', buildGraph());
     io.emit('sessions-update');
     io.emit('alerts-update');
@@ -1785,22 +1832,19 @@ service:
 
   // ── Alerts ───────────────────────────────────────────────────────────────
   app.get('/api/alerts', (req, res) => {
-    const limit    = Math.min(Number(req.query.limit ?? 200), 1000);
-    const severity = req.query.severity ? String(req.query.severity) : null;
+    const limit          = Math.min(Number(req.query.limit ?? 200), 1000);
+    const severity       = req.query.severity      ? String(req.query.severity)      : null;
+    const showDismissed  = req.query.showDismissed === 'true';
 
-    let sql    = 'SELECT * FROM alerts';
-    const params: unknown[] = [];
-    if (severity && severity !== 'all') {
-      sql += ' WHERE severity = ?';
-      params.push(severity);
-    }
-    sql += ' ORDER BY id DESC LIMIT ?';
-    params.push(limit);
+    const conditions: string[] = [];
+    const params: unknown[]    = [];
 
-    const alerts = db.prepare(sql).all(...params);
-    const total  = (db.prepare(severity && severity !== 'all'
-      ? 'SELECT COUNT(*) as c FROM alerts WHERE severity = ?'
-      : 'SELECT COUNT(*) as c FROM alerts').get(...(severity && severity !== 'all' ? [severity] : [])) as any).c;
+    if (severity && severity !== 'all') { conditions.push('severity = ?');    params.push(severity); }
+    if (!showDismissed)                 { conditions.push('dismissed = 0'); }
+
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const alerts = db.prepare(`SELECT * FROM alerts${where} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+    const total  = (db.prepare(`SELECT COUNT(*) as c FROM alerts${where}`).get(...params) as any).c;
 
     res.json({ alerts, total });
   });
@@ -2423,13 +2467,20 @@ ${alerts.length > 0 ? `
 
   function buildSearchQuery(opts: {
     q: string; severity?: string; harness?: string;
-    from?: string; to?: string; limit: number; offset: number;
+    from?: string; to?: string; tag?: string; limit: number; offset: number;
   }): { spans: SpanRecord[]; total: number } {
     const conditions: string[] = [];
     const params: unknown[]    = [];
 
+    // Tag filter — join against span_tags
+    let fromClause = 'spans';
+    if (opts.tag) {
+      const tagClean = opts.tag.trim().toLowerCase();
+      conditions.push('spanId IN (SELECT spanId FROM span_tags WHERE tag = ?)');
+      params.push(tagClean);
+    }
+
     // FTS5 match — fall back to LIKE if query is empty
-    let baseTable = 'spans';
     if (opts.q) {
       try {
         const escaped = '"' + opts.q.replace(/"/g, '""') + '"';
@@ -2470,8 +2521,8 @@ ${alerts.length > 0 ? `
     }
 
     const where  = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const total  = (db.prepare(`SELECT COUNT(*) as c FROM ${baseTable} ${where}`).get(...params) as any).c as number;
-    const spans  = db.prepare(`SELECT * FROM ${baseTable} ${where} ORDER BY startNano DESC LIMIT ? OFFSET ?`)
+    const total  = (db.prepare(`SELECT COUNT(*) as c FROM ${fromClause} ${where}`).get(...params) as any).c as number;
+    const spans  = db.prepare(`SELECT * FROM ${fromClause} ${where} ORDER BY startNano DESC LIMIT ? OFFSET ?`)
       .all(...params, opts.limit, opts.offset) as SpanRecord[];
     return { spans, total };
   }
@@ -2482,11 +2533,12 @@ ${alerts.length > 0 ? `
     const harness  = String(req.query.harness  ?? '').trim();
     const from     = String(req.query.from     ?? '').trim();
     const to       = String(req.query.to       ?? '').trim();
+    const tag      = String(req.query.tag      ?? '').trim() || undefined;
     const limit    = Math.min(Math.max(1, Number(req.query.limit ?? 20)), 100);
     const page     = Math.max(1, Number(req.query.page ?? 1));
     const offset   = (page - 1) * limit;
 
-    const { spans, total } = buildSearchQuery({ q, severity, harness, from, to, limit, offset });
+    const { spans, total } = buildSearchQuery({ q, severity, harness, from, to, tag, limit, offset });
     res.json({ spans, total, page, pages: Math.ceil(total / limit), query: q });
   });
 
@@ -2494,7 +2546,8 @@ ${alerts.length > 0 ? `
     const q        = String(req.query.q        ?? '').trim();
     const severity = String(req.query.severity ?? '').trim();
     const harness  = String(req.query.harness  ?? '').trim();
-    const { spans } = buildSearchQuery({ q, severity, harness, limit: 5000, offset: 0 });
+    const tag      = String(req.query.tag      ?? '').trim() || undefined;
+    const { spans } = buildSearchQuery({ q, severity, harness, tag, limit: 5000, offset: 0 });
     res.setHeader('Content-Disposition', `attachment; filename="claudesec-search-${Date.now()}.json"`);
     res.json({ exportedAt: new Date().toISOString(), query: q, count: spans.length, spans });
   });
@@ -2530,6 +2583,165 @@ ${alerts.length > 0 ? `
 
   app.delete('/api/webhook-deliveries', (_req, res) => {
     db.prepare('DELETE FROM webhook_deliveries').run();
+    res.json({ status: 'ok' });
+  });
+
+  // ── Graph export — Mermaid & Graphviz DOT (s59) ──────────────────────────
+  app.get('/api/graph/mermaid', (req, res) => {
+    const session = req.query.session ? String(req.query.session) : undefined;
+    const records: SpanRecord[] = session
+      ? (db.prepare('SELECT * FROM spans WHERE traceId = ?').all(session) as SpanRecord[])
+      : (getAllSpans.all() as SpanRecord[]);
+
+    const lines: string[] = ['flowchart TD'];
+    const seen = new Set<string>();
+
+    for (const r of records) {
+      const nodeId  = r.spanId.replace(/[^a-zA-Z0-9_]/g, '_');
+      const label   = r.name.replace(/"/g, "'").slice(0, 60);
+      const style   = r.severity === 'high'   ? ':::high'
+                    : r.severity === 'medium' ? ':::medium'
+                    : r.severity === 'low'    ? ':::low' : '';
+      if (!seen.has(nodeId)) {
+        lines.push(`    ${nodeId}["${label}"]${style}`);
+        seen.add(nodeId);
+      }
+      // Edge
+      const parentId = r.parentId.replace(/[^a-zA-Z0-9_]/g, '_');
+      if (r.parentId && r.parentId !== r.spanId) {
+        lines.push(`    ${parentId} --> ${nodeId}`);
+      }
+    }
+
+    // Severity class definitions
+    lines.push(
+      '    classDef high   fill:#450a0a,stroke:#ef4444,color:#fca5a5',
+      '    classDef medium fill:#431407,stroke:#f97316,color:#fdba74',
+      '    classDef low    fill:#422006,stroke:#eab308,color:#fde047',
+    );
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(lines.join('\n'));
+  });
+
+  app.get('/api/graph/dot', (req, res) => {
+    const session = req.query.session ? String(req.query.session) : undefined;
+    const records: SpanRecord[] = session
+      ? (db.prepare('SELECT * FROM spans WHERE traceId = ?').all(session) as SpanRecord[])
+      : (getAllSpans.all() as SpanRecord[]);
+
+    const lines: string[] = [
+      'digraph ClaudeSec {',
+      '  graph [rankdir=TB bgcolor="#0f172a" fontname="system-ui"]',
+      '  node  [shape=box style="filled,rounded" fontname="system-ui" fontsize=11 fontcolor="#e2e8f0"]',
+      '  edge  [color="#64748b" fontname="system-ui" fontsize=9]',
+    ];
+
+    const seen = new Set<string>();
+    const colorMap: Record<Severity, string> = {
+      high: '#450a0a', medium: '#431407', low: '#422006', none: '#1e293b',
+    };
+    const borderMap: Record<Severity, string> = {
+      high: '#ef4444', medium: '#f97316', low: '#eab308', none: '#334155',
+    };
+
+    for (const r of records) {
+      const nodeId = `"${r.spanId}"`;
+      const label  = r.name.replace(/"/g, '\\"').slice(0, 60);
+      const bg     = colorMap[r.severity as Severity] ?? colorMap.none;
+      const border = borderMap[r.severity as Severity] ?? borderMap.none;
+      if (!seen.has(r.spanId)) {
+        lines.push(`  ${nodeId} [label="${label}" fillcolor="${bg}" color="${border}"]`);
+        seen.add(r.spanId);
+      }
+      if (r.parentId && r.parentId !== r.spanId) {
+        lines.push(`  "${r.parentId}" -> ${nodeId} [label="${r.protocol}"]`);
+      }
+    }
+
+    lines.push('}');
+    res.setHeader('Content-Type', 'text/vnd.graphviz; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="claudesec-${Date.now()}.dot"`);
+    res.send(lines.join('\n'));
+  });
+
+  // ── Alert triage — dismiss & false-positive (s60) ─────────────────────────
+  app.patch('/api/alerts/:id', (req, res) => {
+    const id  = Number(req.params.id);
+    const { dismissed, fp } = req.body as { dismissed?: boolean; fp?: boolean };
+    if (dismissed === undefined && fp === undefined) {
+      return res.status(400).json({ error: 'dismissed or fp is required' }) as any;
+    }
+    const existing = db.prepare('SELECT id FROM alerts WHERE id = ?').get(id);
+    if (!existing) return res.status(404).json({ error: 'alert not found' }) as any;
+
+    if (dismissed !== undefined) {
+      db.prepare('UPDATE alerts SET dismissed = ? WHERE id = ?').run(dismissed ? 1 : 0, id);
+    }
+    if (fp !== undefined) {
+      db.prepare('UPDATE alerts SET fp = ? WHERE id = ?').run(fp ? 1 : 0, id);
+    }
+    io.emit('alerts-update');
+    res.json({ status: 'ok' });
+  });
+
+  // ── Suppressions CRUD (s61) ───────────────────────────────────────────────
+  app.get('/api/suppressions', (_req, res) => {
+    const now  = new Date().toISOString();
+    const rows = db.prepare(`
+      SELECT * FROM suppressions WHERE suppressUntil > ? ORDER BY id DESC
+    `).all(now) as any[];
+    res.json({ suppressions: rows });
+  });
+
+  app.post('/api/suppressions', (req, res) => {
+    const { ruleKey, durationMs, reason } = req.body as {
+      ruleKey?: string; durationMs?: number; reason?: string;
+    };
+    if (!ruleKey?.trim())                 return res.status(400).json({ error: 'ruleKey required' }) as any;
+    if (!durationMs || durationMs <= 0)   return res.status(400).json({ error: 'durationMs > 0 required' }) as any;
+    const suppressUntil = new Date(Date.now() + durationMs).toISOString();
+    const result = db.prepare(`
+      INSERT INTO suppressions (ruleKey, suppressUntil, reason, createdAt)
+      VALUES (?, ?, ?, ?)
+    `).run(ruleKey.trim(), suppressUntil, (reason ?? '').trim(), new Date().toISOString());
+    const row = db.prepare('SELECT * FROM suppressions WHERE id = ?').get(result.lastInsertRowid);
+    io.emit('rules-update');
+    res.status(201).json(row);
+  });
+
+  app.delete('/api/suppressions/:id', (req, res) => {
+    const changes = db.prepare('DELETE FROM suppressions WHERE id = ?').run(Number(req.params.id)).changes;
+    if (!changes) return res.status(404).json({ error: 'suppression not found' }) as any;
+    io.emit('rules-update');
+    res.json({ status: 'ok' });
+  });
+
+  // ── Span custom tags (s62) ───────────────────────────────────────────────
+  app.get('/api/spans/:spanId/tags', (req, res) => {
+    const rows = db.prepare('SELECT tag, createdAt FROM span_tags WHERE spanId = ? ORDER BY id ASC')
+      .all(req.params.spanId) as { tag: string; createdAt: string }[];
+    res.json({ tags: rows.map(r => r.tag) });
+  });
+
+  app.post('/api/spans/:spanId/tags', (req, res) => {
+    const { tag } = req.body as { tag?: string };
+    if (!tag?.trim()) return res.status(400).json({ error: 'tag is required' }) as any;
+    const clean = tag.trim().toLowerCase().replace(/[^a-z0-9_:.-]/g, '').slice(0, 64);
+    if (!clean) return res.status(400).json({ error: 'tag contains no valid characters' }) as any;
+    try {
+      db.prepare('INSERT OR IGNORE INTO span_tags (spanId, tag, createdAt) VALUES (?, ?, ?)')
+        .run(req.params.spanId, clean, new Date().toISOString());
+    } catch {
+      return res.status(409).json({ error: 'tag already exists' }) as any;
+    }
+    res.status(201).json({ tag: clean });
+  });
+
+  app.delete('/api/spans/:spanId/tags/:tag', (req, res) => {
+    const changes = db.prepare('DELETE FROM span_tags WHERE spanId = ? AND tag = ?')
+      .run(req.params.spanId, req.params.tag.toLowerCase()).changes;
+    if (!changes) return res.status(404).json({ error: 'tag not found' }) as any;
     res.json({ status: 'ok' });
   });
 
