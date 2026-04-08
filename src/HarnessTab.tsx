@@ -107,11 +107,15 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
 
   return (
     <div
-      className={`bg-slate-900 border rounded-xl p-4 space-y-3 transition-all duration-150 ${
+      className={`rounded-xl p-4 space-y-3 transition-all duration-150 ${
         isActive
-          ? 'border-blue-500/50 ring-2 ring-blue-500/50'
-          : 'border-slate-800 hover:border-slate-700'
+          ? ''
+          : 'hover:border-slate-700'
       }`}
+      style={isActive
+        ? { background: 'var(--cs-bg-surface)', border: '1px solid rgba(0,212,170,0.4)', boxShadow: '0 0 0 2px rgba(0,212,170,0.2)' }
+        : { background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }
+      }
     >
       {/* Header row */}
       <div className="flex items-center gap-2">
@@ -123,11 +127,15 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
         <button
           type="button"
           onClick={onFilter}
-          className={`text-[10px] px-2 py-0.5 rounded-md border transition-colors ${
+          className={`text-xs px-2 py-0.5 rounded-md border transition-colors ${
             isActive
-              ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
+              ? ''
               : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-300'
           }`}
+          style={isActive
+            ? { background: 'rgba(0,212,170,0.15)', borderColor: 'rgba(0,212,170,0.4)', color: 'rgba(0,212,170,0.85)' }
+            : { background: 'rgba(0,212,170,0.1)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
+          }
         >
           {isActive ? 'Filtered' : 'Filter'}
         </button>
@@ -139,11 +147,11 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
           <p className="text-2xl font-bold text-slate-100 leading-none">
             {stats.spanCount.toLocaleString()}
           </p>
-          <p className="text-[10px] text-slate-500 mt-0.5">spans</p>
+          <p className="text-xs text-slate-500 mt-0.5">spans</p>
         </div>
         <div className="pb-0.5">
           <p className="text-sm font-medium text-slate-300">{stats.sessionCount.toLocaleString()}</p>
-          <p className="text-[10px] text-slate-500">sessions</p>
+          <p className="text-xs text-slate-500">sessions</p>
         </div>
       </div>
 
@@ -151,17 +159,17 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
       {(stats.threatHigh > 0 || stats.threatMedium > 0 || stats.threatLow > 0) && (
         <div className="flex items-center gap-1.5 flex-wrap">
           {stats.threatHigh > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-red-900/40 text-red-300 border border-red-700/40">
+            <span className="px-1.5 py-0.5 rounded text-xs font-mono uppercase bg-red-900/40 text-red-300 border border-red-700/40">
               HIGH {stats.threatHigh}
             </span>
           )}
           {stats.threatMedium > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-orange-900/40 text-orange-300 border border-orange-700/40">
+            <span className="px-1.5 py-0.5 rounded text-xs font-mono uppercase bg-orange-900/40 text-orange-300 border border-orange-700/40">
               MED {stats.threatMedium}
             </span>
           )}
           {stats.threatLow > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-yellow-900/40 text-yellow-300 border border-yellow-700/40">
+            <span className="px-1.5 py-0.5 rounded text-xs font-mono uppercase bg-yellow-900/40 text-yellow-300 border border-yellow-700/40">
               LOW {stats.threatLow}
             </span>
           )}
@@ -176,7 +184,7 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
       )}
 
       {/* Last seen */}
-      <p className="text-[10px] text-slate-600">
+      <p className="text-xs text-slate-600">
         Last seen: <span className="text-slate-500">{relativeTime(stats.lastSeen)}</span>
       </p>
     </div>
@@ -211,21 +219,22 @@ export function HarnessTab({ onFilterHarness, activeFilter }: Props): React.Reac
   };
 
   return (
-    <div className="flex-1 overflow-auto p-5 bg-slate-950 min-h-0">
+    <div className="flex-1 overflow-auto p-5 min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
       <div className="max-w-5xl mx-auto space-y-4">
 
         {/* Header */}
         <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5 text-blue-400" />
+          <Activity className="w-5 h-5" style={{ color: '#00d4aa' }} />
           <h2 className="text-sm font-bold text-slate-200">Agent Harnesses</h2>
-          <span className="ml-auto text-[10px] font-mono text-slate-500">
+          <span className="ml-auto text-xs font-mono text-slate-500">
             {harnesses.length} harness{harnesses.length !== 1 ? 'es' : ''} detected
           </span>
           {activeFilter && (
             <button
               type="button"
               onClick={() => onFilterHarness(null)}
-              className="text-[10px] px-2 py-0.5 rounded-md bg-blue-900/30 border border-blue-700/40 text-blue-300 hover:bg-blue-900/50 transition-colors"
+              className="text-xs px-2 py-0.5 rounded-md border transition-colors"
+              style={{ background: 'rgba(0,212,170,0.12)', borderColor: 'rgba(0,212,170,0.3)', color: 'rgba(0,212,170,0.85)' }}
             >
               Clear filter
             </button>

@@ -138,10 +138,10 @@ export function AlertsTab() {
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-slate-950">
+    <div className="flex-1 flex flex-col min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
 
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-900/40 shrink-0 flex-wrap">
+      <div className="flex items-center gap-3 px-5 py-3 shrink-0 flex-wrap" style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-border)' }}>
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-orange-400" />
           <span className="text-sm font-bold text-slate-200">Alert Log</span>
@@ -153,11 +153,12 @@ export function AlertsTab() {
             <button
               key={btn.value}
               onClick={() => setSeverityFilter(btn.value)}
-              className={`px-2.5 py-1 text-[10px] font-medium rounded-full transition-colors ${
+              className={`px-2.5 py-1 text-xs font-medium rounded-full transition-colors ${
                 severityFilter === btn.value
-                  ? 'bg-blue-600 text-white'
+                  ? ''
                   : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
               }`}
+              style={severityFilter === btn.value ? { background: '#00d4aa', color: '#fff' } : undefined}
             >
               {btn.label}
             </button>
@@ -168,11 +169,12 @@ export function AlertsTab() {
           {/* Group by rule toggle */}
           <button
             onClick={() => setGroupByRule(v => !v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors ${
               groupByRule
-                ? 'bg-blue-900/30 border-blue-700/40 text-blue-400'
-                : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
+                ? ''
+                : 'bg-slate-800 border border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
             }`}
+            style={groupByRule ? { background: 'rgba(0,212,170,0.1)', border: '1px solid rgba(0,212,170,0.2)', color: '#00d4aa' } : undefined}
             title={groupByRule ? 'Showing grouped view' : 'Group duplicate alerts by rule'}
           >
             <Layers className="w-3.5 h-3.5" />
@@ -207,7 +209,7 @@ export function AlertsTab() {
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto p-4">
         {alerts.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
             <ShieldOff className="w-8 h-8 text-slate-700" />
@@ -217,9 +219,10 @@ export function AlertsTab() {
             </p>
           </div>
         ) : (
+          <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
           <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-slate-900/90 backdrop-blur-sm z-10">
-              <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase tracking-wider">
+            <thead className="sticky top-0 z-10" style={{ background: 'var(--cs-bg-elevated)' }}>
+              <tr className="text-xs uppercase tracking-wider" style={{ color: 'var(--cs-text-muted)', borderBottom: '1px solid var(--cs-border)' }}>
                 <th className="px-4 py-2.5 text-left">Time</th>
                 <th className="px-4 py-2.5 text-left">Severity</th>
                 <th className="px-4 py-2.5 text-left">Rule</th>
@@ -238,30 +241,31 @@ export function AlertsTab() {
                 return (
                   <tr
                     key={alert.id}
-                    className={`border-b border-slate-800/50 transition-colors ${
+                    className={`transition-colors ${
                       isDismissed
                         ? 'opacity-40 bg-slate-900/30'
                         : 'hover:bg-slate-800/30'
                     }`}
+                    style={{ borderBottom: '1px solid var(--cs-border)' }}
                   >
                     <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
                       {formatTime(alert.ts)}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
                           {alert.severity}
                         </span>
                         {hitCount > 1 && (
                           <span
-                            className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold tabular-nums ${SEV_COUNT_COLOR[alert.severity] ?? SEV_COUNT_COLOR.none}`}
+                            className={`px-1.5 py-0.5 rounded-full text-[11px] font-bold tabular-nums ${SEV_COUNT_COLOR[alert.severity] ?? SEV_COUNT_COLOR.none}`}
                             title={`Fired ${hitCount} times`}
                           >
                             {hitCount}×
                           </span>
                         )}
                         {isFP && (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-900/30 text-orange-400 border border-orange-700/30">
+                          <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-orange-900/30 text-orange-400 border border-orange-700/30">
                             FP
                           </span>
                         )}
@@ -286,7 +290,7 @@ export function AlertsTab() {
                     </td>
                     <td className="px-4 py-2.5">
                       {alert.matchedText ? (
-                        <code className="text-[10px] font-mono text-red-300 bg-red-900/20 px-1.5 py-0.5 rounded max-w-[200px] truncate block" title={alert.matchedText}>
+                        <code className="text-xs font-mono text-red-300 bg-red-900/20 px-1.5 py-0.5 rounded max-w-[200px] truncate block" title={alert.matchedText}>
                           {alert.matchedText}
                         </code>
                       ) : (
@@ -302,7 +306,7 @@ export function AlertsTab() {
                           className={`p-1 rounded transition-colors ${
                             isDismissed
                               ? 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                              : 'text-slate-600 hover:bg-slate-700 hover:text-slate-300'
+                              : 'text-slate-500 hover:bg-slate-700 hover:text-slate-300'
                           }`}
                           title={isDismissed ? 'Restore alert' : 'Dismiss alert'}
                         >
@@ -315,7 +319,7 @@ export function AlertsTab() {
                           className={`p-1 rounded transition-colors ${
                             isFP
                               ? 'bg-orange-900/40 text-orange-400 hover:bg-orange-900/60'
-                              : 'text-slate-600 hover:bg-slate-700 hover:text-orange-400'
+                              : 'text-slate-500 hover:bg-slate-700 hover:text-orange-400'
                           }`}
                           title={isFP ? 'Unmark false positive' : 'Mark as false positive'}
                         >
@@ -328,6 +332,7 @@ export function AlertsTab() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

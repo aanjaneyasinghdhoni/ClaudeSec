@@ -88,7 +88,7 @@ export function HeatmapTab() {
       const ratio = cell.spans / data.maxSpans;
       return ratio === 0
         ? 'rgba(30,41,59,0.8)'
-        : `rgba(59,130,246,${0.15 + ratio * 0.85})`;
+        : `rgba(0,212,170,${0.15 + ratio * 0.85})`;
     }
     if (mode === 'threat-abs') {
       const ratio = cell.threats / data.maxThreats;
@@ -100,9 +100,9 @@ export function HeatmapTab() {
   };
 
   return (
-    <div className="flex-1 overflow-auto p-6 bg-slate-950">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-5">
+    <div className="flex-1 overflow-auto" style={{ background: 'var(--cs-bg-primary)' }}>
+      {/* Header / Toolbar */}
+      <div className="flex items-center justify-between px-5 py-3" style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-border)' }}>
         <div>
           <h2 className="font-bold text-slate-200 flex items-center gap-2">
             <Flame className="w-4 h-4 text-orange-400" /> Threat Heatmap
@@ -118,9 +118,10 @@ export function HeatmapTab() {
               onClick={() => setMode(m)}
               className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
                 mode === m
-                  ? 'bg-blue-600 text-white'
+                  ? ''
                   : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
               }`}
+              style={mode === m ? { background: '#00d4aa', color: '#fff' } : undefined}
             >
               {m === 'threat-ratio' ? 'Threat %' : m === 'threat-abs' ? 'Threat Count' : 'Span Count'}
             </button>
@@ -128,28 +129,29 @@ export function HeatmapTab() {
         </div>
       </div>
 
+      <div className="p-5">
       {/* Legend */}
       <div className="flex items-center gap-3 mb-4">
-        <span className="text-[10px] text-slate-600 uppercase font-bold">Less</span>
+        <span className="text-xs text-slate-600 uppercase font-bold">Less</span>
         {[0, 0.1, 0.35, 0.6, 0.85, 1].map(r => (
           <div
             key={r}
             className="w-5 h-5 rounded"
-            style={{ background: mode === 'spans' ? `rgba(59,130,246,${0.15 + r * 0.85})` : threatColor(r) }}
+            style={{ background: mode === 'spans' ? `rgba(0,212,170,${0.15 + r * 0.85})` : threatColor(r) }}
           />
         ))}
-        <span className="text-[10px] text-slate-600 uppercase font-bold">More</span>
+        <span className="text-xs text-slate-600 uppercase font-bold">More</span>
       </div>
 
       {/* Grid */}
-      <div className="overflow-x-auto">
+      <div className="rounded-xl overflow-x-auto p-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
         <div className="inline-block min-w-0">
           {/* Hour axis */}
           <div className="flex" style={{ marginLeft: 40 }}>
             {HOURS.map((h, i) => (
               <div
                 key={i}
-                className="text-[9px] text-slate-600 text-center flex-shrink-0"
+                className="text-[11px] text-slate-600 text-center flex-shrink-0"
                 style={{ width: 28 }}
               >
                 {i % 3 === 0 ? h : ''}
@@ -161,7 +163,7 @@ export function HeatmapTab() {
           {DAYS.map((day, dow) => (
             <div key={dow} className="flex items-center mb-0.5">
               {/* Day label */}
-              <div className="text-[10px] text-slate-500 font-medium w-10 shrink-0 text-right pr-2">
+              <div className="text-xs text-slate-500 font-medium w-10 shrink-0 text-right pr-2">
                 {day}
               </div>
               {/* Cells */}
@@ -175,7 +177,7 @@ export function HeatmapTab() {
                   <div
                     key={hour}
                     className="rounded-sm cursor-pointer transition-all hover:scale-110 hover:z-10 relative flex-shrink-0"
-                    style={{ width: 26, height: 26, margin: 1, background: cellColor(dow, hour) }}
+                    style={{ width: 26, height: 26, margin: 1, background: cellColor(dow, hour), border: cell.spans === 0 ? '1px solid rgba(255,255,255,0.03)' : undefined }}
                     onMouseEnter={e => {
                       const rect = (e.target as HTMLElement).getBoundingClientRect();
                       setTooltip({ day: dow, hour, cell, x: rect.left, y: rect.top });
@@ -206,29 +208,30 @@ export function HeatmapTab() {
           const threatRatio  = data.totalSpans > 0 ? (totalThreats / data.totalSpans * 100).toFixed(1) : '0.0';
           return (
             <>
-              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Busiest Hour</p>
+              <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+                <p className="text-xs text-slate-500 uppercase font-bold mb-1">Busiest Hour</p>
                 <p className="text-sm font-bold text-blue-400">{DAYS[busiestDow]} {HOURS[busiestHour]}</p>
-                <p className="text-[10px] text-slate-600">{busiestSpans} spans</p>
+                <p className="text-xs text-slate-600">{busiestSpans} spans</p>
               </div>
-              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Peak Threats</p>
+              <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+                <p className="text-xs text-slate-500 uppercase font-bold mb-1">Peak Threats</p>
                 <p className="text-sm font-bold text-red-400">{DAYS[threatDow]} {HOURS[threatHour]}</p>
-                <p className="text-[10px] text-slate-600">{mostThreats} threats</p>
+                <p className="text-xs text-slate-600">{mostThreats} threats</p>
               </div>
-              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Total Threats</p>
+              <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+                <p className="text-xs text-slate-500 uppercase font-bold mb-1">Total Threats</p>
                 <p className="text-sm font-bold text-orange-400">{totalThreats.toLocaleString()}</p>
-                <p className="text-[10px] text-slate-600">across all time</p>
+                <p className="text-xs text-slate-600">across all time</p>
               </div>
-              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Threat Rate</p>
+              <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+                <p className="text-xs text-slate-500 uppercase font-bold mb-1">Threat Rate</p>
                 <p className="text-sm font-bold text-yellow-400">{threatRatio}%</p>
-                <p className="text-[10px] text-slate-600">of all spans</p>
+                <p className="text-xs text-slate-600">of all spans</p>
               </div>
             </>
           );
         })()}
+      </div>
       </div>
 
       {/* Floating tooltip */}

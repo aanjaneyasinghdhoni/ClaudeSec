@@ -80,8 +80,8 @@ export function ActivitySparkline() {
           )}
         </svg>
         <div className="text-right">
-          <div className="text-[10px] font-bold text-blue-400 leading-none">{totalSpansLastMin}</div>
-          <div className="text-[9px] text-slate-500 leading-none mt-0.5">spans/min</div>
+          <div className="text-xs font-bold text-blue-400 leading-none">{totalSpansLastMin}</div>
+          <div className="text-[11px] text-slate-500 leading-none mt-0.5">spans/min</div>
         </div>
       </div>
 
@@ -108,10 +108,10 @@ export function ActivitySparkline() {
           )}
         </svg>
         <div className="text-right">
-          <div className="text-[10px] font-bold text-purple-400 leading-none">
+          <div className="text-xs font-bold text-purple-400 leading-none">
             {totalTokensLastMin > 999 ? `${(totalTokensLastMin / 1000).toFixed(1)}k` : totalTokensLastMin}
           </div>
-          <div className="text-[9px] text-slate-500 leading-none mt-0.5">tokens/min</div>
+          <div className="text-[11px] text-slate-500 leading-none mt-0.5">tokens/min</div>
         </div>
       </div>
     </div>

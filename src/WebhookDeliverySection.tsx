@@ -87,7 +87,8 @@ export function WebhookDeliverySection() {
     try {
       const res = await fetch('/api/webhook-deliveries?limit=50');
       if (res.ok) {
-        const data: DeliveryRow[] = await res.json();
+        const json = await res.json();
+        const data: DeliveryRow[] = Array.isArray(json) ? json : (json.deliveries ?? []);
         setRows(data);
       }
     } catch {

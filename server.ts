@@ -68,6 +68,9 @@ interface SpanRecord {
 
 const db = new Database('spans.db');
 
+// SECURITY: WAL mode allows concurrent reads during writes — prevents blocking under load
+db.pragma('journal_mode = WAL');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS spans (
     spanId     TEXT PRIMARY KEY,
@@ -846,6 +849,7 @@ const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number; l
   'gemini-1.5-flash':     { inputPer1M: 0.075, outputPer1M: 0.3,   label: 'Gemini 1.5 Flash' },
   'gemini-2.0-flash':     { inputPer1M: 0.1,   outputPer1M: 0.4,   label: 'Gemini 2.0 Flash' },
   'gemini-pro':           { inputPer1M: 0.5,   outputPer1M: 1.5,   label: 'Gemini Pro' },
+  'unknown':              { inputPer1M: 0,     outputPer1M: 0,     label: 'Unknown Model' },
 };
 
 function lookupPricing(model: string) {
@@ -1130,7 +1134,9 @@ function recordToNode(r: SpanRecord) {
       endNano:     r.endNano,
     },
     position: { x: 0, y: 0 },
-    style: style.border ? { backgroundColor: style.bg, border: `2px solid ${style.border}` } : {},
+    style: style.border
+      ? { backgroundColor: style.bg, border: `2px solid ${style.border}`, color: '#1e293b' }
+      : { backgroundColor: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border-soft)', color: 'var(--cs-text-base)' },
   };
 }
 
@@ -1168,7 +1174,7 @@ function buildGraph(sessionFilter?: string) {
         data: { label: h.name, isRoot: true, harnessColor: h.color },
         position: { x: 0, y: 0 },
         type: 'input',
-        style: { backgroundColor: h.color + '22', border: `2px solid ${h.color}`, color: '#fff' },
+        style: { backgroundColor: h.color + '22', border: `2px solid ${h.color}`, color: 'var(--cs-text-base)' },
       };
     });
   }
@@ -1256,6 +1262,10 @@ interface AgentProcess {
 }
 
 // Patterns that identify each harness in a process command line
+// Note: Electron helper processes (GPU, renderer, network, plugin, audio, crashpad)
+// are excluded to avoid counting them as separate agents.
+const ELECTRON_HELPER_RE = /Helper\s*\(|helper\s*\(|chrome_crashpad_handler|--type=(gpu|renderer|utility|zygote)|shell-snapshots\/|chrome-native-host|mcp-server\.(cjs|js|mjs)|worker-service\.(cjs|js)|uvx\s+--python/i;
+
 const PROCESS_PATTERNS: { pattern: RegExp; harness: string }[] = [
   { pattern: /\bclaude\b(?!.*goose)/i,              harness: 'claude-code'    },
   { pattern: /\bcopilot[-_]language[-_]server\b/i,  harness: 'github-copilot' },
@@ -1320,6 +1330,9 @@ function scanAgentProcesses(): AgentProcess[] {
 
       if (!pid || isNaN(pid) || seen.has(pid)) continue;
 
+      // Skip Electron helper sub-processes (GPU, renderer, network, plugin, etc.)
+      if (ELECTRON_HELPER_RE.test(cmd)) continue;
+
       // Match against known agent patterns
       const match = PROCESS_PATTERNS.find(p => p.pattern.test(cmd));
       if (!match) continue;
@@ -1331,11 +1344,11 @@ function scanAgentProcesses(): AgentProcess[] {
         pid,
         harness:     match.harness,
         harnessName: h.name,
-        cmd:         cmd.slice(0, 200), // truncate long commands
+        cmd:         cmd.replace(/\/Users\/[^/]+/g, '/Users/***').replace(/\/home\/[^/]+/g, '/home/***').slice(0, 200),
         cpuPct:      Math.round(cpuPct * 10) / 10,
         memMb:       Math.round(memKb / 1024 * 10) / 10,
         startedAt:   null, // hard to parse reliably cross-platform
-        user,
+        user:        '***', // SECURITY: never expose OS username
       });
     }
 
@@ -1383,15 +1396,27 @@ function recordActivity(spans: number, tokensIn: number, tokensOut: number) {
 async function startServer() {
   const app        = express();
   const httpServer = createServer(app);
-  const io         = new Server(httpServer, { cors: { origin: '*' } });
 
-  app.use(cors());
+  // SECURITY: Restrict CORS to localhost origins only (prevents cross-site request forgery)
+  const ALLOWED_ORIGINS = (process.env.CLAUDESEC_CORS_ORIGINS ?? '').split(',').filter(Boolean);
+  const PORT = Number(process.env.PORT ?? 3000);
+  const defaultOrigins = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
+  const corsOrigins = ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : defaultOrigins;
+
+  const io = new Server(httpServer, { cors: { origin: corsOrigins } });
+
+  app.use(cors({ origin: corsOrigins }));
   app.use(bodyParser.json({ limit: '10mb' }));
 
   // ── OTLP ingestion ──────────────────────────────────────────────────────
   app.post('/v1/traces', (req, res) => {
     // --- Rate limiting ---
-    const clientIp = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown').split(',')[0].trim();
+    // SECURITY: Use socket address by default — X-Forwarded-For is trivially spoofable
+    // Set CLAUDESEC_TRUST_PROXY=1 to trust proxy headers (only behind a reverse proxy)
+    const trustProxy = process.env.CLAUDESEC_TRUST_PROXY === '1';
+    const clientIp = trustProxy
+      ? String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown').split(',')[0].trim()
+      : String(req.socket.remoteAddress ?? 'unknown');
     const { allowed, retryAfterMs } = allowRequest(clientIp);
     if (!allowed) {
       res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
@@ -1548,7 +1573,8 @@ async function startServer() {
 
     // ── OTLP Trace Forwarding (Phase 16 / s72) ──
     const forwardUrl = process.env.OTEL_FORWARD_URL ?? getConfig.get('otel.forward.url')?.value ?? '';
-    if (forwardUrl) {
+    const BLOCKED_FORWARD = /^https?:\/\/(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.0\.0\.0|\[::1\])/i;
+    if (forwardUrl && !BLOCKED_FORWARD.test(forwardUrl)) {
       fetch(forwardUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1755,6 +1781,17 @@ async function startServer() {
     let alertsAdded = 0;
     let newSessions = false;
 
+    // SECURITY: Limit import batch size (same as /v1/traces)
+    const importSpanCount = Array.isArray(body?.spans) ? body.spans.length : 0;
+    if (importSpanCount > MAX_SPANS_PER_BATCH) {
+      return res.status(400).json({ error: `Import exceeds max ${MAX_SPANS_PER_BATCH} spans. Got ${importSpanCount}.` }) as any;
+    }
+    // Circuit breaker
+    const currentSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
+    if (currentSpans >= getMaxSpans() * 0.9) {
+      return res.status(503).json({ error: 'Span buffer near capacity. Prune before importing.' }) as any;
+    }
+
     // Detect format: ClaudeSec export ({ spans: SpanRecord[] }) or raw OTLP ({ resourceSpans: [...] })
     if (Array.isArray(body?.spans)) {
       // ClaudeSec JSON export format
@@ -1849,13 +1886,18 @@ async function startServer() {
       ORDER BY se.pinned DESC, se.createdAt DESC
     `).all() as any[];
 
-    let sessions = rows.map(r => ({
-      ...r,
-      healthScore: Math.max(0,
-        100 - (r.threatHigh ?? 0) * 15 - (r.threatMedium ?? 0) * 8 - (r.threatLow ?? 0) * 3
-            - Math.min((r.alertCount ?? 0) * 10, 30)
-      ),
-    }));
+    // Compute per-session risk score (0-100, higher = riskier) and health score
+    let sessions = rows.map(r => {
+      const highW = (r.threatHigh ?? 0) * 25;
+      const medW  = (r.threatMedium ?? 0) * 12;
+      const lowW  = (r.threatLow ?? 0) * 4;
+      const alertW = Math.min((r.alertCount ?? 0) * 8, 30);
+      const spanCount = r.spanCount ?? 1;
+      const threatDensity = spanCount > 0 ? ((r.threatCount ?? 0) / spanCount) * 20 : 0;
+      const riskScore = Math.min(100, Math.round(highW + medW + lowW + alertW + threatDensity));
+      const healthScore = Math.max(0, 100 - riskScore);
+      return { ...r, healthScore, riskScore };
+    });
 
     if (labelFilter) {
       sessions = sessions.filter(s => s.label === labelFilter);
@@ -2087,17 +2129,26 @@ async function startServer() {
               break;
             }
             case 'get_sessions': {
+              // SECURITY: Use parameterized queries — never interpolate user input into SQL
               const labelFilter2 = args.label ? String(args.label) : null;
-              const labelWhere   = labelFilter2 ? `WHERE se.label = '${labelFilter2.replace(/'/g, "''")}'` : '';
-              const sessions = db.prepare(`
-                SELECT se.traceId, se.name, se.createdAt, se.label, se.notes,
-                  COUNT(s.spanId) AS spanCount,
-                  SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
-                  GROUP_CONCAT(DISTINCT s.harness) AS harnesses
-                FROM sessions se LEFT JOIN spans s ON s.traceId = se.traceId
-                ${labelWhere}
-                GROUP BY se.traceId ORDER BY se.createdAt DESC LIMIT 50
-              `).all();
+              const sessions = labelFilter2
+                ? db.prepare(`
+                    SELECT se.traceId, se.name, se.createdAt, se.label, se.notes,
+                      COUNT(s.spanId) AS spanCount,
+                      SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
+                      GROUP_CONCAT(DISTINCT s.harness) AS harnesses
+                    FROM sessions se LEFT JOIN spans s ON s.traceId = se.traceId
+                    WHERE se.label = ?
+                    GROUP BY se.traceId ORDER BY se.createdAt DESC LIMIT 50
+                  `).all(labelFilter2)
+                : db.prepare(`
+                    SELECT se.traceId, se.name, se.createdAt, se.label, se.notes,
+                      COUNT(s.spanId) AS spanCount,
+                      SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
+                      GROUP_CONCAT(DISTINCT s.harness) AS harnesses
+                    FROM sessions se LEFT JOIN spans s ON s.traceId = se.traceId
+                    GROUP BY se.traceId ORDER BY se.createdAt DESC LIMIT 50
+                  `).all();
               ok({ content: [{ type: 'text', text: JSON.stringify(sessions) }] });
               break;
             }
@@ -2532,13 +2583,33 @@ service:
     }
     const total  = (db.prepare(`SELECT COUNT(*) as c FROM alerts${where}`).get(...params) as any).c;
 
-    res.json({ alerts, total });
+    // SECURITY: Redact sensitive matched text (API keys, tokens, passwords)
+    // Show first 6 + last 4 chars, mask the rest
+    const SENSITIVE_LABELS = /key|token|password|secret|credential|private/i;
+    const redactedAlerts = (alerts as any[]).map(a => {
+      if (a.matchedText && SENSITIVE_LABELS.test(a.ruleLabel) && a.matchedText.length > 12) {
+        const mt = a.matchedText;
+        a.matchedText = mt.slice(0, 6) + '*'.repeat(Math.min(mt.length - 10, 20)) + mt.slice(-4);
+      }
+      return a;
+    });
+
+    res.json({ alerts: redactedAlerts, total });
   });
 
   app.get('/api/alerts/export', (_req, res) => {
     const alerts = db.prepare('SELECT * FROM alerts ORDER BY id DESC').all();
+    // SECURITY: Apply same redaction as /api/alerts
+    const SENSITIVE_LABELS = /key|token|password|secret|credential|private/i;
+    const redactedAlerts = (alerts as any[]).map(a => {
+      if (a.matchedText && SENSITIVE_LABELS.test(a.ruleLabel) && a.matchedText.length > 12) {
+        const mt = a.matchedText;
+        a.matchedText = mt.slice(0, 6) + '*'.repeat(Math.min(mt.length - 10, 20)) + mt.slice(-4);
+      }
+      return a;
+    });
     res.setHeader('Content-Disposition', `attachment; filename="claudesec-alerts-${Date.now()}.json"`);
-    res.json({ exportedAt: new Date().toISOString(), alerts });
+    res.json({ exportedAt: new Date().toISOString(), alerts: redactedAlerts });
   });
 
   app.delete('/api/alerts', (_req, res) => {
@@ -2699,9 +2770,38 @@ service:
     }
 
     // Root spawn nodes: traces that have children but are not themselves children of another
-    const rootSpawnTraces = [...traceStatMap.keys()].filter(id =>
+    let rootSpawnTraces = [...traceStatMap.keys()].filter(id =>
       spawnChildMap.has(id) && !hasSpawnParent.has(id)
     );
+
+    // Fallback heuristic: if no cross-trace spawns detected, group sessions by harness
+    // so the spawn tree always shows something useful
+    if (rootSpawnTraces.length === 0 && traceStatMap.size > 0) {
+      const harnessTraces = new Map<string, string[]>();
+      for (const [traceId, stats] of traceStatMap) {
+        if (!harnessTraces.has(stats.harness)) harnessTraces.set(stats.harness, []);
+        harnessTraces.get(stats.harness)!.push(traceId);
+      }
+      for (const [, traceIds] of harnessTraces) {
+        if (traceIds.length < 2) continue;
+        // Sort by start time (earliest first) — use first span's startNano
+        traceIds.sort((a, b) => {
+          const aSpan = allSpans.find(s => s.traceId === a);
+          const bSpan = allSpans.find(s => s.traceId === b);
+          return (aSpan?.startNano ?? '0').localeCompare(bSpan?.startNano ?? '0');
+        });
+        const [root, ...children] = traceIds;
+        for (const child of children) {
+          if (!spawnChildMap.has(root)) spawnChildMap.set(root, new Set());
+          spawnChildMap.get(root)!.add(child);
+          hasSpawnParent.add(child);
+        }
+      }
+      rootSpawnTraces = [...traceStatMap.keys()].filter(id =>
+        spawnChildMap.has(id) && !hasSpawnParent.has(id)
+      );
+    }
+
     const spawnTree = rootSpawnTraces.map(id => buildSpawnNode(id));
 
     res.json({ agents, edges, tools, spawnTree });
@@ -2791,8 +2891,9 @@ service:
         try { return `${Math.round(Number((BigInt(s.endNano) - BigInt(s.startNano)) / 1_000_000n))}ms`; }
         catch { return '—'; }
       })();
-      const toolName = attrs['gen_ai.tool.name'] ?? attrs['tool.name'] ?? '';
-      const rule     = attrs['claudesec.threat.rule'] ?? '';
+      const escHtml = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const toolName = escHtml(String(attrs['gen_ai.tool.name'] ?? attrs['tool.name'] ?? ''));
+      const rule     = escHtml(String(attrs['claudesec.threat.rule'] ?? ''));
       return `
         <tr style="border-bottom:1px solid #1e293b; ${s.severity !== 'none' ? `background:${severityBg(s.severity)}` : ''}">
           <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#94a3b8">${s.spanId.slice(0, 8)}</td>
@@ -2804,7 +2905,7 @@ service:
           </td>
           <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#64748b">${toolName}</td>
           <td style="padding:6px 10px; font-family:monospace; font-size:11px; color:#64748b">${dur}</td>
-          <td style="padding:6px 10px; font-size:11px; color:#ef4444">${rule.replace(/</g, '&lt;')}</td>
+          <td style="padding:6px 10px; font-size:11px; color:#ef4444">${rule}</td>
         </tr>`;
     }).join('');
 
@@ -2862,7 +2963,7 @@ service:
 </div>
 
 <div class="harness-list">
-  ${[...harnessSet].map(h => `<span class="harness-badge">${h}</span>`).join('')}
+  ${[...harnessSet].map(h => `<span class="harness-badge">${h.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}</span>`).join('')}
 </div>
 
 <div class="cards">
@@ -2905,6 +3006,147 @@ ${alerts.length > 0 ? `
   });
 
   // ── Health check ────────────────────────────────────────────────────────
+  // ── Command audit trail — all tool executions with risk scores ────────
+  const SHELL_TOOLS = new Set(['bash', 'Bash', 'exec', 'sh', 'terminal', 'shell', 'subprocess']);
+
+  function computeRiskScore(cmd: string): number {
+    let score = 0;
+    if (/\bsudo\b/i.test(cmd)) score += 20;
+    if (/\bcurl\b.*\|\s*(ba)?sh/i.test(cmd)) score += 30;
+    if (/\bcurl\b|\bwget\b/i.test(cmd)) score += 15;
+    if (/\brm\s+-rf\b/i.test(cmd)) score += 30;
+    if (/\|.*\bsh\b/i.test(cmd)) score += 25;
+    if (/\/etc\/(passwd|shadow|sudoers)/i.test(cmd)) score += 25;
+    if (/~\/\.ssh\//i.test(cmd)) score += 20;
+    if (/\.env\b/i.test(cmd)) score += 15;
+    if (/\bnc\b|\bncat\b/i.test(cmd)) score += 30;
+    if (/\bchmod\s+[247]?[0-7][0-7]\b/i.test(cmd)) score += 15;
+    if (/\bchown\s+root\b/i.test(cmd)) score += 25;
+    if (/\bkill\b|\bpkill\b/i.test(cmd)) score += 10;
+    if (/\beval\b|\bexec\b/i.test(cmd)) score += 20;
+    if (/process\.env|printenv|env\b/i.test(cmd)) score += 10;
+    return Math.min(100, score);
+  }
+
+  app.get('/api/command-audit', (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+    const allSpans = getAllSpans.all() as SpanRecord[];
+    const commands: {
+      spanId: string; traceId: string; harness: string;
+      command: string; severity: string; riskScore: number;
+      tool: string; timestamp: string;
+    }[] = [];
+
+    for (const span of allSpans) {
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const toolName = attrs['gen_ai.tool.name'] ?? '';
+        if (!SHELL_TOOLS.has(toolName) && !span.name.toLowerCase().includes('bash')) continue;
+        const cmd = attrs['tool.input'] ?? '';
+        if (!cmd) continue;
+        commands.push({
+          spanId:    span.spanId,
+          traceId:   span.traceId,
+          harness:   span.harness,
+          command:   cmd,
+          severity:  span.severity,
+          riskScore: computeRiskScore(cmd),
+          tool:      toolName || 'bash',
+          timestamp: span.startNano,
+        });
+      } catch {}
+    }
+
+    commands.sort((a, b) => b.riskScore - a.riskScore);
+    res.json({ commands: commands.slice(0, limit), total: commands.length });
+  });
+
+  // ── File access analysis — which files agents read/write ────────────
+  app.get('/api/file-access', (_req, res) => {
+    const allSpans = getAllSpans.all() as SpanRecord[];
+    const READ_TOOLS = new Set(['Read', 'file_read', 'Glob', 'cat', 'head', 'tail', 'Grep']);
+    const WRITE_TOOLS = new Set(['Write', 'Edit', 'file_edit', 'touch', 'mv', 'cp']);
+    const SENSITIVE_PATTERNS = [/\.env\b/, /\.ssh\//, /\/etc\/(passwd|shadow|sudoers|hosts)/, /credentials/, /\.pem$/, /id_rsa/];
+
+    const fileMap = new Map<string, {
+      path: string; reads: number; writes: number;
+      agents: Set<string>; threats: number; sensitive: boolean;
+    }>();
+
+    for (const span of allSpans) {
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const toolName = attrs['gen_ai.tool.name'] ?? '';
+        const input = attrs['tool.input'] ?? '';
+        if (!input || typeof input !== 'string') continue;
+
+        const isRead = READ_TOOLS.has(toolName);
+        const isWrite = WRITE_TOOLS.has(toolName);
+        if (!isRead && !isWrite) continue;
+
+        // Normalize path
+        const filePath = input.trim().split('\n')[0].slice(0, 200);
+        if (!filePath || filePath.length < 2) continue;
+
+        if (!fileMap.has(filePath)) {
+          const sensitive = SENSITIVE_PATTERNS.some(p => p.test(filePath));
+          fileMap.set(filePath, { path: filePath, reads: 0, writes: 0, agents: new Set(), threats: 0, sensitive });
+        }
+        const entry = fileMap.get(filePath)!;
+        if (isRead) entry.reads++;
+        if (isWrite) entry.writes++;
+        entry.agents.add(span.harness);
+        if (span.severity !== 'none') entry.threats++;
+      } catch {}
+    }
+
+    const files = [...fileMap.values()]
+      .map(f => ({ ...f, agents: [...f.agents], total: f.reads + f.writes }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 100);
+
+    res.json({ files, total: fileMap.size });
+  });
+
+  // ── Live agent activity — what each agent is doing right now ──────────
+  app.get('/api/live-activity', (_req, res) => {
+    // For each harness, find the most recent span
+    const latestPerHarness = db.prepare(`
+      SELECT s.harness, s.spanId, s.name, s.attributes, s.startNano, s.endNano, s.severity, s.traceId
+      FROM spans s
+      INNER JOIN (
+        SELECT harness, MAX(endNano) as maxEnd FROM spans GROUP BY harness
+      ) latest ON s.harness = latest.harness AND s.endNano = latest.maxEnd
+    `).all() as SpanRecord[];
+
+    const agents = latestPerHarness.map(span => {
+      let attrs: Record<string, string> = {};
+      try { attrs = JSON.parse(span.attributes); } catch {}
+      const toolName = attrs['gen_ai.tool.name'] ?? '';
+      const toolInput = attrs['tool.input'] ?? '';
+      const model = attrs['gen_ai.request.model'] ?? '';
+      const endMs = Number(BigInt(span.endNano || '0') / 1_000_000n);
+      const secondsAgo = Math.max(0, Math.round((Date.now() - endMs) / 1000));
+      const h = HARNESSES.find(h => h.id === span.harness) ?? HARNESSES[HARNESSES.length - 1];
+
+      return {
+        harness:    span.harness,
+        harnessName: h.name,
+        color:      h.color,
+        lastSpan:   span.name,
+        tool:       toolName,
+        input:      toolInput.slice(0, 120),
+        model,
+        severity:   span.severity,
+        traceId:    span.traceId,
+        secondsAgo,
+        active:     secondsAgo < 60,
+      };
+    }).sort((a, b) => a.secondsAgo - b.secondsAgo);
+
+    res.json({ agents, ts: new Date().toISOString() });
+  });
+
   app.get('/api/health', (_req, res) => {
     const spansTotal    = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
     const threatsTotal  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c as number;
@@ -2945,7 +3187,7 @@ ${alerts.length > 0 ? `
       },
       autoExport: {
         enabled:     true,
-        dir:         EXPORT_DIR,
+        dir:         '[redacted]',
         lastExportAt: lastAutoExportAt || null,
       },
       builtInRules: SEVERITY_RULES.length,
@@ -3037,8 +3279,18 @@ ${alerts.length > 0 ? `
     }
     const { url, threshold } = req.body as { url?: string; threshold?: string };
     if (!url?.trim()) return res.status(400).json({ error: 'url is required' }) as any;
-    try { new URL(url); } catch {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch {
       return res.status(400).json({ error: 'invalid URL' }) as any;
+    }
+    // SECURITY: Block SSRF to private/internal networks
+    const host = parsed.hostname.toLowerCase();
+    const BLOCKED_HOSTS = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.|::1|fc00|fe80|metadata\.google|169\.254\.169\.254)/;
+    if (BLOCKED_HOSTS.test(host)) {
+      return res.status(400).json({ error: 'Webhook URL must not point to private/internal networks' }) as any;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return res.status(400).json({ error: 'Webhook URL must use http or https' }) as any;
     }
     setConfig.run('webhook.url', url.trim());
     if (threshold && ['low', 'medium', 'high'].includes(threshold)) {
@@ -3097,11 +3349,19 @@ ${alerts.length > 0 ? `
     for (const span of allSpans) {
       try {
         const attrs = JSON.parse(span.attributes);
-        const model = String(
+        let model = String(
           attrs['gen_ai.request.model'] ??
           attrs['gen_ai.response.model'] ??
           attrs['llm.request.model']    ?? ''
         ).toLowerCase().trim();
+        // Infer model from harness if not provided by telemetry
+        if (!model || model === '') {
+          const harness = span.harness?.toLowerCase() ?? '';
+          if (harness.includes('claude') || harness === 'claude-code') model = 'claude-sonnet-4-6';
+          else if (harness.includes('copilot')) model = 'gpt-4o';
+          else if (harness.includes('cursor')) model = 'claude-sonnet-4-6';
+          else if (harness.includes('codex')) model = 'gpt-4o';
+        }
         const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);
         const to = Number(attrs['gen_ai.usage.output_tokens'] ?? attrs['llm.usage.output_tokens'] ?? 0);
         if (!model && ti === 0 && to === 0) continue;
@@ -3157,6 +3417,33 @@ ${alerts.length > 0 ? `
       totalTokensOut,
       pricingTable:  Object.entries(MODEL_PRICING).map(([model, p]) => ({ model, ...p })),
     });
+  });
+
+  // ── Cost trend — token usage over time per session ───────────────────────
+  app.get('/api/cost-trend', (req, res) => {
+    const traceId = req.query.traceId as string | undefined;
+    const spans = (traceId
+      ? db.prepare('SELECT * FROM spans WHERE traceId = ? ORDER BY startNano').all(traceId)
+      : db.prepare('SELECT * FROM spans ORDER BY startNano').all()
+    ) as SpanRecord[];
+
+    let cumIn = 0, cumOut = 0;
+    const points: { ts: number; tokensIn: number; tokensOut: number; cumIn: number; cumOut: number }[] = [];
+
+    for (const span of spans) {
+      try {
+        const attrs = JSON.parse(span.attributes);
+        const ti = Number(attrs['gen_ai.usage.input_tokens'] ?? 0);
+        const to = Number(attrs['gen_ai.usage.output_tokens'] ?? 0);
+        if (ti === 0 && to === 0) continue;
+        cumIn += ti;
+        cumOut += to;
+        const ts = Number(BigInt(span.startNano || '0') / 1_000_000n);
+        points.push({ ts, tokensIn: ti, tokensOut: to, cumIn, cumOut });
+      } catch {}
+    }
+
+    res.json({ points, totalIn: cumIn, totalOut: cumOut });
   });
 
   // ── Full-text search (s54) ───────────────────────────────────────────────
@@ -3309,26 +3596,66 @@ ${alerts.length > 0 ? `
       processes:  enriched,
       total:      enriched.length,
       scannedAt:  new Date().toISOString(),
-      platform:   process.platform,
       supported:  process.platform === 'darwin' || process.platform === 'linux',
     });
   });
 
   // ── Process kill switch (Phase 16 / s71) ──────────────────────────────────
+  // SECURITY: Only allow killing PIDs that are confirmed agent processes
   app.delete('/api/processes/:pid', (req, res) => {
     const pid = Number(req.params.pid);
     if (!pid || pid <= 0) return res.status(400).json({ error: 'Invalid PID' }) as any;
     if (process.platform === 'win32') return res.status(501).json({ error: 'Not supported on Windows' }) as any;
 
+    // Validate PID is an actual agent process — prevents arbitrary process kill
+    const agentPids = new Set(scanAgentProcesses().map(p => p.pid));
+    if (!agentPids.has(pid)) {
+      return res.status(403).json({ error: `PID ${pid} is not a recognized agent process. Only detected agent PIDs can be killed.` }) as any;
+    }
+
     try {
       process.kill(pid, 'SIGTERM');
-      console.log(`[ClaudeSec] Sent SIGTERM to PID ${pid}`);
+      console.log(`[ClaudeSec] Sent SIGTERM to agent PID ${pid}`);
       res.json({ ok: true, pid, signal: 'SIGTERM' });
     } catch (err: any) {
       if (err.code === 'ESRCH') return res.status(404).json({ error: `Process ${pid} not found` }) as any;
       if (err.code === 'EPERM') return res.status(403).json({ error: `Permission denied for PID ${pid}` }) as any;
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // ── Bulk process control ─────────────────────────────────────────────────
+  app.post('/api/processes/kill-all', (_req, res) => {
+    if (process.platform === 'win32') return res.status(501).json({ error: 'Not supported on Windows' }) as any;
+    const procs = scanAgentProcesses();
+    const results = procs.map(p => {
+      try { process.kill(p.pid, 'SIGTERM'); return { pid: p.pid, name: p.harnessName, ok: true }; }
+      catch (e: any) { return { pid: p.pid, name: p.harnessName, ok: false, error: e.message }; }
+    });
+    const killed = results.filter(r => r.ok).length;
+    console.log(`[ClaudeSec] Kill-all: ${killed}/${procs.length} agents terminated`);
+    io.emit('processes-update');
+    res.json({ killed, failed: results.filter(r => !r.ok).length, total: procs.length, results });
+  });
+
+  app.post('/api/processes/pause-all', (_req, res) => {
+    if (process.platform === 'win32') return res.status(501).json({ error: 'Not supported on Windows' }) as any;
+    const procs = scanAgentProcesses();
+    const results = procs.map(p => {
+      try { process.kill(p.pid, 'SIGSTOP'); return { pid: p.pid, name: p.harnessName, ok: true }; }
+      catch (e: any) { return { pid: p.pid, name: p.harnessName, ok: false, error: e.message }; }
+    });
+    res.json({ paused: results.filter(r => r.ok).length, results });
+  });
+
+  app.post('/api/processes/resume-all', (_req, res) => {
+    if (process.platform === 'win32') return res.status(501).json({ error: 'Not supported on Windows' }) as any;
+    const procs = scanAgentProcesses();
+    const results = procs.map(p => {
+      try { process.kill(p.pid, 'SIGCONT'); return { pid: p.pid, name: p.harnessName, ok: true }; }
+      catch (e: any) { return { pid: p.pid, name: p.harnessName, ok: false, error: e.message }; }
+    });
+    res.json({ resumed: results.filter(r => r.ok).length, results });
   });
 
   // ── Span bookmarks (s67) ──────────────────────────────────────────────────
@@ -3546,6 +3873,114 @@ ${alerts.length > 0 ? `
     res.json({ status: 'ok' });
   });
 
+  // ── Auto-discovery: scan running agent processes and create live spans ───
+  // This makes the dashboard "just work" — start `npm run dev`, open the
+  // browser, and any running AI agents appear in the graph automatically.
+
+  const AUTO_SCAN_INTERVAL = 30_000; // 30 seconds
+  const discoveredPids = new Set<number>();
+
+  function autoDiscoverAgents() {
+    try {
+      const procs = scanAgentProcesses();
+      if (procs.length === 0) return;
+
+      // Deduplicate: only pick the primary process per harness (highest CPU)
+      const byHarness = new Map<string, AgentProcess>();
+      for (const p of procs) {
+        const existing = byHarness.get(p.harness);
+        if (!existing || p.cpuPct > existing.cpuPct) {
+          byHarness.set(p.harness, p);
+        }
+      }
+
+      let changed = false;
+
+      for (const [harnessId, proc] of byHarness) {
+        // Skip if we already discovered this PID
+        if (discoveredPids.has(proc.pid)) continue;
+        discoveredPids.add(proc.pid);
+
+        const h = HARNESSES.find(h => h.id === harnessId) ?? HARNESSES[HARNESSES.length - 1];
+        const traceId  = `auto-${harnessId}-${proc.pid}`;
+        const nowNs    = String(BigInt(Date.now()) * 1_000_000n);
+        const endNs    = String(BigInt(Date.now()) * 1_000_000n + 1_000_000n);
+
+        // Create session if it doesn't exist
+        if (!db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(traceId)) {
+          upsertSession.run(traceId, `${h.name} · PID ${proc.pid} (auto-detected)`, new Date().toISOString());
+        }
+
+        // Create a discovery span
+        const spanId = `disc-${proc.pid}-${Date.now().toString(36)}`;
+        const attrs: Record<string, unknown> = {
+          'discovery.pid':     proc.pid,
+          'discovery.cpu':     proc.cpuPct,
+          'discovery.mem_mb':  proc.memMb,
+          'discovery.cmd':     proc.cmd.replace(/\/Users\/[^/]+/g, '/Users/***').replace(/\/home\/[^/]+/g, '/home/***').slice(0, 200),
+          'gen_ai.system':     harnessId,
+          'auto_discovered':   true,
+        };
+
+        const searchText = `${proc.cmd} ${JSON.stringify(attrs)}`;
+        const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
+
+        const spanRecord: SpanRecord = {
+          spanId,
+          traceId,
+          parentId: harnessId,
+          name:     `process/${h.name}`,
+          protocol: 'local',
+          reason:   `Auto-detected running process (PID ${proc.pid}, ${proc.cpuPct}% CPU, ${proc.memMb}MB)`,
+          severity,
+          harness:  harnessId,
+          attributes: JSON.stringify(attrs),
+          startNano: nowNs,
+          endNano:   endNs,
+        };
+
+        insertSpan.run(spanRecord);
+        pushToSse(spanRecord);
+        io.emit('span-added', {
+          spanId:   spanRecord.spanId,
+          name:     spanRecord.name,
+          harness:  spanRecord.harness,
+          severity: spanRecord.severity,
+          ts:       new Date().toISOString(),
+        });
+
+        if (matchedLabel) {
+          insertOrDedupeAlert({
+            ts:          new Date().toISOString(),
+            ruleLabel:   matchedLabel,
+            severity,
+            spanId,
+            traceId,
+            harness:     harnessId,
+            spanName:    `process/${h.name}`,
+            matchedText,
+          });
+          io.emit('alerts-update');
+        }
+
+        changed = true;
+        console.log(`[ClaudeSec] Auto-discovered ${h.name} (PID ${proc.pid}, ${proc.cpuPct}% CPU)`);
+      }
+
+      if (changed) {
+        io.emit('graph-update', buildGraph());
+        io.emit('sessions-update');
+      }
+    } catch (err) {
+      // Don't crash the server if process scanning fails
+    }
+  }
+
+  // Run immediately on startup, then every 30s
+  autoDiscoverAgents();
+  const autoScanTimer = setInterval(autoDiscoverAgents, AUTO_SCAN_INTERVAL);
+  autoScanTimer.unref();
+
   // ── Dev / prod static ────────────────────────────────────────────────────
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
@@ -3556,11 +3991,12 @@ ${alerts.length > 0 ? `
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  const PORT = Number(process.env.PORT ?? 3000);
-  httpServer.listen(PORT, '0.0.0.0', () => {
+  // SECURITY: Bind to localhost by default — set CLAUDESEC_HOST=0.0.0.0 to expose to network
+  const HOST = process.env.CLAUDESEC_HOST ?? '127.0.0.1';
+  httpServer.listen(PORT, HOST, () => {
     console.log(`\n  ClaudeSec  http://localhost:${PORT}`);
     console.log(`  OTLP       http://localhost:${PORT}/v1/traces`);
-    console.log(`  Setup      npm run init\n`);
+    console.log(`  Auto-scan  Every ${AUTO_SCAN_INTERVAL / 1000}s for running agents\n`);
     const n = (getAllSpans.all() as SpanRecord[]).length;
     if (n > 0) console.log(`  Loaded ${n} spans from database.\n`);
   });

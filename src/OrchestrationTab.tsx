@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List } from 'lucide-react';
+import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Terminal, FileText } from 'lucide-react';
 import { socket } from './socket';
+import { CommandAuditTab } from './CommandAuditTab';
+import { FileAccessPanel } from './FileAccessPanel';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -90,7 +92,7 @@ function agentPositions(count: number): { x: number; y: number }[] {
 
 function harnessShort(id: string) {
   const name = HARNESS_NAMES[id] ?? id;
-  return name.length > 10 ? name.slice(0, 9) + '…' : name;
+  return name.length > 14 ? name.slice(0, 13) + '…' : name;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -123,20 +125,20 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
         </span>
 
         {/* Session name */}
-        <span className="text-[10px] text-slate-500 font-mono truncate max-w-[160px]" title={node.sessionName}>
+        <span className="text-xs text-slate-500 font-mono truncate max-w-[160px]" title={node.sessionName}>
           {node.sessionName}
         </span>
 
         {/* Stats pills */}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          <span className="text-[10px] text-slate-500 font-mono">{node.spanCount} spans</span>
+          <span className="text-xs text-slate-500 font-mono">{node.spanCount} spans</span>
           {node.threatCount > 0 && (
-            <span className="text-[10px] text-red-400 font-mono font-bold bg-red-950/40 px-1.5 py-0.5 rounded">
+            <span className="text-xs text-red-400 font-mono font-bold bg-red-950/40 px-1.5 py-0.5 rounded">
               {node.threatCount} threats
             </span>
           )}
           {node.children.length > 0 && (
-            <span className="text-[10px] text-blue-400 font-mono bg-blue-950/40 px-1.5 py-0.5 rounded">
+            <span className="text-xs font-mono bg-emerald-950/40 px-1.5 py-0.5 rounded" style={{ color: '#00d4aa' }}>
               {node.children.length} sub-agent{node.children.length !== 1 ? 's' : ''}
             </span>
           )}
@@ -169,7 +171,7 @@ function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="text-[10px] border-collapse">
+      <table className="text-xs border-collapse">
         <thead>
           <tr>
             <th className="px-3 py-2 text-left text-slate-500 font-medium sticky left-0 bg-slate-900 z-10 min-w-[120px]">
@@ -208,7 +210,7 @@ function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
                     <td key={h} className="text-center py-1.5 px-2">
                       {count > 0 ? (
                         <div
-                          className="inline-flex items-center justify-center rounded text-[10px] font-mono font-medium min-w-[28px] px-1.5 py-0.5 transition-all"
+                          className="inline-flex items-center justify-center rounded text-xs font-mono font-medium min-w-[28px] px-1.5 py-0.5 transition-all"
                           style={{
                             background: `${base}${Math.round(intensity * 220).toString(16).padStart(2, '0')}`,
                             color: intensity > 0.4 ? '#fff' : '#94a3b8',
@@ -258,11 +260,11 @@ export function OrchestrationTab() {
   agents.forEach((a, i) => posMap.set(a.harness, positions[i]));
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-slate-950 overflow-auto">
+    <div className="flex-1 flex flex-col min-h-0 overflow-auto p-5" style={{ background: 'var(--cs-bg-primary)' }}>
 
       {/* ── Agent DAG ──────────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-b border-slate-800 bg-slate-900/30 p-4">
-        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
           <Cpu className="w-3 h-3" /> Agent Orchestration Graph
         </p>
 
@@ -282,7 +284,7 @@ export function OrchestrationTab() {
                 </radialGradient>
               ))}
               <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                <path d="M0,0 L0,6 L6,3 z" fill="#475569" />
+                <path d="M0,0 L0,6 L6,3 z" fill="var(--cs-svg-text)" />
               </marker>
             </defs>
 
@@ -302,13 +304,13 @@ export function OrchestrationTab() {
                 <g key={`${edge.from}-${edge.to}`}>
                   <line
                     x1={sx} y1={sy} x2={ex} y2={ey}
-                    stroke="#475569" strokeWidth={1.5}
+                    stroke="var(--cs-svg-text)" strokeWidth={1.5}
                     strokeDasharray="5 3"
                     markerEnd="url(#arrow)"
                   />
                   <text
                     x={(sx + ex) / 2} y={(sy + ey) / 2 - 5}
-                    fill="#64748b" fontSize={9} textAnchor="middle" fontFamily="monospace"
+                    fill="var(--cs-svg-label-muted)" fontSize={9} textAnchor="middle" fontFamily="monospace"
                   >
                     {edge.count} trace{edge.count !== 1 ? 's' : ''}
                   </text>
@@ -330,10 +332,10 @@ export function OrchestrationTab() {
                     </circle>
                   )}
                   <circle r={R} fill={`url(#grad-${agent.harness})`} stroke={color} strokeWidth={2} />
-                  <text y={-8} fill="#e2e8f0" fontSize={10} textAnchor="middle" fontFamily="sans-serif" fontWeight="600">
+                  <text y={-8} fill="var(--cs-svg-label)" fontSize={10} textAnchor="middle" fontFamily="sans-serif" fontWeight="600">
                     {harnessShort(agent.harness)}
                   </text>
-                  <text y={6} fill="#94a3b8" fontSize={9} textAnchor="middle" fontFamily="monospace">
+                  <text y={6} fill="var(--cs-svg-label-muted)" fontSize={9} textAnchor="middle" fontFamily="monospace">
                     {agent.spanCount} span{agent.spanCount !== 1 ? 's' : ''}
                   </text>
                   {isThreat && (
@@ -349,10 +351,10 @@ export function OrchestrationTab() {
       </div>
 
       {/* ── Sub-Agent Spawn Tree ───────────────────────────────────────────── */}
-      <div className="shrink-0 border-b border-slate-800 p-4">
-        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
           <GitBranch className="w-3 h-3" /> Sub-Agent Spawn Tree
-          <span className="ml-auto text-[9px] text-slate-600 normal-case font-normal tracking-normal">
+          <span className="ml-auto text-[11px] text-slate-600 normal-case font-normal tracking-normal">
             cross-trace parent-child relationships
           </span>
         </p>
@@ -375,23 +377,25 @@ export function OrchestrationTab() {
       </div>
 
       {/* ── Tool Inventory ────────────────────────────────────────────────── */}
-      <div className="flex-1 p-4">
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
         <div className="flex items-center gap-2 mb-3">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
             <Wrench className="w-3 h-3" /> Tool Inventory
           </p>
           {/* View toggle */}
           {tools.length > 0 && (
             <div className="ml-auto flex items-center bg-slate-800 rounded-lg p-0.5">
               <button
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors ${toolView === 'table' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'table' ? 'text-slate-400 hover:text-slate-200' : ''}`}
+                style={toolView === 'table' ? { background: '#00d4aa', color: '#fff' } : undefined}
                 onClick={() => setToolView('table')}
                 title="Table view"
               >
                 <List className="w-3 h-3" /> Table
               </button>
               <button
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors ${toolView === 'heatmap' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'heatmap' ? 'text-slate-400 hover:text-slate-200' : ''}`}
+                style={toolView === 'heatmap' ? { background: '#00d4aa', color: '#fff' } : undefined}
                 onClick={() => setToolView('heatmap')}
                 title="Heatmap view"
               >
@@ -418,7 +422,7 @@ export function OrchestrationTab() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase tracking-wider">
+                <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                   <th className="px-4 py-2.5 text-left">Tool</th>
                   <th className="px-4 py-2.5 text-left">Agent</th>
                   <th className="px-4 py-2.5 text-right">Calls</th>
@@ -447,7 +451,7 @@ export function OrchestrationTab() {
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-1.5">
                           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: harnessColor }} />
-                          <span className="text-slate-400 text-[10px]">
+                          <span className="text-slate-400 text-xs">
                             {HARNESS_NAMES[tool.harness] ?? tool.harness}
                           </span>
                         </div>
@@ -465,6 +469,16 @@ export function OrchestrationTab() {
             </table>
           </div>
         )}
+      </div>
+
+      {/* ── Command Audit Trail ─────────────────────────────────────────── */}
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+        <CommandAuditTab />
+      </div>
+
+      {/* ── File Access Heatmap ─────────────────────────────────────────── */}
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+        <FileAccessPanel />
       </div>
     </div>
   );

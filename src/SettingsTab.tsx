@@ -14,6 +14,16 @@ interface DbStats {
   dbSizeBytes: number;
 }
 
+/** Map the server's /api/db-stats response to the DbStats interface */
+function parseDbStats(raw: any): DbStats {
+  return {
+    spanCount:     raw.spansTotal ?? raw.spanCount ?? 0,
+    maxSpans:      raw.retentionConfig?.maxSpans ?? raw.maxSpans ?? 50_000,
+    retentionDays: raw.retentionConfig?.retentionDays ?? raw.retentionDays ?? 30,
+    dbSizeBytes:   raw.dbSizeBytes ?? 0,
+  };
+}
+
 interface RateLimitInfo {
   rps: number;
   burst: number;
@@ -56,7 +66,7 @@ function Section({ icon, title, children, defaultOpen = true }: SectionProps) {
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/40 transition-colors"
       >
-        <span className="text-blue-400">{icon}</span>
+        <span style={{ color: '#00d4aa' }}>{icon}</span>
         <span className="text-sm font-semibold text-slate-200 flex-1">{title}</span>
         {open
           ? <ChevronUp className="w-4 h-4 text-slate-500" />
@@ -102,7 +112,10 @@ function SaveButton({ onClick, disabled, label = 'Save' }: SaveButtonProps) {
       type="button"
       onClick={handle}
       disabled={disabled || busy}
-      className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+      className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+      style={{ background: '#00d4aa' }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#00c09a')}
+      onMouseLeave={e => (e.currentTarget.style.background = '#00d4aa')}
     >
       {saved ? (
         <>
@@ -129,7 +142,8 @@ function RetentionSection() {
   useEffect(() => {
     fetch('/api/db-stats')
       .then(r => r.json())
-      .then((d: DbStats) => {
+      .then((raw: any) => {
+        const d = parseDbStats(raw);
         setStats(d);
         setMaxSpans(d.maxSpans);
         setRetentionDays(d.retentionDays);
@@ -164,7 +178,7 @@ function RetentionSection() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Max Spans</label>
+          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Max Spans</label>
           <input
             type="number"
             min={100}
@@ -175,7 +189,7 @@ function RetentionSection() {
           />
         </div>
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Retention Days</label>
+          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Retention Days</label>
           <input
             type="number"
             min={1}
@@ -230,7 +244,7 @@ function RateLimitSection() {
           </div>
         ))}
       </div>
-      <p className="text-[10px] text-slate-600 italic mt-2">
+      <p className="text-xs text-slate-600 italic mt-2">
         Configure via environment variables: <code className="font-mono text-slate-500">CLAUDESEC_RATE_LIMIT_RPS</code>,{' '}
         <code className="font-mono text-slate-500">CLAUDESEC_RATE_LIMIT_BURST</code>,{' '}
         <code className="font-mono text-slate-500">CLAUDESEC_MAX_SPANS_BATCH</code>
@@ -314,7 +328,7 @@ function WebhookSection() {
     <div className="space-y-4 mt-3">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="sm:col-span-2">
-          <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Webhook URL</label>
+          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Webhook URL</label>
           <div className="relative">
             <input
               type="url"
@@ -324,14 +338,14 @@ function WebhookSection() {
               className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500 pr-20"
             />
             {configured && (
-              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-mono px-1.5 py-0.5 rounded bg-green-900/40 text-green-300 border border-green-700/40">
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-mono px-1.5 py-0.5 rounded bg-green-900/40 text-green-300 border border-green-700/40">
                 configured
               </span>
             )}
           </div>
         </div>
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Min Threshold</label>
+          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Min Threshold</label>
           <select
             value={threshold}
             onChange={e => setThreshold(e.target.value as 'low' | 'medium' | 'high')}
@@ -403,7 +417,7 @@ function DisplaySection() {
         checked={autoLayout}
         onChange={v => toggle('claudesec.autoLayout', v, setAutoLayout)}
       />
-      <p className="text-[10px] text-slate-600 italic">Settings are saved locally in your browser.</p>
+      <p className="text-xs text-slate-600 italic">Settings are saved locally in your browser.</p>
     </div>
   );
 }
@@ -424,8 +438,9 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
         aria-checked={checked}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors duration-200 focus:outline-none ${
-          checked ? 'bg-blue-600 border-blue-600' : 'bg-slate-700 border-slate-700'
+          checked ? '' : 'bg-slate-700 border-slate-700'
         }`}
+        style={checked ? { background: '#00d4aa', borderColor: '#00d4aa' } : undefined}
       >
         <span
           className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transform transition-transform duration-200 translate-y-[-1px] ${
@@ -435,7 +450,7 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
       </button>
       <div>
         <p className="text-xs text-slate-300 font-medium leading-none mb-0.5">{label}</p>
-        <p className="text-[10px] text-slate-500">{description}</p>
+        <p className="text-xs text-slate-500">{description}</p>
       </div>
     </div>
   );
@@ -447,12 +462,12 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
 
 export function SettingsTab(): React.ReactElement {
   return (
-    <div className="flex-1 overflow-auto p-5 bg-slate-950 min-h-0">
+    <div className="flex-1 overflow-auto p-5 min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
       <div className="max-w-2xl mx-auto space-y-4">
 
         {/* Header */}
         <div className="flex items-center gap-2 mb-2">
-          <Settings className="w-5 h-5 text-blue-400" />
+          <Settings className="w-5 h-5" style={{ color: '#00d4aa' }} />
           <h2 className="text-sm font-bold text-slate-200">Settings</h2>
         </div>
 
@@ -473,7 +488,7 @@ export function SettingsTab(): React.ReactElement {
         </Section>
 
         <Section icon={<BellRing className="w-4 h-4" />} title="Threshold Rules" defaultOpen={false}>
-          <p className="text-[10px] text-slate-500 mb-1 leading-relaxed">
+          <p className="text-xs text-slate-500 mb-1 leading-relaxed">
             Trigger alerts when a session metric exceeds a threshold within a time window.
             Fired alerts appear in the Alerts tab.
           </p>
@@ -481,7 +496,7 @@ export function SettingsTab(): React.ReactElement {
         </Section>
 
         <Section icon={<History className="w-4 h-4" />} title="Webhook Delivery Log" defaultOpen={false}>
-          <p className="text-[10px] text-slate-500 mb-1 leading-relaxed">
+          <p className="text-xs text-slate-500 mb-1 leading-relaxed">
             Every webhook attempt is logged here. Failed deliveries auto-retry up to 3×
             with exponential backoff. Manually retry or clear history below.
           </p>

@@ -10,6 +10,7 @@ import {
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
   Sun, Moon, Server, GitCompare, Monitor, Bookmark,
+  ChevronDown, MoreHorizontal,
 } from 'lucide-react';
 import { socket } from './socket';
 import { RulesTab } from './RulesTab';
@@ -28,26 +29,191 @@ import { SearchTab } from './SearchTab';
 import { ProcessesTab } from './ProcessesTab';
 import { BookmarksTab } from './BookmarksTab';
 import { WelcomeScreen } from './WelcomeScreen';
+import { LiveActivityPanel } from './LiveActivityPanel';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
-// Dagre layout
+// Layout engine — radial (default) or dagre fallback
 // ---------------------------------------------------------------------------
 
 const NODE_W = 180;
-const NODE_H = 50;
+const NODE_H = 52;
+
+type LayoutMode = 'radial' | 'dagre';
+
+// Severity-based node styling — applied to all layouts
+function styleNodeBySeverity(n: Node): Node {
+  const sev = (n.data as any).severity as string | undefined;
+  const isRoot = n.type === 'input' || (n.data as any).isRoot;
+
+  // Severity → border color + glow
+  let borderColor = 'var(--cs-border)';
+  let shadow = '0 4px 16px rgba(0,0,0,0.25)';
+  let nodeWidth = NODE_W;
+  let nodeHeight = NODE_H;
+
+  if (isRoot) {
+    borderColor = '#00d4aa';
+    shadow = '0 0 24px rgba(0,212,170,0.2), 0 4px 16px rgba(0,0,0,0.3)';
+    nodeWidth = 200;
+    nodeHeight = 60;
+  } else if (sev === 'high') {
+    borderColor = '#ff3b5c';
+    shadow = '0 0 24px rgba(255,59,92,0.3), 0 4px 16px rgba(0,0,0,0.3)';
+    nodeWidth = 200;
+    nodeHeight = 56;
+  } else if (sev === 'medium') {
+    borderColor = '#f97316';
+    shadow = '0 0 16px rgba(249,115,22,0.2), 0 4px 16px rgba(0,0,0,0.3)';
+    nodeWidth = 190;
+    nodeHeight = 54;
+  } else if (sev === 'low') {
+    borderColor = '#ffb224';
+    shadow = '0 0 12px rgba(255,178,36,0.15), 0 4px 16px rgba(0,0,0,0.25)';
+  }
+
+  return {
+    ...n,
+    style: {
+      ...n.style,
+      border: `2px solid ${borderColor}`,
+      boxShadow: shadow,
+      borderRadius: 14,
+      width: nodeWidth,
+      minHeight: nodeHeight,
+    },
+  };
+}
+
+function applyRadialLayout(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return nodes;
+
+  // Build adjacency from edges
+  const children: Record<string, string[]> = {};
+  const hasParent = new Set<string>();
+  edges.forEach(e => {
+    if (!children[e.source]) children[e.source] = [];
+    children[e.source].push(e.target);
+    hasParent.add(e.target);
+  });
+
+  // Find root nodes (no incoming edges)
+  const roots = nodes.filter(n => !hasParent.has(n.id)).map(n => n.id);
+  if (roots.length === 0) roots.push(nodes[0].id);
+
+  // Separate threat nodes from clean nodes
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  const threatIds = new Set<string>();
+  const highIds = new Set<string>();
+  nodes.forEach(n => {
+    const sev = (n.data as any).severity;
+    if (sev === 'high') { threatIds.add(n.id); highIds.add(n.id); }
+    else if (sev === 'medium') { threatIds.add(n.id); }
+    else if (sev === 'low') { threatIds.add(n.id); }
+  });
+
+  // BFS to assign layers
+  const layer: Record<string, number> = {};
+  const queue: string[] = [...roots];
+  roots.forEach(r => { layer[r] = 0; });
+  const visited = new Set<string>(roots);
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const child of (children[current] ?? [])) {
+      if (!visited.has(child)) {
+        visited.add(child);
+        layer[child] = (layer[current] ?? 0) + 1;
+        queue.push(child);
+      }
+    }
+  }
+
+  nodes.forEach(n => { if (layer[n.id] === undefined) layer[n.id] = 0; });
+
+  // Group clean nodes by BFS layer, threats go to a special outer ring
+  const cleanLayers: Record<number, string[]> = {};
+  const threatList: string[] = [];
+  let maxCleanLayer = 0;
+  nodes.forEach(n => {
+    if (n.type === 'input' || (n.data as any).isRoot) {
+      // Root always at center
+      if (!cleanLayers[0]) cleanLayers[0] = [];
+      cleanLayers[0].push(n.id);
+    } else if (threatIds.has(n.id)) {
+      threatList.push(n.id);
+    } else {
+      const l = layer[n.id] ?? 1;
+      if (!cleanLayers[l]) cleanLayers[l] = [];
+      cleanLayers[l].push(n.id);
+      maxCleanLayer = Math.max(maxCleanLayer, l);
+    }
+  });
+
+  const RING_SPACING = 180;
+  const CENTER_X = 0;
+  const CENTER_Y = 0;
+  const positions: Record<string, { x: number; y: number }> = {};
+
+  // Place clean nodes in inner rings
+  for (let l = 0; l <= maxCleanLayer; l++) {
+    const ids = cleanLayers[l] ?? [];
+    if (l === 0 && ids.length === 1) {
+      positions[ids[0]] = { x: CENTER_X - NODE_W / 2, y: CENTER_Y - NODE_H / 2 };
+    } else if (ids.length > 0) {
+      const radius = l * RING_SPACING + 80;
+      const angleStep = (2 * Math.PI) / ids.length;
+      ids.forEach((id, i) => {
+        const angle = -Math.PI / 2 + i * angleStep;
+        positions[id] = {
+          x: CENTER_X + radius * Math.cos(angle) - NODE_W / 2,
+          y: CENTER_Y + radius * Math.sin(angle) - NODE_H / 2,
+        };
+      });
+    }
+  }
+
+  // Place threat nodes in an outer "danger ring" — clearly separated
+  if (threatList.length > 0) {
+    const dangerRadius = (maxCleanLayer + 1) * RING_SPACING + 160;
+    const angleStep = (2 * Math.PI) / threatList.length;
+    // Sort: high first, then medium, then low for visual grouping
+    threatList.sort((a, b) => {
+      const sa = (nodeMap.get(a)?.data as any)?.severity ?? 'none';
+      const sb = (nodeMap.get(b)?.data as any)?.severity ?? 'none';
+      const rank: Record<string, number> = { high: 0, medium: 1, low: 2, none: 3 };
+      return (rank[sa] ?? 3) - (rank[sb] ?? 3);
+    });
+    threatList.forEach((id, i) => {
+      const angle = -Math.PI / 2 + i * angleStep;
+      positions[id] = {
+        x: CENTER_X + dangerRadius * Math.cos(angle) - NODE_W / 2,
+        y: CENTER_Y + dangerRadius * Math.sin(angle) - NODE_H / 2,
+      };
+    });
+  }
+
+  return nodes.map(n => styleNodeBySeverity({
+    ...n,
+    position: positions[n.id] ?? { x: 0, y: 0 },
+    type: n.type === 'input' ? 'input' : 'default',
+  }));
+}
 
 function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', ranksep: 70, nodesep: 40 });
+  g.setGraph({ rankdir: 'LR', ranksep: 80, nodesep: 24, marginx: 40, marginy: 40 });
   nodes.forEach(n => g.setNode(n.id, { width: NODE_W, height: NODE_H }));
   edges.forEach(e => g.setEdge(e.source, e.target));
   dagre.layout(g);
   return nodes.map(n => {
     const pos = g.node(n.id);
-    return { ...n, position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 } };
+    return styleNodeBySeverity({ ...n, position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 } });
   });
+}
+
+function applyLayout(nodes: Node[], edges: Edge[], mode: LayoutMode): Node[] {
+  return mode === 'radial' ? applyRadialLayout(nodes, edges) : applyDagreLayout(nodes, edges);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +353,9 @@ function Timeline({
   onSelect: (id: string) => void;
   selectedId?: string;
 }) {
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
+
   const timed = useMemo(() =>
     workflows
       .filter(wf => wf.startNano !== '0' && wf.endNano !== '0')
@@ -198,6 +367,9 @@ function Timeline({
       }),
     [workflows],
   );
+
+  // Reset page when workflow count changes significantly
+  useEffect(() => { setPage(1); }, [timed.length > 0]);
 
   if (timed.length === 0) {
     return (
@@ -213,28 +385,53 @@ function Timeline({
     );
   }
 
-  const starts = timed.map(wf => toMs(wf.startNano));
-  const ends   = timed.map(wf => toMs(wf.endNano));
+  const totalPages = Math.ceil(timed.length / PAGE_SIZE);
+  const pagedTimed = timed.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  const starts = pagedTimed.map(wf => toMs(wf.startNano));
+  const ends   = pagedTimed.map(wf => toMs(wf.endNano));
   const minT   = Math.min(...starts);
   const maxT   = Math.max(...ends);
   const range  = maxT - minT || 1;
 
-  const ROW_H   = 32;
+  const ROW_H   = 38;
   const LABEL_W = 152;
   const AXIS_H  = 28;
   const CHART_W = 920;
   const AVAIL_W = CHART_W - LABEL_W - 20;
-  const SVG_H   = timed.length * ROW_H + AXIS_H + 8;
+  const SVG_H   = pagedTimed.length * ROW_H + AXIS_H + 8;
 
   const sevColor = (sev: Severity) =>
     sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
 
   return (
-    <div className="flex-1 overflow-auto p-4 bg-slate-950">
-      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-        <Clock className="w-3 h-3" />
-        Timeline — {timed.length} spans · {range}ms window
-      </p>
+    <div className="flex-1 overflow-auto p-5" style={{ background: 'var(--cs-bg-primary)' }}>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-bold uppercase tracking-wider font-mono flex items-center gap-1.5" style={{ color: 'var(--cs-text-faint)' }}>
+          <Clock className="w-3 h-3" />
+          Timeline — {timed.length} spans · {range}ms window
+        </p>
+        {totalPages > 1 && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="px-2 py-1 text-[11px] font-medium rounded transition-all disabled:opacity-30"
+              style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-muted)', border: '1px solid var(--cs-border)' }}
+            >Prev</button>
+            <span className="text-[11px] font-mono" style={{ color: 'var(--cs-text-faint)' }}>
+              {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="px-2 py-1 text-[11px] font-medium rounded transition-all disabled:opacity-30"
+              style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-muted)', border: '1px solid var(--cs-border)' }}
+            >Next</button>
+          </div>
+        )}
+      </div>
+      <div className="rounded-xl overflow-hidden p-4" style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
       <svg viewBox={`0 0 ${CHART_W} ${SVG_H}`} className="w-full" style={{ minWidth: 420 }}>
         {/* Grid lines + axis labels */}
         {[0, 0.25, 0.5, 0.75, 1].map(frac => (
@@ -242,11 +439,11 @@ function Timeline({
             <line
               x1={LABEL_W + frac * AVAIL_W} y1={0}
               x2={LABEL_W + frac * AVAIL_W} y2={SVG_H - AXIS_H}
-              stroke="#1e293b" strokeWidth="1"
+              stroke="var(--cs-svg-grid)" strokeWidth="1"
             />
             <text
               x={LABEL_W + frac * AVAIL_W} y={SVG_H - 8}
-              fill="#475569" fontSize="9" fontFamily="monospace" textAnchor="middle"
+              fill="var(--cs-svg-text)" fontSize="9" fontFamily="monospace" textAnchor="middle"
             >
               {Math.round(frac * range)}ms
             </text>
@@ -255,10 +452,10 @@ function Timeline({
         <line
           x1={LABEL_W} y1={SVG_H - AXIS_H}
           x2={CHART_W - 8} y2={SVG_H - AXIS_H}
-          stroke="#334155" strokeWidth="1"
+          stroke="var(--cs-svg-axis)" strokeWidth="1"
         />
 
-        {timed.map((wf, i) => {
+        {pagedTimed.map((wf, i) => {
           const startMs = toMs(wf.startNano) - minT;
           const endMs   = toMs(wf.endNano)   - minT;
           const durMs   = endMs - startMs;
@@ -271,7 +468,7 @@ function Timeline({
           return (
             <g key={wf.id} onClick={() => onSelect(wf.id)} style={{ cursor: 'pointer' }}>
               {isSelected && (
-                <rect x={0} y={y} width={CHART_W} height={ROW_H - 2} fill="#1e293b" rx={2} />
+                <rect x={0} y={y} width={CHART_W} height={ROW_H - 2} fill="var(--cs-svg-selected)" rx={2} />
               )}
               {/* Harness dot */}
               <circle cx={10} cy={y + ROW_H / 2 - 2} r={3.5}
@@ -279,21 +476,21 @@ function Timeline({
               {/* Label */}
               <text
                 x={LABEL_W - 6} y={y + ROW_H / 2 + 3}
-                fill={isSelected ? '#e2e8f0' : '#64748b'}
+                fill={isSelected ? 'var(--cs-svg-label)' : 'var(--cs-svg-text)'}
                 fontSize="10" fontFamily="monospace" textAnchor="end"
               >
                 {wf.label.length > 17 ? wf.label.slice(0, 17) + '…' : wf.label}
               </text>
               {/* Track background */}
-              <rect x={LABEL_W} y={y + 7} width={AVAIL_W} height={ROW_H - 14}
-                fill="#0f172a" rx={2} />
+              <rect x={LABEL_W} y={y + 6} width={AVAIL_W} height={ROW_H - 12}
+                fill="var(--cs-svg-track)" rx={2} />
               {/* Bar */}
-              <rect x={x} y={y + 7} width={w} height={ROW_H - 14}
+              <rect x={x} y={y + 6} width={w} height={ROW_H - 12}
                 fill={col} fillOpacity={isSelected ? 1 : 0.75} rx={2} />
               {/* Duration inside bar */}
               {w > 44 && (
                 <text x={x + w / 2} y={y + ROW_H / 2 + 3}
-                  fill="#0f172a" fontSize="9" fontFamily="monospace"
+                  fill="var(--cs-svg-track)" fontSize="9" fontFamily="monospace"
                   textAnchor="middle" fontWeight="bold"
                 >
                   {durMs}ms
@@ -303,6 +500,7 @@ function Timeline({
           );
         })}
       </svg>
+      </div>
     </div>
   );
 }
@@ -327,12 +525,14 @@ export default function App() {
   // ── UI state ──────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab]           = useState<Tab>('graph');
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
+  const [layoutMode, setLayoutMode]         = useState<LayoutMode>('radial');
 
   // ── Data state ────────────────────────────────────────────────────────────
   const [workflows, setWorkflows]           = useState<Workflow[]>([]);
   const [sessions, setSessions]             = useState<Session[]>([]);
   const [activeSession, setActiveSession]   = useState<string | null>(null);
   const [hasEverHadData, setHasEverHadData] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(false);
 
   // ── Session rename ────────────────────────────────────────────────────────
   const [editingSession, setEditingSession] = useState<string | null>(null);
@@ -356,6 +556,7 @@ export default function App() {
   const [importStatus, setImportStatus] = useState<{ msg: string; ok: boolean } | null>(null);
 
   // ── Theme (s53) ───────────────────────────────────────────────────────────
+  const [liveActivityOpen, setLiveActivityOpen] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     try {
       const saved = localStorage.getItem('claudesec.theme') as 'dark' | 'light' | null;
@@ -505,7 +706,7 @@ export default function App() {
     fetch('/api/graph')
       .then(r => r.json())
       .then(({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
-        setNodes(applyDagreLayout(n, e));
+        setNodes(applyLayout(n, e, layoutMode));
         setEdges(e);
         syncWorkflows(n);
       });
@@ -557,7 +758,7 @@ export default function App() {
   // Socket events
   useEffect(() => {
     const handleGraphUpdate = ({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
-      setNodes(applyDagreLayout(n, e));
+      setNodes(applyLayout(n, e, layoutMode));
       setEdges(e);
       syncWorkflows(n);
 
@@ -887,126 +1088,160 @@ export default function App() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // ── Export menu state ──────────────────────────────────────────────────
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Element)) setShowExportMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
   return (
-    <div className="w-screen h-screen bg-slate-950 text-slate-100 flex flex-col overflow-hidden">
+    <div className="w-screen h-screen flex flex-col overflow-hidden" style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-base)' }}>
 
       {/* ── Header ── */}
-      <header className="h-14 border-b border-slate-800 bg-slate-900/50 backdrop-blur-md flex items-center justify-between px-6 z-10 shrink-0">
+      <header className="h-12 flex items-center justify-between px-5 z-10 shrink-0" style={{
+        borderBottom: '1px solid var(--cs-border)',
+        background: 'var(--cs-bg-surface)',
+      }}>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-1.5 bg-blue-500/20 rounded-lg">
-              <Shield className="w-5 h-5 text-blue-400" />
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #00d4aa, #009e7f)' }}>
+              <Shield className="w-4 h-4 text-white" />
             </div>
-            <div>
-              <h1 className="font-bold text-base tracking-tight leading-none">ClaudeSec</h1>
-              <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-0.5">
-                Local AI Agent Observatory
-              </p>
-            </div>
+            <span className="font-display font-bold text-sm tracking-tight" style={{ color: 'var(--cs-text-base)' }}>ClaudeSec</span>
           </div>
-          {/* Activity sparkline */}
-          <div className="hidden lg:block pl-4 border-l border-slate-800">
+          <div className="hidden lg:flex items-center gap-2 pl-3" style={{ borderLeft: '1px solid var(--cs-border)' }}>
             <ActivitySparkline />
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,170,0.1)' }}>
+              <div className="w-1.5 h-1.5 rounded-full status-live" style={{ background: '#00d4aa' }} />
+              <span className="text-[11px] font-mono font-medium" style={{ color: '#00d4aa' }}>LIVE</span>
+            </div>
           </div>
         </div>
+
         {/* Import status toast */}
         {importStatus && (
-          <div className={`absolute top-16 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg text-xs font-medium z-50 shadow-lg ${importStatus.ok ? 'bg-green-900/80 text-green-200 border border-green-700/50' : 'bg-red-900/80 text-red-200 border border-red-700/50'}`}>
+          <div className={`absolute top-14 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-xs font-medium z-50 shadow-lg backdrop-blur-md ${importStatus.ok ? 'bg-green-900/80 text-green-200 border border-green-700/50' : 'bg-red-900/80 text-red-200 border border-red-700/50'}`}>
             {importStatus.msg}
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 rounded-full border border-slate-700">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-[11px] font-medium text-slate-300">Live</span>
-          </div>
+
+        <div className="flex items-center gap-1.5">
+          {/* Notification toggle */}
           <button
             onClick={requestNotifications}
-            className={`p-1.5 rounded-lg transition-colors border ${
-              notifyEnabled
-                ? 'bg-green-900/30 border-green-700/50 text-green-400 hover:bg-green-900/50'
-                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-            }`}
-            title={notifyEnabled ? 'Notifications enabled — click to disable' : 'Enable desktop notifications for HIGH alerts'}
+            className="p-1.5 rounded-lg transition-all"
+            style={{
+              background: notifyEnabled ? 'rgba(0,212,170,0.1)' : 'transparent',
+              color: notifyEnabled ? '#00d4aa' : 'var(--cs-text-faint)',
+            }}
+            title={notifyEnabled ? 'Notifications enabled' : 'Enable desktop notifications'}
           >
             {notifyEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
           </button>
-          {/* Import button */}
-          <label
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors cursor-pointer"
-            title="Import ClaudeSec JSON export or raw OTLP"
-          >
-            <Upload className="w-3.5 h-3.5" /> Import
-            <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
-          </label>
-          <button
-            onClick={() => window.open('/api/export', '_blank')}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
-            title="Export as JSON"
-          >
-            <Download className="w-3.5 h-3.5" /> JSON
-          </button>
-          <button
-            onClick={() => window.open('/api/export/csv', '_blank')}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
-            title="Export as CSV"
-          >
-            <FileText className="w-3.5 h-3.5" /> CSV
-          </button>
-          {/* Graph export dropdown */}
-          <div ref={graphExportRef} className="relative">
+
+          {/* Export dropdown — consolidates JSON, CSV, Graph, Collector */}
+          <div ref={exportMenuRef} className="relative">
             <button
-              onClick={() => setShowGraphExport(v => !v)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
-              title="Export graph as Mermaid or DOT"
+              onClick={() => setShowExportMenu(v => !v)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{
+                background: showExportMenu ? 'var(--cs-bg-elevated)' : 'transparent',
+                color: 'var(--cs-text-muted)',
+                border: '1px solid transparent',
+              }}
+              onMouseEnter={e => { if (!showExportMenu) (e.target as HTMLElement).style.background = 'var(--cs-bg-elevated)'; }}
+              onMouseLeave={e => { if (!showExportMenu) (e.target as HTMLElement).style.background = 'transparent'; }}
             >
-              <Layers className="w-3.5 h-3.5" /> Graph
+              <Download className="w-3.5 h-3.5" /> Export <ChevronDown className="w-3 h-3" />
             </button>
-            {showGraphExport && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1 min-w-[160px]">
-                <button
-                  onClick={async () => {
-                    setShowGraphExport(false);
+            {showExportMenu && (
+              <div className="absolute right-0 top-full mt-1.5 z-50 dropdown-menu py-1 min-w-[180px]">
+                <label className="flex items-center gap-2 px-3 py-2 text-xs cursor-pointer transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
+                  <Upload className="w-3.5 h-3.5" /> Import JSON
+                  <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+                </label>
+                <div style={{ borderTop: '1px solid var(--cs-border)', margin: '2px 0' }} />
+                <button onClick={() => { setShowExportMenu(false); window.open('/api/export', '_blank'); }}
+                  className="w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
+                  <Download className="w-3.5 h-3.5" /> Export JSON
+                </button>
+                <button onClick={() => { setShowExportMenu(false); window.open('/api/export/csv', '_blank'); }}
+                  className="w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
+                  <FileText className="w-3.5 h-3.5" /> Export CSV
+                </button>
+                <div style={{ borderTop: '1px solid var(--cs-border)', margin: '2px 0' }} />
+                <button onClick={async () => {
+                    setShowExportMenu(false);
                     const params = activeSession ? `?session=${activeSession}` : '';
                     const res = await fetch(`/api/graph/mermaid${params}`);
                     const text = await res.text();
                     await navigator.clipboard.writeText(text);
-                    alert('Mermaid diagram copied to clipboard!');
                   }}
-                  className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 transition-colors"
-                >
-                  Copy Mermaid
+                  className="w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
+                  <Layers className="w-3.5 h-3.5" /> Copy Mermaid
                 </button>
-                <button
-                  onClick={() => {
-                    setShowGraphExport(false);
+                <button onClick={() => {
+                    setShowExportMenu(false);
                     const params = activeSession ? `?session=${activeSession}` : '';
                     window.open(`/api/graph/dot${params}`, '_blank');
                   }}
-                  className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 transition-colors"
-                >
-                  Download .dot
+                  className="w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
+                  <Layers className="w-3.5 h-3.5" /> Download .dot
+                </button>
+                <button onClick={() => { setShowExportMenu(false); window.open('/api/collector-config', '_blank'); }}
+                  className="w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
+                  <Server className="w-3.5 h-3.5" /> Collector Config
                 </button>
               </div>
             )}
           </div>
+
+          {/* Setup guide */}
           <button
-            onClick={() => window.open('/api/collector-config', '_blank')}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
-            title="Download OpenTelemetry Collector config"
+            onClick={() => setShowWelcome(v => !v)}
+            className="p-1.5 rounded-lg transition-all"
+            style={{
+              background: showWelcome ? 'rgba(0,212,170,0.1)' : 'transparent',
+              color: showWelcome ? '#00d4aa' : 'var(--cs-text-faint)',
+            }}
+            title="Setup Guide"
           >
-            <Server className="w-3.5 h-3.5" /> Collector
+            <Shield className="w-4 h-4" />
           </button>
+
+          {/* Live activity */}
+          <button
+            onClick={() => setLiveActivityOpen(v => !v)}
+            className="p-1.5 rounded-lg transition-all"
+            style={{
+              background: liveActivityOpen ? 'rgba(59,158,255,0.1)' : 'transparent',
+              color: liveActivityOpen ? '#3b9eff' : 'var(--cs-text-faint)',
+            }}
+            title="Live Agent Activity"
+          >
+            <Zap className="w-4 h-4" />
+          </button>
+
+          {/* Theme toggle */}
           <button
             onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-            className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-200 border border-slate-700"
+            className="p-1.5 rounded-lg transition-all"
+            style={{ color: 'var(--cs-text-faint)' }}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
+
+          {/* Reset */}
           <button
             onClick={resetGraph}
-            className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-red-400"
+            className="p-1.5 rounded-lg transition-all hover:text-red-400"
+            style={{ color: 'var(--cs-text-faint)' }}
             title="Reset all data"
           >
             <Trash2 className="w-4 h-4" />
@@ -1014,21 +1249,24 @@ export default function App() {
         </div>
       </header>
 
+      {/* Live Activity floating panel */}
+      <LiveActivityPanel open={liveActivityOpen} onClose={() => setLiveActivityOpen(false)} />
+
       <div className="flex-1 flex overflow-hidden min-h-0">
 
         {/* ── Left Sidebar ── */}
-        <aside className="w-72 border-r border-slate-800 bg-slate-900/30 flex flex-col overflow-hidden shrink-0">
+        <aside className="w-64 flex flex-col overflow-hidden shrink-0" style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
 
           {/* Sessions */}
-          <div className="p-3 border-b border-slate-800 shrink-0">
+          <div className="p-3 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+              <p className="text-[11px] font-bold uppercase tracking-wider font-mono flex items-center gap-1.5" style={{ color: 'var(--cs-text-faint)' }}>
                 <Layers className="w-3 h-3" /> Sessions
               </p>
               <div className="flex items-center gap-1.5">
                 {comparePending ? (
                   <>
-                    <span className="text-[9px] text-blue-400 font-mono animate-pulse">pick 2nd…</span>
+                    <span className="text-[11px] text-blue-400 font-mono animate-pulse">pick 2nd…</span>
                     <button
                       onClick={() => setComparePending(null)}
                       className="text-slate-500 hover:text-slate-300"
@@ -1040,13 +1278,13 @@ export default function App() {
                 ) : compareIds ? (
                   <button
                     onClick={() => setCompareIds(null)}
-                    className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5"
+                    className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5"
                     title="Close comparison"
                   >
                     <GitCompare className="w-2.5 h-2.5" /> Close
                   </button>
                 ) : null}
-                <span className="text-[9px] text-slate-600 font-mono">{sessions.length}</span>
+                <span className="text-[11px] text-slate-600 font-mono">{sessions.length}</span>
               </div>
             </div>
             {/* Label filter pills */}
@@ -1055,12 +1293,14 @@ export default function App() {
                 <button
                   key={l}
                   onClick={() => setLabelFilter(l)}
-                  className={`px-1.5 py-0.5 rounded-full text-[9px] font-medium transition-colors capitalize ${
+                  className="px-1.5 py-0.5 rounded text-[11px] font-medium transition-all capitalize"
+                  style={
                     labelFilter === l
-                      ? 'bg-slate-600 text-white'
-                      : 'bg-slate-800/60 text-slate-600 hover:text-slate-400'
-                  }`}
-                  style={labelFilter === l && l !== 'all' ? { background: LABEL_COLORS[l as SessionLabel]?.dot + '33', color: LABEL_COLORS[l as SessionLabel]?.dot } : {}}
+                      ? l === 'all'
+                        ? { background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)', border: '1px solid var(--cs-border-soft)' }
+                        : { background: (LABEL_COLORS[l as SessionLabel]?.dot ?? '#64748b') + '22', color: LABEL_COLORS[l as SessionLabel]?.dot, border: `1px solid ${(LABEL_COLORS[l as SessionLabel]?.dot ?? '#64748b')}44` }
+                      : { background: 'transparent', color: 'var(--cs-text-faint)', border: '1px solid transparent' }
+                  }
                 >
                   {l === 'all' ? 'All' : l}
                 </button>
@@ -1070,11 +1310,11 @@ export default function App() {
             <div className="space-y-1 max-h-36 overflow-y-auto">
               <button
                 onClick={() => setActiveSession(null)}
-                className={`w-full text-left px-2 py-1 rounded text-[10px] transition-colors ${
-                  activeSession === null
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className="w-full text-left px-2 py-1.5 rounded-md text-xs font-medium transition-all"
+                style={activeSession === null
+                  ? { background: 'rgba(0,212,170,0.12)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
+                  : { background: 'transparent', color: 'var(--cs-text-muted)', border: '1px solid transparent' }
+                }
               >
                 All sessions · {workflows.length} spans
               </button>
@@ -1089,15 +1329,16 @@ export default function App() {
                 return (
                   <React.Fragment key={s.traceId}>
                   <div
-                    className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors group ${
+                    className="flex items-center gap-1 px-2 py-1.5 rounded-md text-xs transition-all group"
+                    style={
                       isActive
-                        ? 'bg-blue-600 text-white'
+                        ? { background: 'rgba(0,212,170,0.12)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
                         : comparePending === s.traceId
-                        ? 'bg-blue-900/40 border border-blue-600/50 text-blue-300'
+                        ? { background: 'rgba(59,158,255,0.1)', color: '#3b9eff', border: '1px solid rgba(59,158,255,0.3)' }
                         : isPinned
-                        ? 'bg-yellow-900/20 border border-yellow-700/30 text-slate-300 hover:bg-yellow-900/30'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
+                        ? { background: 'rgba(255,178,36,0.06)', color: 'var(--cs-text-base)', border: '1px solid rgba(255,178,36,0.15)' }
+                        : { background: 'transparent', color: 'var(--cs-text-muted)', border: '1px solid transparent' }
+                    }
                   >
                     {isPinned && !isActive && <Star className="w-2 h-2 text-yellow-400 shrink-0" />}
                     {!isPinned && !isActive && (
@@ -1113,7 +1354,7 @@ export default function App() {
                     {!isPinned && isActive && <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-white/60" />}
                     {s.healthScore !== undefined && !isActive && (
                       <span
-                        className={`shrink-0 text-[8px] font-mono font-bold px-1 rounded ${
+                        className={`shrink-0 text-[11px] font-mono font-bold px-1 rounded ${
                           s.healthScore >= 80 ? 'text-green-400 bg-green-900/30'
                             : s.healthScore >= 50 ? 'text-yellow-400 bg-yellow-900/30'
                             : 'text-red-400 bg-red-900/30'
@@ -1133,7 +1374,7 @@ export default function App() {
                           value={editName}
                           onChange={e => setEditName(e.target.value)}
                           onBlur={commitRename}
-                          className="flex-1 bg-slate-700 text-white text-[10px] rounded px-1 py-0.5 outline-none min-w-0"
+                          className="flex-1 bg-slate-700 text-white text-xs rounded px-1 py-0.5 outline-none min-w-0"
                         />
                       </form>
                     ) : (
@@ -1159,7 +1400,7 @@ export default function App() {
                         >
                           {s.name}
                         </button>
-                        <span className="shrink-0 text-[9px] opacity-50">{s.spanCount}</span>
+                        <span className="shrink-0 text-[11px] opacity-50">{s.spanCount}</span>
                         {/* Pin / unpin */}
                         <button
                           onClick={async e => {
@@ -1213,7 +1454,7 @@ export default function App() {
                     <div className="mx-1 mb-1 p-2 bg-slate-800/80 border border-slate-700 rounded-lg space-y-2">
                       {/* Label selector */}
                       <div>
-                        <p className="text-[9px] text-slate-600 uppercase font-bold mb-1">Label</p>
+                        <p className="text-[11px] text-slate-600 uppercase font-bold mb-1">Label</p>
                         <div className="flex flex-wrap gap-1">
                           {(Object.keys(LABEL_COLORS) as SessionLabel[]).map(l => (
                             <button
@@ -1226,7 +1467,7 @@ export default function App() {
                                 });
                                 fetchSessions();
                               }}
-                              className={`px-1.5 py-0.5 rounded text-[9px] capitalize transition-colors ${
+                              className={`px-1.5 py-0.5 rounded text-[11px] capitalize transition-colors ${
                                 sessionLabel === l
                                   ? 'font-bold'
                                   : 'opacity-60 hover:opacity-100'
@@ -1244,7 +1485,7 @@ export default function App() {
                       </div>
                       {/* Notes textarea */}
                       <div>
-                        <p className="text-[9px] text-slate-600 uppercase font-bold mb-1">Notes</p>
+                        <p className="text-[11px] text-slate-600 uppercase font-bold mb-1">Notes</p>
                         <textarea
                           value={notesText}
                           onChange={e => setNotesText(e.target.value)}
@@ -1258,7 +1499,7 @@ export default function App() {
                           }}
                           placeholder="Add investigation notes…"
                           rows={3}
-                          className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500/50"
+                          className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500/50"
                         />
                       </div>
                     </div>
@@ -1270,44 +1511,57 @@ export default function App() {
           </div>
 
           {/* Simulate */}
-          <div className="p-3 border-b border-slate-800 space-y-1.5 shrink-0">
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Simulate</p>
-            <button
-              onClick={() => simulateTrace('normal')}
-              className="w-full flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-all group"
-            >
-              <Play className="w-3.5 h-3.5 text-green-400 group-hover:scale-110 transition-transform" />
-              <span className="text-xs font-medium">Normal Trace</span>
-            </button>
-            <button
-              onClick={() => simulateTrace('high')}
-              className="w-full flex items-center gap-2 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 rounded-lg border border-red-500/30 transition-all group"
-            >
-              <AlertTriangle className="w-3.5 h-3.5 text-red-400 group-hover:scale-110 transition-transform" />
-              <span className="text-xs font-medium text-red-200">Malicious Trace</span>
-            </button>
-            <button
-              onClick={() => simulateTrace('multi')}
-              className="w-full flex items-center gap-2 px-3 py-2 bg-purple-500/10 hover:bg-purple-500/20 rounded-lg border border-purple-500/30 transition-all group"
-            >
-              <Cpu className="w-3.5 h-3.5 text-purple-400 group-hover:scale-110 transition-transform" />
-              <span className="text-xs font-medium text-purple-200">Multi-Agent</span>
-            </button>
+          <div className="p-3 space-y-1.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+            <p className="text-[11px] font-bold uppercase tracking-wider font-mono mb-1.5" style={{ color: 'var(--cs-text-faint)' }}>Simulate</p>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => simulateTrace('normal')}
+                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all group"
+                style={{ background: 'rgba(0,212,170,0.08)', border: '1px solid rgba(0,212,170,0.15)' }}
+                title="Normal Trace"
+              >
+                <Play className="w-3 h-3 group-hover:scale-110 transition-transform" style={{ color: '#00d4aa' }} />
+                <span className="text-[11px] font-medium" style={{ color: '#00d4aa' }}>Normal</span>
+              </button>
+              <button
+                onClick={() => simulateTrace('high')}
+                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all group"
+                style={{ background: 'rgba(255,59,92,0.08)', border: '1px solid rgba(255,59,92,0.15)' }}
+                title="Malicious Trace"
+              >
+                <AlertTriangle className="w-3 h-3 group-hover:scale-110 transition-transform" style={{ color: '#ff3b5c' }} />
+                <span className="text-[11px] font-medium" style={{ color: '#ff3b5c' }}>Threat</span>
+              </button>
+              <button
+                onClick={() => simulateTrace('multi')}
+                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all group"
+                style={{ background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.15)' }}
+                title="Multi-Agent"
+              >
+                <Cpu className="w-3 h-3 group-hover:scale-110 transition-transform" style={{ color: '#8b5cf6' }} />
+                <span className="text-[11px] font-medium" style={{ color: '#8b5cf6' }}>Multi</span>
+              </button>
+            </div>
           </div>
 
           {/* Search + filters */}
-          <div className="p-3 border-b border-slate-800 space-y-2 shrink-0">
+          <div className="p-3 space-y-2 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--cs-text-faint)' }} />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search or key=value…"
-                className="w-full pl-8 pr-7 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-slate-500"
+                placeholder="Search spans..."
+                className="w-full pl-8 pr-7 py-1.5 rounded-lg text-xs font-mono focus:outline-none"
+                style={{
+                  background: 'var(--cs-bg-primary)',
+                  border: '1px solid var(--cs-border)',
+                  color: 'var(--cs-text-base)',
+                }}
               />
               {search && (
-                <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+                <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--cs-text-faint)' }}>
                   <X className="w-3 h-3" />
                 </button>
               )}
@@ -1317,9 +1571,12 @@ export default function App() {
                 <button
                   key={mode}
                   onClick={() => setFilterMode(mode)}
-                  className={`flex-1 py-1 text-[10px] font-medium rounded capitalize transition-colors ${
-                    filterMode === mode ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                  }`}
+                  className="flex-1 py-1 text-[11px] font-medium rounded capitalize transition-all"
+                  style={
+                    filterMode === mode
+                      ? { background: 'var(--cs-accent)', color: '#fff' }
+                      : { background: 'var(--cs-bg-primary)', color: 'var(--cs-text-faint)', border: '1px solid var(--cs-border)' }
+                  }
                 >
                   {mode}
                 </button>
@@ -1330,9 +1587,11 @@ export default function App() {
               <div className="flex flex-wrap gap-1">
                 <button
                   onClick={() => setHarnessFilter(null)}
-                  className={`px-2 py-0.5 text-[9px] rounded-full font-medium transition-colors ${
-                    harnessFilter === null ? 'bg-slate-500 text-white' : 'bg-slate-800 text-slate-500 hover:bg-slate-700'
-                  }`}
+                  className="px-2 py-0.5 text-[11px] rounded font-medium transition-all"
+                  style={harnessFilter === null
+                    ? { background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)', border: '1px solid var(--cs-border-soft)' }
+                    : { background: 'transparent', color: 'var(--cs-text-faint)', border: '1px solid transparent' }
+                  }
                 >
                   All
                 </button>
@@ -1340,10 +1599,10 @@ export default function App() {
                   <button
                     key={h}
                     onClick={() => setHarnessFilter(harnessFilter === h ? null : h)}
-                    className={`px-2 py-0.5 text-[9px] rounded-full font-medium transition-colors flex items-center gap-1`}
+                    className="px-2 py-0.5 text-[11px] rounded font-medium transition-all flex items-center gap-1"
                     style={harnessFilter === h
-                      ? { background: HARNESS_COLORS[h] ?? '#64748b', color: '#fff' }
-                      : { background: '#1e293b', color: '#64748b' }
+                      ? { background: (HARNESS_COLORS[h] ?? '#64748b') + '22', color: HARNESS_COLORS[h] ?? '#64748b', border: `1px solid ${(HARNESS_COLORS[h] ?? '#64748b')}44` }
+                      : { background: 'transparent', color: 'var(--cs-text-faint)', border: '1px solid transparent' }
                     }
                   >
                     <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: HARNESS_COLORS[h] ?? '#64748b' }} />
@@ -1357,12 +1616,12 @@ export default function App() {
           {/* Workflow list */}
           <div className="flex-1 overflow-y-auto p-3">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Workflows</p>
-              <div className="flex items-center gap-1.5 text-[9px] font-mono">
-                <span className="text-green-400">{counts.ok}ok</span>
-                {counts.low    > 0 && <span className="text-yellow-400">{counts.low}low</span>}
-                {counts.medium > 0 && <span className="text-orange-400">{counts.medium}med</span>}
-                {counts.high   > 0 && <span className="text-red-400">{counts.high}high</span>}
+              <p className="text-[11px] font-bold uppercase tracking-wider font-mono" style={{ color: 'var(--cs-text-faint)' }}>Spans</p>
+              <div className="flex items-center gap-1.5 text-[11px] font-mono">
+                <span style={{ color: '#00d4aa' }}>{counts.ok}<span style={{ opacity: 0.5 }}>ok</span></span>
+                {counts.low    > 0 && <span style={{ color: '#ffb224' }}>{counts.low}<span style={{ opacity: 0.5 }}>low</span></span>}
+                {counts.medium > 0 && <span style={{ color: '#f97316' }}>{counts.medium}<span style={{ opacity: 0.5 }}>med</span></span>}
+                {counts.high   > 0 && <span style={{ color: '#ff3b5c' }}>{counts.high}<span style={{ opacity: 0.5 }}>hi</span></span>}
               </div>
             </div>
 
@@ -1401,13 +1660,13 @@ export default function App() {
                             title={HARNESS_NAMES[wf.harness]}
                           />
                           <span className={`text-[11px] font-semibold truncate ${c.text}`}>{wf.label}</span>
-                          <span className="ml-auto text-[9px] font-mono text-slate-500 shrink-0">{wf.timestamp}</span>
+                          <span className="ml-auto text-[11px] font-mono text-slate-500 shrink-0">{wf.timestamp}</span>
                         </div>
                         <div className="flex items-center gap-1.5 pl-4">
-                          <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${c.badge}`}>
+                          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${c.badge}`}>
                             {wf.severity === 'none' ? wf.protocol : SEVERITY_LABEL[wf.severity]}
                           </span>
-                          <span className="text-[9px] text-slate-400 truncate">{wf.reason}</span>
+                          <span className="text-[11px] text-slate-400 truncate">{wf.reason}</span>
                         </div>
                       </motion.button>
                     );
@@ -1421,111 +1680,56 @@ export default function App() {
         {/* ── Main Area ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
 
-          {/* Welcome screen when no data */}
-          {sessions.length === 0 && !hasEverHadData && (
-            <WelcomeScreen onDemoLoaded={() => { setHasEverHadData(true); fetchSessions(); }} />
+          {/* Welcome screen — shown on first run OR via Setup button */}
+          {(showWelcome || (sessions.length === 0 && !hasEverHadData)) && (
+            <WelcomeScreen onDemoLoaded={() => { setHasEverHadData(true); setShowWelcome(false); fetchSessions(); }} />
           )}
 
           {/* Tab switcher (hidden during welcome) */}
-          <div className={`flex border-b border-slate-800 bg-slate-900/30 shrink-0 ${sessions.length === 0 && !hasEverHadData ? 'hidden' : ''}`}>
-            <button
-              onClick={() => setActiveTab('graph')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'graph' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Activity className="w-3.5 h-3.5" /> Graph
-            </button>
-            <button
-              onClick={() => setActiveTab('timeline')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'timeline' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Clock className="w-3.5 h-3.5" /> Timeline
-            </button>
-            <button
-              onClick={() => setActiveTab('orchestration')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'orchestration' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Cpu className="w-3.5 h-3.5" /> Orchestration
-            </button>
-            <button
-              onClick={() => setActiveTab('alerts')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors relative ${
-                activeTab === 'alerts' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <AlertTriangle className="w-3.5 h-3.5" /> Alerts
-              {alertCount > 0 && (
-                <span className="absolute -top-0.5 right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none">
-                  {alertCount > 99 ? '99+' : alertCount}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setActiveTab('rules')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'rules' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Shield className="w-3.5 h-3.5" /> Rules
-            </button>
-            <button
-              onClick={() => setActiveTab('costs')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'costs' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Zap className="w-3.5 h-3.5" /> Costs
-            </button>
-            <button
-              onClick={() => setActiveTab('harnesses')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'harnesses' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Cpu className="w-3.5 h-3.5" /> Harnesses
-            </button>
-            <button
-              onClick={() => setActiveTab('heatmap')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'heatmap' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Flame className="w-3.5 h-3.5" /> Heatmap
-            </button>
-            <button
-              onClick={() => setActiveTab('search')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'search' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Search className="w-3.5 h-3.5" /> Search
-            </button>
-            <button
-              onClick={() => setActiveTab('processes')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'processes' ? 'border-cyan-500 text-cyan-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Monitor className="w-3.5 h-3.5" /> Processes
-            </button>
-            <button
-              onClick={() => setActiveTab('bookmarks')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${
-                activeTab === 'bookmarks' ? 'border-yellow-500 text-yellow-400' : 'border-transparent text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Bookmark className="w-3.5 h-3.5" /> Bookmarks
-            </button>
+          <div className={`flex items-center gap-0.5 px-3 shrink-0 overflow-x-auto ${(showWelcome || (sessions.length === 0 && !hasEverHadData)) ? 'hidden' : ''}`} style={{
+            borderBottom: '1px solid var(--cs-border)',
+            background: 'var(--cs-bg-surface)',
+          }}>
+            {([
+              { id: 'graph' as Tab, icon: <Activity className="w-3.5 h-3.5" />, label: 'Graph' },
+              { id: 'timeline' as Tab, icon: <Clock className="w-3.5 h-3.5" />, label: 'Timeline' },
+              { id: 'orchestration' as Tab, icon: <Cpu className="w-3.5 h-3.5" />, label: 'Orchestration' },
+              { id: 'alerts' as Tab, icon: <AlertTriangle className="w-3.5 h-3.5" />, label: 'Alerts', badge: alertCount },
+              { id: 'rules' as Tab, icon: <Shield className="w-3.5 h-3.5" />, label: 'Rules' },
+              { id: 'costs' as Tab, icon: <Zap className="w-3.5 h-3.5" />, label: 'Costs' },
+              { id: 'harnesses' as Tab, icon: <Cpu className="w-3.5 h-3.5" />, label: 'Harnesses' },
+              { id: 'heatmap' as Tab, icon: <Flame className="w-3.5 h-3.5" />, label: 'Heatmap' },
+              { id: 'search' as Tab, icon: <Search className="w-3.5 h-3.5" />, label: 'Search' },
+              { id: 'processes' as Tab, icon: <Monitor className="w-3.5 h-3.5" />, label: 'Processes' },
+              { id: 'bookmarks' as Tab, icon: <Bookmark className="w-3.5 h-3.5" />, label: 'Bookmarks' },
+            ] as { id: Tab; icon: React.ReactNode; label: string; badge?: number }[]).map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative px-3 py-2.5 text-[11px] font-medium flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                  activeTab === tab.id ? 'tab-active' : ''
+                }`}
+                style={{
+                  color: activeTab === tab.id ? '#00d4aa' : 'var(--cs-text-faint)',
+                }}
+              >
+                {tab.icon} {tab.label}
+                {tab.badge !== undefined && tab.badge > 0 && (
+                  <span className="min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full flex items-center justify-center leading-none"
+                    style={{ background: '#ff3b5c', color: '#fff' }}>
+                    {tab.badge > 99 ? '99+' : tab.badge}
+                  </span>
+                )}
+              </button>
+            ))}
             <button
               onClick={() => setActiveTab('settings')}
-              className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ml-auto ${
-                activeTab === 'settings' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
+              className={`relative px-3 py-2.5 text-[11px] font-medium flex items-center gap-1.5 transition-all ml-auto whitespace-nowrap ${
+                activeTab === 'settings' ? 'tab-active' : ''
               }`}
+              style={{
+                color: activeTab === 'settings' ? '#00d4aa' : 'var(--cs-text-faint)',
+              }}
             >
               <Settings className="w-3.5 h-3.5" /> Settings
             </button>
@@ -1533,15 +1737,23 @@ export default function App() {
 
           {/* Graph view */}
           {activeTab === 'graph' && (
-            <main className="flex-1 relative bg-slate-950 min-h-0" style={{ height: '100%' }}>
+            <main className="flex-1 relative min-h-0" style={{ height: '100%', background: 'var(--cs-bg-primary)' }}>
               <ReactFlow
                 nodes={displayNodes} edges={edges}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
                 onConnect={onConnect} onNodeClick={onNodeClick}
                 fitView colorMode={theme === 'light' ? 'light' : 'dark'}
-                defaultEdgeOptions={{ markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' } }}
+                defaultEdgeOptions={{
+                  type: layoutMode === 'radial' ? 'smoothstep' : 'default',
+                  markerEnd: { type: MarkerType.ArrowClosed, color: '#00d4aa', width: 16, height: 16 },
+                  style: { stroke: '#1c1e2a', strokeWidth: 2 },
+                  animated: true,
+                }}
+                proOptions={{ hideAttribution: true }}
+                minZoom={0.1}
+                maxZoom={4}
               >
-                <Background color="#1e293b" gap={20} size={1} />
+                <Background color="var(--cs-svg-grid)" gap={24} size={1} />
                 <Controls className="bg-slate-800 border-slate-700 fill-slate-300" />
                 <GraphSearch
                   query={graphSearchQuery} setQuery={setGraphSearchQuery}
@@ -1557,10 +1769,46 @@ export default function App() {
                   onSetSpeed={handleReplaySetSpeed}
                   onScrub={handleReplayScrub}
                 />
-                <Panel position="top-right" className="bg-slate-900/80 backdrop-blur-md border border-slate-800 p-3 rounded-xl shadow-2xl">
+                <Panel position="top-right" className="backdrop-blur-md p-3 rounded-xl shadow-2xl" style={{
+                  background: 'color-mix(in srgb, var(--cs-bg-surface) 85%, transparent)',
+                  border: '1px solid var(--cs-border)',
+                }}>
                   <div className="flex items-center gap-2 mb-2">
-                    <Activity className="w-3.5 h-3.5 text-blue-400" />
-                    <h3 className="text-xs font-bold flex-1">Stats</h3>
+                    <Activity className="w-3.5 h-3.5" style={{ color: '#00d4aa' }} />
+                    <h3 className="text-xs font-bold font-display flex-1">Stats</h3>
+                    {/* Layout toggle */}
+                    <div className="flex items-center rounded-md overflow-hidden" style={{ border: '1px solid var(--cs-border)' }}>
+                      <button
+                        onClick={() => {
+                          setLayoutMode('radial');
+                          fetch('/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
+                            setNodes(applyLayout(n, e, 'radial'));
+                            setEdges(e);
+                          });
+                        }}
+                        className="px-1.5 py-0.5 text-[10px] font-medium transition-all"
+                        style={layoutMode === 'radial'
+                          ? { background: 'rgba(0,212,170,0.15)', color: '#00d4aa' }
+                          : { color: 'var(--cs-text-faint)' }
+                        }
+                        title="Radial layout"
+                      >Radial</button>
+                      <button
+                        onClick={() => {
+                          setLayoutMode('dagre');
+                          fetch('/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
+                            setNodes(applyLayout(n, e, 'dagre'));
+                            setEdges(e);
+                          });
+                        }}
+                        className="px-1.5 py-0.5 text-[10px] font-medium transition-all"
+                        style={layoutMode === 'dagre'
+                          ? { background: 'rgba(0,212,170,0.15)', color: '#00d4aa' }
+                          : { color: 'var(--cs-text-faint)' }
+                        }
+                        title="Tree layout"
+                      >Tree</button>
+                    </div>
                     <button
                       onClick={() => setGraphSearchOpen(true)}
                       title="Search nodes (Ctrl+F)"
@@ -1580,36 +1828,36 @@ export default function App() {
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                     <div>
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">Nodes</p>
+                      <p className="text-[11px] text-slate-500 uppercase font-bold">Nodes</p>
                       <p className="text-lg font-mono font-bold">{nodes.length}</p>
                     </div>
                     <div>
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">Edges</p>
+                      <p className="text-[11px] text-slate-500 uppercase font-bold">Edges</p>
                       <p className="text-lg font-mono font-bold">{edges.length}</p>
                     </div>
                     <div>
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">Threats</p>
+                      <p className="text-[11px] text-slate-500 uppercase font-bold">Threats</p>
                       <p className={`text-lg font-mono font-bold ${counts.high > 0 ? 'text-red-400' : counts.medium > 0 ? 'text-orange-400' : 'text-slate-400'}`}>
                         {counts.low + counts.medium + counts.high}
                       </p>
                     </div>
                     <div>
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">Clean</p>
+                      <p className="text-[11px] text-slate-500 uppercase font-bold">Clean</p>
                       <p className="text-lg font-mono font-bold text-green-400">{counts.ok}</p>
                     </div>
                   </div>
                   {(metrics.tokenIn > 0 || metrics.tokenOut > 0) && (
                     <div className="border-t border-slate-700 mt-2 pt-2 space-y-1">
-                      <p className="text-[9px] text-slate-500 uppercase font-bold flex items-center gap-1">
+                      <p className="text-[11px] text-slate-500 uppercase font-bold flex items-center gap-1">
                         <Zap className="w-2.5 h-2.5" /> Tokens
                       </p>
                       <div className="flex gap-3">
                         <div>
-                          <p className="text-[8px] text-slate-600">In</p>
+                          <p className="text-[11px] text-slate-600">In</p>
                           <p className="text-sm font-mono font-bold text-blue-400">{metrics.tokenIn.toLocaleString()}</p>
                         </div>
                         <div>
-                          <p className="text-[8px] text-slate-600">Out</p>
+                          <p className="text-[11px] text-slate-600">Out</p>
                           <p className="text-sm font-mono font-bold text-purple-400">{metrics.tokenOut.toLocaleString()}</p>
                         </div>
                       </div>
@@ -1617,13 +1865,13 @@ export default function App() {
                   )}
                   {metrics.toolCalls > 0 && (
                     <div className="mt-1">
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">Tool Calls</p>
+                      <p className="text-[11px] text-slate-500 uppercase font-bold">Tool Calls</p>
                       <p className="text-lg font-mono font-bold text-cyan-400">{metrics.toolCalls}</p>
                     </div>
                   )}
                   {metrics.avgMs > 0 && (
                     <div className="mt-1">
-                      <p className="text-[9px] text-slate-500 uppercase font-bold">Avg Latency</p>
+                      <p className="text-[11px] text-slate-500 uppercase font-bold">Avg Latency</p>
                       <p className="text-lg font-mono font-bold text-green-400">{metrics.avgMs}ms</p>
                     </div>
                   )}
@@ -1636,11 +1884,16 @@ export default function App() {
                   <motion.div
                     initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
                     transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                    className="absolute top-0 right-0 h-full bg-slate-900 border-l border-slate-800 z-20 shadow-[-20px_0_40px_rgba(0,0,0,0.5)] p-5 overflow-y-auto"
-                    style={{ width: '300px' }}
+                    className="absolute top-0 right-0 h-full z-20 p-5 overflow-y-auto"
+                    style={{
+                      width: '320px',
+                      background: 'var(--cs-bg-surface)',
+                      borderLeft: '1px solid var(--cs-border)',
+                      boxShadow: '-20px 0 60px rgba(0,0,0,0.4)',
+                    }}
                   >
                     <div className="flex items-center justify-between mb-5">
-                      <h3 className="font-bold">Span Details</h3>
+                      <h3 className="font-display font-bold text-sm">Span Details</h3>
                       <div className="flex items-center gap-1">
                         {/* Bookmark toggle */}
                         <button
@@ -1678,7 +1931,7 @@ export default function App() {
 
                     <div className="space-y-3">
                       <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Span Name</p>
+                        <p className="text-xs text-slate-500 uppercase font-bold mb-1">Span Name</p>
                         <p className="text-sm font-mono font-bold text-blue-400">{String(selectedNode.data.label)}</p>
                       </div>
 
@@ -1687,7 +1940,7 @@ export default function App() {
                         <div className={`p-3 rounded-xl border ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].row}`}>
                           <div className="flex items-center gap-2 mb-1">
                             <AlertTriangle className={`w-3.5 h-3.5 ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].icon}`} />
-                            <p className={`text-[10px] font-bold uppercase ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].icon}`}>
+                            <p className={`text-xs font-bold uppercase ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].icon}`}>
                               {SEVERITY_LABEL[(selectedNode.data as any).severity as Severity]} Severity Alert
                             </p>
                           </div>
@@ -1702,7 +1955,7 @@ export default function App() {
                       {/* Harness */}
                       {(selectedNode.data as any).harness && (
                         <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1.5">Agent Harness</p>
+                          <p className="text-xs text-slate-500 uppercase font-bold mb-1.5">Agent Harness</p>
                           <div className="flex items-center gap-2">
                             <span className="w-2.5 h-2.5 rounded-full" style={{ background: HARNESS_COLORS[(selectedNode.data as any).harness] ?? '#64748b' }} />
                             <p className="text-sm font-mono text-slate-200">
@@ -1715,7 +1968,7 @@ export default function App() {
                       {/* Session */}
                       {(selectedNode.data as any).traceId && (
                         <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Session</p>
+                          <p className="text-xs text-slate-500 uppercase font-bold mb-1">Session</p>
                           <p className="text-xs font-mono text-slate-300 truncate">
                             {sessions.find(s => s.traceId === (selectedNode.data as any).traceId)?.name
                               ?? (selectedNode.data as any).traceId}
@@ -1726,7 +1979,7 @@ export default function App() {
                       {/* Duration */}
                       {(selectedNode.data as any).startNano && (selectedNode.data as any).startNano !== '0' && (
                         <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Duration</p>
+                          <p className="text-xs text-slate-500 uppercase font-bold mb-1">Duration</p>
                           <p className="text-sm font-mono font-bold text-cyan-400">
                             {formatDuration((selectedNode.data as any).startNano, (selectedNode.data as any).endNano)}
                           </p>
@@ -1734,31 +1987,31 @@ export default function App() {
                       )}
 
                       <div>
-                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Protocol & Reason</p>
+                        <p className="text-xs text-slate-500 uppercase font-bold mb-2">Protocol & Reason</p>
                         <div className="flex flex-wrap gap-1.5">
-                          <span className="px-2 py-1 bg-slate-800 rounded text-[10px] font-mono border border-slate-700">
+                          <span className="px-2 py-1 bg-slate-800 rounded text-xs font-mono border border-slate-700">
                             {String((selectedNode.data as any).protocol ?? 'HTTPS')}
                           </span>
-                          <span className="px-2 py-1 bg-slate-800 rounded text-[10px] font-mono border border-slate-700">
+                          <span className="px-2 py-1 bg-slate-800 rounded text-xs font-mono border border-slate-700">
                             {String((selectedNode.data as any).reason ?? '—')}
                           </span>
                         </div>
                       </div>
 
                       <div>
-                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Attributes</p>
+                        <p className="text-xs text-slate-500 uppercase font-bold mb-2">Attributes</p>
                         <SpanAttributes attrs={(selectedNode.data as any).attributes || {}} />
                       </div>
 
                       {/* Span Tags */}
                       <div className="border-t border-slate-800 pt-3">
                         <div className="flex items-center justify-between mb-2">
-                          <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1.5">
+                          <p className="text-xs text-slate-500 uppercase font-bold flex items-center gap-1.5">
                             <Zap className="w-3 h-3" /> Tags ({spanTags.length})
                           </p>
                           <button
                             onClick={() => setShowTagInput(v => !v)}
-                            className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+                            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
                           >
                             {showTagInput ? 'Cancel' : '+ Add'}
                           </button>
@@ -1767,7 +2020,7 @@ export default function App() {
                           {spanTags.map(tag => (
                             <span
                               key={tag}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-900/30 border border-blue-700/30 rounded-full text-[10px] text-blue-300 font-mono group"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-900/30 border border-blue-700/30 rounded-full text-xs text-blue-300 font-mono group"
                             >
                               {tag}
                               <button
@@ -1783,7 +2036,7 @@ export default function App() {
                             </span>
                           ))}
                           {spanTags.length === 0 && !showTagInput && (
-                            <span className="text-[10px] text-slate-700">No tags yet</span>
+                            <span className="text-xs text-slate-700">No tags yet</span>
                           )}
                         </div>
                         {showTagInput && (
@@ -1841,7 +2094,7 @@ export default function App() {
 
                       {/* Annotations */}
                       <div className="border-t border-slate-800 pt-3">
-                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-2 flex items-center gap-1.5">
+                        <p className="text-xs text-slate-500 uppercase font-bold mb-2 flex items-center gap-1.5">
                           <StickyNote className="w-3 h-3" /> Notes ({annotations.length})
                         </p>
                         {annotations.length > 0 && (
@@ -1850,11 +2103,11 @@ export default function App() {
                               <div key={a.id} className="p-2 bg-slate-800/60 rounded border border-slate-700 group">
                                 <p className="text-[11px] text-slate-200 break-words leading-relaxed">{a.text}</p>
                                 <div className="flex items-center justify-between mt-1">
-                                  <p className="text-[9px] text-slate-600 font-mono">{a.author} · {new Date(a.createdAt).toLocaleTimeString()}</p>
+                                  <p className="text-[11px] text-slate-600 font-mono">{a.author} · {new Date(a.createdAt).toLocaleTimeString()}</p>
                                   <button
                                     onClick={() => fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/annotations/${a.id}`, { method: 'DELETE' })
                                       .then(() => setAnnotations(prev => prev.filter(x => x.id !== a.id)))}
-                                    className="hidden group-hover:block text-[9px] text-red-400 hover:text-red-300"
+                                    className="hidden group-hover:block text-[11px] text-red-400 hover:text-red-300"
                                   >✕</button>
                                 </div>
                               </div>
@@ -1959,44 +2212,51 @@ export default function App() {
       </div>
 
       {/* ── Footer ── */}
-      <footer className="h-7 border-t border-slate-800 bg-slate-900/80 px-4 flex items-center justify-between z-10 shrink-0 gap-3 overflow-hidden">
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Terminal className="w-3 h-3 text-slate-600" />
-          <span className="text-[9px] text-slate-600 font-mono hidden sm:inline">
-            OTLP → localhost:3000/v1/traces · {sessions.length} sessions
+      <footer className="h-7 px-4 flex items-center justify-between z-10 shrink-0 gap-3 overflow-hidden" style={{
+        borderTop: '1px solid var(--cs-border)',
+        background: 'var(--cs-bg-surface)',
+      }}>
+        <div className="flex items-center gap-2 shrink-0">
+          <Terminal className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} />
+          <span className="text-[11px] font-mono hidden sm:inline" style={{ color: 'var(--cs-text-faint)' }}>
+            OTLP <span style={{ color: 'var(--cs-accent)', opacity: 0.7 }}>→</span> localhost:3000/v1/traces
           </span>
+          <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{
+            color: 'var(--cs-text-muted)',
+            background: 'var(--cs-bg-elevated)',
+          }}>{sessions.length} sessions</span>
         </div>
 
         {/* Live span ticker */}
         <div className="flex items-center gap-2 flex-1 overflow-hidden min-w-0">
           {tickerSpans.length > 0 && !tickerQuiet ? (
             <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />
-              <div className="flex items-center gap-1 overflow-hidden min-w-0">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0 status-live" style={{ background: '#00d4aa' }} />
+              <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
                 {tickerSpans.slice(0, 3).map((sp, i) => (
-                  <span key={sp.spanId} className={`flex items-center gap-1 text-[9px] font-mono ${i > 0 ? 'opacity-50' : ''} shrink-0`}>
+                  <span key={sp.spanId} className={`flex items-center gap-1 text-[11px] font-mono shrink-0`} style={{ opacity: i > 0 ? 0.4 : 1 }}>
                     <span
                       className="w-1.5 h-1.5 rounded-full inline-block"
                       style={{ background: HARNESS_COLORS[sp.harness] ?? '#64748b' }}
                     />
-                    <span className={
-                      sp.severity === 'high' ? 'text-red-400' :
-                      sp.severity === 'medium' ? 'text-orange-400' :
-                      sp.severity === 'low' ? 'text-yellow-400' : 'text-slate-400'
-                    }>
-                      {sp.name.length > 24 ? sp.name.slice(0, 24) + '…' : sp.name}
+                    <span style={{
+                      color: sp.severity === 'high' ? '#ff3b5c' :
+                        sp.severity === 'medium' ? '#f97316' :
+                        sp.severity === 'low' ? '#ffb224' : 'var(--cs-text-muted)'
+                    }}>
+                      {sp.name.length > 24 ? sp.name.slice(0, 24) + '...' : sp.name}
                     </span>
-                    {i < Math.min(tickerSpans.length, 3) - 1 && <span className="text-slate-700">·</span>}
+                    {i < Math.min(tickerSpans.length, 3) - 1 && <span style={{ color: 'var(--cs-text-faint)' }}>·</span>}
                   </span>
                 ))}
               </div>
             </div>
           ) : (
-            <span className="text-[9px] text-slate-700 font-mono italic">quiet</span>
+            <span className="text-[11px] font-mono italic" style={{ color: 'var(--cs-text-faint)' }}>idle</span>
           )}
         </div>
 
-        <span className="text-[9px] text-slate-600 font-mono shrink-0">v0.5.0</span>
+        <span className="text-[11px] font-mono shrink-0" style={{ color: 'var(--cs-text-faint)' }}>v1.0</span>
       </footer>
 
       {/* ── Session Compare Panel (s49) ── */}

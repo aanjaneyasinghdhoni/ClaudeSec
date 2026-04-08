@@ -25,7 +25,10 @@ export function BookmarksTab({
     if (filter) params.set('session', filter);
     fetch(`/api/bookmarks?${params}`)
       .then(r => r.json())
-      .then((rows: BookmarkRow[]) => setBookmarks(rows ?? []))
+      .then((data: { bookmarks?: BookmarkRow[] } | BookmarkRow[]) => {
+        const rows = Array.isArray(data) ? data : (data.bookmarks ?? []);
+        setBookmarks(rows);
+      })
       .catch(() => {});
   };
 
@@ -66,7 +69,7 @@ export function BookmarksTab({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-slate-950">
+    <div className="flex-1 flex flex-col min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
 
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-900/40 shrink-0 flex-wrap">
@@ -83,7 +86,7 @@ export function BookmarksTab({
             placeholder="Filter by session trace ID…"
             value={sessionFilter}
             onChange={e => setSessionFilter(e.target.value)}
-            className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 w-60"
+            className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500 w-60"
           />
         </div>
       </div>
@@ -111,20 +114,20 @@ export function BookmarksTab({
                 {/* Content */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <code className="text-[11px] font-mono text-blue-300 break-all">
+                    <code className="text-[11px] font-mono break-all" style={{ color: '#00d4aa' }}>
                       {bm.spanId}
                     </code>
                     {bm.traceId && (
                       <button
                         onClick={() => onSelectSession?.(bm.traceId)}
-                        className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-blue-400 transition-colors"
+                        className="flex items-center gap-1 text-xs text-slate-500 hover:text-blue-400 transition-colors"
                         title="Jump to session"
                       >
                         <ExternalLink className="w-3 h-3" />
                         <span className="font-mono truncate max-w-[120px]">{bm.traceId.slice(0, 12)}…</span>
                       </button>
                     )}
-                    <span className="text-[10px] text-slate-600">{formatTime(bm.createdAt)}</span>
+                    <span className="text-xs text-slate-600">{formatTime(bm.createdAt)}</span>
                   </div>
 
                   {/* Note editing */}

@@ -7,4 +7,10 @@ coverage/
 .env*
 !.env.example
 spans.db
+spans.db-shm
+spans.db-wal
 exports/
+.playwright-mcp/
+.claude/
+hooks/
+plan.html

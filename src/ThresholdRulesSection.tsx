@@ -201,7 +201,7 @@ export function ThresholdRulesSection(): React.ReactElement {
           ) : (
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase tracking-wider">
+                <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                   <th className="px-3 py-2.5 text-left">Name</th>
                   <th className="px-3 py-2.5 text-left">Metric</th>
                   <th className="px-3 py-2.5 text-left">Condition</th>
@@ -269,7 +269,7 @@ export function ThresholdRulesSection(): React.ReactElement {
 
         {/* Name */}
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Name</label>
+          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Name</label>
           <input
             type="text"
             value={name}
@@ -282,7 +282,7 @@ export function ThresholdRulesSection(): React.ReactElement {
         {/* Metric + Operator + Value */}
         <div className="grid grid-cols-3 gap-2">
           <div>
-            <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Metric</label>
+            <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Metric</label>
             <select
               value={metric}
               onChange={e => setMetric(e.target.value)}
@@ -295,7 +295,7 @@ export function ThresholdRulesSection(): React.ReactElement {
           </div>
 
           <div>
-            <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Operator</label>
+            <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Operator</label>
             <select
               value={operator}
               onChange={e => setOperator(e.target.value)}
@@ -308,7 +308,7 @@ export function ThresholdRulesSection(): React.ReactElement {
           </div>
 
           <div>
-            <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Value</label>
+            <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Value</label>
             <input
               type="number"
               value={value}
@@ -320,7 +320,7 @@ export function ThresholdRulesSection(): React.ReactElement {
 
         {/* Window */}
         <div className="w-1/3">
-          <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Window (minutes)</label>
+          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Window (minutes)</label>
           <input
             type="number"
             min={1}

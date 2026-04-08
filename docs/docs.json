@@ -1,0 +1,113 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "ClaudeSec",
+  "colors": {
+    "primary": "#3b82f6",
+    "light": "#60a5fa",
+    "dark": "#1d4ed8"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "index",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Harnesses",
+        "pages": [
+          "harnesses/claude-code",
+          "harnesses/copilot",
+          "harnesses/openhands",
+          "harnesses/cursor",
+          "harnesses/aider",
+          "harnesses/cline",
+          "harnesses/goose",
+          "harnesses/continue",
+          "harnesses/windsurf",
+          "harnesses/codex",
+          "harnesses/amazon-q",
+          "harnesses/gemini-cli",
+          "harnesses/roo-code",
+          "harnesses/bolt"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture"
+        ]
+      },
+      {
+        "group": "Security",
+        "pages": [
+          "security/rules",
+          "security/alerts",
+          "security/suppressions"
+        ]
+      },
+      {
+        "group": "Observatory",
+        "pages": [
+          "observatory/welcome",
+          "observatory/processes",
+          "observatory/session-labels",
+          "observatory/live-activity",
+          "observatory/command-audit",
+          "observatory/file-access"
+        ]
+      },
+      {
+        "group": "Integrations",
+        "pages": [
+          "mcp",
+          "collector"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api-reference/introduction",
+          "api-reference/otlp",
+          "api-reference/graph",
+          "api-reference/sessions",
+          "api-reference/health",
+          "api-reference/spans",
+          "api-reference/tags",
+          "api-reference/rules-api",
+          "api-reference/alerts-api",
+          "api-reference/search",
+          "api-reference/orchestration",
+          "api-reference/bookmarks",
+          "api-reference/export",
+          "api-reference/live-activity",
+          "api-reference/command-audit",
+          "api-reference/file-access",
+          "api-reference/cost-trend",
+          "api-reference/process-control"
+        ]
+      }
+    ]
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/aanjaneyasinghdhoni/ClaudeSec"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/aanjaneyasinghdhoni/ClaudeSec"
+    }
+  }
+}

@@ -151,14 +151,14 @@ export function RulesTab() {
   ];
 
   return (
-    <div className="flex-1 overflow-auto p-5 bg-slate-950 min-h-0" onClick={() => setSnoozeMenuId(null)}>
+    <div className="flex-1 overflow-auto p-5 min-h-0" style={{ background: 'var(--cs-bg-primary)' }} onClick={() => setSnoozeMenuId(null)}>
       <div className="max-w-5xl mx-auto space-y-6">
 
         {/* Header */}
         <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5 text-blue-400" />
+          <Shield className="w-5 h-5" style={{ color: '#00d4aa' }} />
           <h2 className="text-sm font-bold text-slate-200">Threat Detection Rules</h2>
-          <span className="ml-auto text-[10px] font-mono text-slate-500">
+          <span className="ml-auto text-xs font-mono text-slate-500">
             {rules.builtIn.length} built-in · {rules.custom.length} custom
             {suppressions.length > 0 && (
               <span className="ml-1 text-yellow-400">· {suppressions.length} snoozed</span>
@@ -178,7 +178,7 @@ export function RulesTab() {
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
-              <label className="block text-[10px] text-slate-500 mb-1">Pattern (regex)</label>
+              <label className="block text-xs text-slate-500 mb-1">Pattern (regex)</label>
               <input
                 type="text"
                 value={pattern}
@@ -188,7 +188,7 @@ export function RulesTab() {
               />
             </div>
             <div>
-              <label className="block text-[10px] text-slate-500 mb-1">Severity</label>
+              <label className="block text-xs text-slate-500 mb-1">Severity</label>
               <select
                 value={severity}
                 onChange={e => setSeverity(e.target.value as 'low' | 'medium' | 'high')}
@@ -202,7 +202,7 @@ export function RulesTab() {
           </div>
 
           <div>
-            <label className="block text-[10px] text-slate-500 mb-1">Label</label>
+            <label className="block text-xs text-slate-500 mb-1">Label</label>
             <input
               type="text"
               value={label}
@@ -214,7 +214,7 @@ export function RulesTab() {
 
           {/* Test input */}
           <div>
-            <label className="block text-[10px] text-slate-500 mb-1">
+            <label className="block text-xs text-slate-500 mb-1">
               Test input (optional)
             </label>
             <div className="flex gap-2">
@@ -246,7 +246,8 @@ export function RulesTab() {
             <button
               type="submit"
               disabled={submitting}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+              className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors hover:brightness-110"
+              style={{ background: '#00d4aa', color: '#fff' }}
             >
               <Plus className="w-3.5 h-3.5" /> Add Rule
             </button>
@@ -257,11 +258,11 @@ export function RulesTab() {
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase tracking-wider">
+              <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                 <th className="px-4 py-2.5 text-left">Label</th>
                 <th className="px-4 py-2.5 text-left">Pattern</th>
                 <th className="px-4 py-2.5 text-left">Severity</th>
-                <th className="px-4 py-2.5 text-left">Type</th>
+                <th className="px-4 py-2.5 text-left whitespace-nowrap">Type</th>
                 <th className="px-4 py-2.5 text-left w-32">Snooze</th>
                 <th className="px-4 py-2.5 text-left w-10"></th>
               </tr>
@@ -286,24 +287,24 @@ export function RulesTab() {
                       {rule.label}
                     </td>
                     <td className="px-4 py-2.5">
-                      <code className="text-[10px] font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                      <code className="text-xs font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
                         {rule.pattern.length > 60 ? rule.pattern.slice(0, 60) + '…' : rule.pattern}
                       </code>
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono uppercase ${SEV_BADGE[rule.severity] ?? SEV_BADGE.none}`}>
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-mono uppercase ${SEV_BADGE[rule.severity] ?? SEV_BADGE.none}`}>
                         {rule.severity}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`text-[10px] ${rule.type === 'built-in' ? 'text-slate-500' : 'text-blue-400'}`}>
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      <span className={`text-xs whitespace-nowrap ${rule.type === 'built-in' ? 'text-slate-500' : ''}`} style={rule.type === 'custom' ? { color: '#00d4aa' } : undefined}>
                         {rule.type}
                       </span>
                     </td>
                     <td className="px-4 py-2.5" onClick={e => e.stopPropagation()}>
                       {isSnoozed ? (
                         <div className="flex items-center gap-1.5">
-                          <span className="flex items-center gap-1 text-[10px] text-yellow-400 font-mono">
+                          <span className="flex items-center gap-1 text-xs text-yellow-400 font-mono">
                             <Clock className="w-3 h-3" />
                             {formatCountdown(supp.suppressUntil)}
                           </span>
@@ -319,7 +320,7 @@ export function RulesTab() {
                         <div className="relative">
                           <button
                             onClick={() => setSnoozeMenuId(snoozeMenuId === rule.id ? null : rule.id)}
-                            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-yellow-400 hover:bg-slate-800 transition-colors border border-transparent hover:border-slate-700"
+                            className="flex items-center gap-1 px-2 py-0.5 rounded text-xs text-slate-500 hover:text-yellow-400 hover:bg-slate-800 transition-colors border border-transparent hover:border-slate-700"
                           >
                             <Clock className="w-3 h-3" /> Snooze
                           </button>

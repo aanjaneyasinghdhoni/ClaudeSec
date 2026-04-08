@@ -132,7 +132,7 @@ function TokenGauge({ input, output }: { input: number; output: number }) {
         <div className="bg-blue-500/80"   style={{ width: `${inPct}%` }}  title={`Input: ${input}`} />
         <div className="bg-purple-500/80" style={{ width: `${outPct}%` }} title={`Output: ${output}`} />
       </div>
-      <div className="flex justify-between text-[9px] text-slate-600">
+      <div className="flex justify-between text-[11px] text-slate-600">
         <span className="text-blue-400">↓ {input.toLocaleString()} in</span>
         <span className="text-purple-400">{output.toLocaleString()} out ↑</span>
       </div>
@@ -145,7 +145,7 @@ function TokenGauge({ input, output }: { input: number; output: number }) {
 function HttpStatusBadge({ code }: { code: number | string }) {
   const n = Number(code);
   const color = n < 300 ? 'text-green-400 bg-green-900/40' : n < 500 ? 'text-yellow-400 bg-yellow-900/40' : 'text-red-400 bg-red-900/40';
-  return <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${color}`}>{code}</span>;
+  return <span className={`px-1.5 py-0.5 rounded text-xs font-bold font-mono ${color}`}>{code}</span>;
 }
 
 // ── Attribute group section ──────────────────────────────────────────────────
@@ -168,8 +168,8 @@ function AttrSection({ group, entries }: { group: AttrGroup; entries: [string, u
         className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-slate-800/60 hover:bg-slate-800 transition-colors text-left"
       >
         <span className={group.color}>{group.icon}</span>
-        <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wide flex-1">{group.label}</span>
-        <span className="text-[9px] text-slate-600">{entries.length}</span>
+        <span className="text-xs font-bold text-slate-300 uppercase tracking-wide flex-1">{group.label}</span>
+        <span className="text-[11px] text-slate-600">{entries.length}</span>
         {open ? <ChevronDown className="w-3 h-3 text-slate-600" /> : <ChevronRight className="w-3 h-3 text-slate-600" />}
       </button>
 
@@ -185,7 +185,7 @@ function AttrSection({ group, entries }: { group: AttrGroup; entries: [string, u
               const isStatus = key.includes('status_code') || key.includes('status');
               return (
                 <div key={key}>
-                  <p className="text-[9px] text-slate-600 font-mono mb-0.5">{label}</p>
+                  <p className="text-[11px] text-slate-600 font-mono mb-0.5">{label}</p>
                   {isStatus && httpStatus
                     ? <HttpStatusBadge code={String(value)} />
                     : <p className="text-[11px] text-slate-300 font-mono break-all">{String(value)}</p>
@@ -246,15 +246,15 @@ export function SpanAttributes({ attrs }: { attrs: AttrMap }) {
             className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-slate-800/60 hover:bg-slate-800 transition-colors text-left"
           >
             <Package className="w-3 h-3 text-slate-500" />
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide flex-1">Other</span>
-            <span className="text-[9px] text-slate-600">{otherEntries.length}</span>
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wide flex-1">Other</span>
+            <span className="text-[11px] text-slate-600">{otherEntries.length}</span>
             {otherOpen ? <ChevronDown className="w-3 h-3 text-slate-600" /> : <ChevronRight className="w-3 h-3 text-slate-600" />}
           </button>
           {otherOpen && (
             <div className="px-2.5 py-2 space-y-1.5 bg-slate-900/40">
               {otherEntries.map(([key, value]) => (
                 <div key={key} className="p-1.5 bg-slate-950 rounded border border-slate-800">
-                  <p className="text-[9px] text-slate-600 font-mono mb-0.5">{key}</p>
+                  <p className="text-[11px] text-slate-600 font-mono mb-0.5">{key}</p>
                   <p className="text-[11px] text-slate-300 font-mono break-all">{String(value)}</p>
                 </div>
               ))}

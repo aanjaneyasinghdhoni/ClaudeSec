@@ -286,9 +286,9 @@ export function SearchTab() {
   const end   = result ? Math.min(result.page * LIMIT, result.total) : 0;
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-200">
+    <div className="flex flex-col h-full text-slate-200" style={{ background: 'var(--cs-bg-primary)' }}>
       {/* Toolbar */}
-      <div className="flex flex-wrap items-end gap-3 px-5 py-4 bg-slate-900 border-b border-slate-800">
+      <div className="flex flex-wrap items-end gap-3 px-5 py-4" style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-border)' }}>
         {/* Query */}
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
@@ -297,7 +297,7 @@ export function SearchTab() {
             placeholder="Search spans…"
             value={query}
             onChange={e => handleQueryChange(e.target.value)}
-            className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-600 transition-colors"
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
           />
           {query && (
             <button
@@ -314,7 +314,7 @@ export function SearchTab() {
         <select
           value={severity}
           onChange={e => handleSeverityChange(e.target.value)}
-          className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-600 transition-colors"
+          className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
         >
           {SEVERITY_OPTIONS.map(s => (
             <option key={s} value={s}>{SEVERITY_LABELS[s]}</option>
@@ -327,7 +327,7 @@ export function SearchTab() {
           placeholder="Harness"
           value={harness}
           onChange={e => handleHarnessChange(e.target.value)}
-          className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-600 transition-colors w-32"
+          className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors w-32"
         />
 
         {/* From */}
@@ -337,7 +337,7 @@ export function SearchTab() {
             type="datetime-local"
             value={from}
             onChange={e => handleFromChange(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-600 transition-colors"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
           />
         </div>
 
@@ -348,7 +348,7 @@ export function SearchTab() {
             type="datetime-local"
             value={to}
             onChange={e => handleToChange(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-600 transition-colors"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
           />
         </div>
 
@@ -356,7 +356,8 @@ export function SearchTab() {
         <button
           type="button"
           onClick={() => window.open(buildExportUrl())}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors flex-shrink-0"
+          style={{ background: 'transparent', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.3)' }}
         >
           <Download className="w-3.5 h-3.5" />
           Export
@@ -364,9 +365,10 @@ export function SearchTab() {
       </div>
 
       {/* Table area */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto p-4">
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
         <table className="w-full text-sm border-collapse">
-          <thead className="sticky top-0 z-10 bg-slate-900 border-b border-slate-800">
+          <thead className="sticky top-0 z-10" style={{ background: 'var(--cs-bg-elevated)' }}>
             <tr>
               {['Span Name', 'Harness', 'Severity', 'Protocol', 'Duration', 'Time'].map(h => (
                 <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">
@@ -424,11 +426,12 @@ export function SearchTab() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Pagination footer */}
       {result && result.total > 0 && (
-        <div className="flex items-center justify-between px-5 py-3 bg-slate-900 border-t border-slate-800">
+        <div className="flex items-center justify-between px-5 py-3" style={{ background: 'var(--cs-bg-surface)', borderTop: '1px solid var(--cs-border)' }}>
           <span className="text-xs text-slate-400">
             Showing {start}–{end} of {result.total} result{result.total !== 1 ? 's' : ''}
           </span>

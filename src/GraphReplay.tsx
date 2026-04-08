@@ -47,7 +47,7 @@ export function GraphReplay({ replay, onPlay, onPause, onRestart, onStop, onSetS
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
             <span className="text-xs font-bold text-slate-200">Replay Mode</span>
-            <span className="text-[10px] text-slate-500 font-mono">
+            <span className="text-xs text-slate-500 font-mono">
               {replay.currentStep} / {replay.totalSteps} spans
             </span>
           </div>
@@ -110,7 +110,7 @@ export function GraphReplay({ replay, onPlay, onPause, onRestart, onStop, onSetS
             ))}
           </div>
 
-          <span className="text-[10px] text-slate-500 font-mono w-8 text-right">{pct}%</span>
+          <span className="text-xs text-slate-500 font-mono w-8 text-right">{pct}%</span>
         </div>
       </div>
     </Panel>

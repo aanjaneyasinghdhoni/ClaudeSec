@@ -80,7 +80,7 @@ function DeltaBadge({ aVal, bVal, lowerIsBetter = false }: DeltaBadgeProps): Rea
   const diff = bVal - aVal;
   if (diff === 0) {
     return (
-      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-700 text-slate-400">=</span>
+      <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-slate-700 text-slate-400">=</span>
     );
   }
   const positive = diff > 0;
@@ -90,7 +90,7 @@ function DeltaBadge({ aVal, bVal, lowerIsBetter = false }: DeltaBadgeProps): Rea
   const label = positive ? `+${diff.toLocaleString()}` : diff.toLocaleString();
 
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+    <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${
       isGood
         ? 'bg-green-900/40 text-green-300 border border-green-700/40'
         : 'bg-red-900/40 text-red-300 border border-red-700/40'
@@ -290,7 +290,7 @@ export function ComparePanel({ aId, bId, onClose }: Props): React.ReactElement {
               <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] text-slate-500 uppercase tracking-wider">
+                    <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                       <th className="px-3 py-2 text-left w-24">Field</th>
                       <th className="px-3 py-2 text-left">Session A</th>
                       <th className="px-3 py-2 text-left">Session B</th>
@@ -344,7 +344,7 @@ export function ComparePanel({ aId, bId, onClose }: Props): React.ReactElement {
               {/* Top Tools */}
               {mergedTools.length > 0 && (
                 <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-                  <p className="px-3 py-2 text-[10px] text-slate-500 uppercase tracking-wider border-b border-slate-800 font-semibold">
+                  <p className="px-3 py-2 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-800 font-semibold">
                     Top Tools
                   </p>
                   <div className="p-3 space-y-2">
@@ -355,7 +355,7 @@ export function ComparePanel({ aId, bId, onClose }: Props): React.ReactElement {
                         <div key={toolName}>
                           <div className="flex items-center justify-between mb-0.5">
                             <span className="text-[11px] text-slate-300 font-mono truncate max-w-[200px]">{toolName}</span>
-                            <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
+                            <div className="flex items-center gap-2 text-xs font-mono text-slate-500">
                               <span className="text-blue-400">{aCount}</span>
                               <span>/</span>
                               <span className="text-violet-400">{bCount}</span>
@@ -379,10 +379,10 @@ export function ComparePanel({ aId, bId, onClose }: Props): React.ReactElement {
                       );
                     })}
                     <div className="flex items-center gap-3 mt-2 pt-2 border-t border-slate-800">
-                      <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                      <span className="flex items-center gap-1 text-xs text-slate-500">
                         <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" /> Session A
                       </span>
-                      <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                      <span className="flex items-center gap-1 text-xs text-slate-500">
                         <span className="w-2 h-2 rounded-full bg-violet-500 inline-block" /> Session B
                       </span>
                     </div>
@@ -393,12 +393,12 @@ export function ComparePanel({ aId, bId, onClose }: Props): React.ReactElement {
               {/* Top Rules */}
               {mergedRules.length > 0 && (
                 <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-                  <p className="px-3 py-2 text-[10px] text-slate-500 uppercase tracking-wider border-b border-slate-800 font-semibold">
+                  <p className="px-3 py-2 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-800 font-semibold">
                     Top Rules Triggered
                   </p>
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className="border-b border-slate-800/60 text-[10px] text-slate-500">
+                      <tr className="border-b border-slate-800/60 text-xs text-slate-500">
                         <th className="px-3 py-2 text-left">Rule</th>
                         <th className="px-3 py-2 text-right text-blue-400">A</th>
                         <th className="px-3 py-2 text-right text-violet-400">B</th>

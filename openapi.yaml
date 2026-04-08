@@ -340,6 +340,153 @@ paths:
                       type: string
                     example: ["claude-code", "openhands"]
 
+  /api/live-activity:
+    get:
+      tags: [Orchestration]
+      summary: Live agent activity
+      description: Returns the latest span per harness — what each agent is doing right now.
+      responses:
+        '200':
+          description: Live activity data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        harness: { type: string }
+                        harnessName: { type: string }
+                        lastSpan: { type: string }
+                        tool: { type: string }
+                        input: { type: string }
+                        severity: { type: string }
+                        secondsAgo: { type: integer }
+                        active: { type: boolean }
+
+  /api/command-audit:
+    get:
+      tags: [Security]
+      summary: Command audit trail
+      description: Returns all shell/bash tool executions with computed risk scores (0-100).
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200 }
+      responses:
+        '200':
+          description: Audit trail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  commands:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        spanId: { type: string }
+                        harness: { type: string }
+                        command: { type: string }
+                        riskScore: { type: integer }
+                        severity: { type: string }
+                  total: { type: integer }
+
+  /api/file-access:
+    get:
+      tags: [Security]
+      summary: File access heatmap
+      description: Aggregates file read/write operations by agent, with sensitive file detection.
+      responses:
+        '200':
+          description: File access data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path: { type: string }
+                        reads: { type: integer }
+                        writes: { type: integer }
+                        agents: { type: array, items: { type: string } }
+                        sensitive: { type: boolean }
+                  total: { type: integer }
+
+  /api/cost-trend:
+    get:
+      tags: [Sessions]
+      summary: Token cost trend over time
+      description: Returns cumulative token usage data points for sparkline charts.
+      parameters:
+        - name: traceId
+          in: query
+          schema: { type: string }
+          description: Filter to a specific session
+      responses:
+        '200':
+          description: Cost trend data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  points:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ts: { type: integer }
+                        tokensIn: { type: integer }
+                        tokensOut: { type: integer }
+                        cumIn: { type: integer }
+                        cumOut: { type: integer }
+                  totalIn: { type: integer }
+                  totalOut: { type: integer }
+
+  /api/processes/kill-all:
+    post:
+      tags: [Orchestration]
+      summary: Kill all agent processes
+      description: Sends SIGTERM to every detected agent process. macOS/Linux only.
+      responses:
+        '200':
+          description: Kill results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  killed: { type: integer }
+                  failed: { type: integer }
+                  total: { type: integer }
+
+  /api/processes/pause-all:
+    post:
+      tags: [Orchestration]
+      summary: Pause all agent processes
+      description: Sends SIGSTOP to every detected agent process. Resume with /resume-all.
+      responses:
+        '200':
+          description: Pause results
+
+  /api/processes/resume-all:
+    post:
+      tags: [Orchestration]
+      summary: Resume all paused agent processes
+      description: Sends SIGCONT to every detected agent process.
+      responses:
+        '200':
+          description: Resume results
+
   /api/export:
     get:
       tags: [Export]

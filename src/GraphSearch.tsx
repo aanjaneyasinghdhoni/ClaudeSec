@@ -70,7 +70,7 @@ export function GraphSearch({
           className="flex-1 bg-transparent text-xs text-slate-200 placeholder-slate-600 outline-none min-w-0"
         />
         {query && (
-          <span className="text-[10px] text-slate-500 shrink-0 font-mono">
+          <span className="text-xs text-slate-500 shrink-0 font-mono">
             {matchIds.length > 0 ? `${matchIndex + 1}/${matchIds.length}` : '0'}
           </span>
         )}
