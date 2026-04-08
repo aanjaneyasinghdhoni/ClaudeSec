@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Monitor, RefreshCw, AlertTriangle, Activity, Cpu, MemoryStick } from 'lucide-react';
+import { Monitor, RefreshCw, AlertTriangle, Activity, Cpu, MemoryStick, Skull } from 'lucide-react';
 
 interface AgentProcess {
   pid:            number;
@@ -59,6 +59,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [killing, setKilling]   = useState<Set<number>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchProcesses = async () => {
@@ -73,6 +74,17 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
     } finally {
       setLoading(false);
     }
+  };
+
+  const killProcess = async (pid: number, name: string) => {
+    if (!window.confirm(`Kill ${name} (PID ${pid})? This sends SIGTERM.`)) return;
+    setKilling(prev => new Set(prev).add(pid));
+    try {
+      const res = await fetch(`/api/processes/${pid}`, { method: 'DELETE' });
+      if (res.ok) { setTimeout(fetchProcesses, 1000); }
+      else { const d = await res.json(); alert(d.error ?? 'Failed to kill process'); }
+    } catch { alert('Failed to kill process'); }
+    setKilling(prev => { const s = new Set(prev); s.delete(pid); return s; });
   };
 
   useEffect(() => {
@@ -192,6 +204,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
                     <th className="px-4 py-2.5 text-left">Memory</th>
                     <th className="px-4 py-2.5 text-left">Recent Sessions</th>
                     <th className="px-4 py-2.5 text-left">Command</th>
+                    <th className="px-4 py-2.5 text-left w-14">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -215,6 +228,12 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
                         <div className="flex items-center gap-1 text-slate-400 font-mono text-[11px]">
                           <MemoryStick className="w-3 h-3 text-purple-400 shrink-0" />
                           {proc.memMb.toFixed(0)} MB
+                          {proc.memMb > 1024 && (
+                            <span className="px-1 py-0.5 bg-red-900/30 text-red-400 text-[8px] font-bold rounded" title="Memory > 1 GB">HIGH</span>
+                          )}
+                          {proc.memMb > 500 && proc.memMb <= 1024 && (
+                            <span className="px-1 py-0.5 bg-orange-900/30 text-orange-400 text-[8px] font-bold rounded" title="Memory > 500 MB">WARN</span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -242,6 +261,17 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
                         <code className="text-[10px] font-mono text-slate-500 break-all line-clamp-2" title={proc.cmd}>
                           {proc.cmd.length > 80 ? proc.cmd.slice(0, 80) + '…' : proc.cmd}
                         </code>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          disabled={killing.has(proc.pid)}
+                          onClick={() => killProcess(proc.pid, proc.harnessName)}
+                          className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-red-900/40 border border-slate-700 hover:border-red-700/40 rounded text-[10px] text-slate-500 hover:text-red-400 transition-colors disabled:opacity-40"
+                          title={`Kill ${proc.harnessName} (PID ${proc.pid})`}
+                        >
+                          <Skull className="w-3 h-3" />
+                          Kill
+                        </button>
                       </td>
                     </tr>
                   ))}

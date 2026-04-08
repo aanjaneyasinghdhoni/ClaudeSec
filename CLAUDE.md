@@ -31,13 +31,13 @@ AI agent → POST /v1/traces (OTLP JSON) → server.ts
 ### Two-process model in one repo
 
 - **`server.ts`** — Express backend. Handles OTLP ingestion, SQLite reads/writes, security rule evaluation, REST endpoints (`/api/graph`, `/api/export`, `/api/reset`), and Socket.io events. Also serves the Vite-built `dist/` in production.
-- **`src/App.tsx`** — Entire React frontend in a single large component (~650 lines). No routing. Uses React Flow for the graph canvas, Socket.io client for live updates, and holds all UI state (selected span, filters, layout).
+- **`src/App.tsx`** — Main React frontend component. Uses React Flow for the graph canvas, Socket.io client for live updates, and holds all UI state (selected span, filters, layout). Shows a `WelcomeScreen` on first run (zero sessions).
 
 ### Key architectural decisions
 
 - **SQLite via `better-sqlite3`** persists spans across server restarts (`spans.db` is gitignored but created automatically).
 - **Dagre** computes graph layout on the server side (via `/api/graph`) and on the client whenever new spans arrive.
-- **Threat detection** lives entirely in `server.ts` as an array of `{ pattern: RegExp, level, reason }` objects evaluated against every incoming span's attributes.
+- **Threat detection** lives in `server.ts` as `SEVERITY_RULES` (153 built-in regex rules: prompt injection, credential theft, reverse shells, supply-chain, exfiltration, recon) evaluated against every incoming span.
 - **Path alias** `@/*` resolves to the repo root (not `src/`). Configured in both `vite.config.ts` and `tsconfig.json`.
 
 ### Connecting Claude Code to the dashboard
@@ -48,4 +48,13 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
-The `.env.example` contains a legacy `GEMINI_API_KEY` entry that is no longer used.
+### Key features
+
+- **Welcome screen** with demo trace simulator (`POST /api/simulate`) — first-run UX
+- **153 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
+- **14 harness support** — Claude Code, Copilot, Cursor, Aider, OpenHands, Cline, Goose, etc.
+- **Process scanner** — detects running agent CLIs via `ps aux`, kill switch via `DELETE /api/processes/:pid`
+- **OTLP forwarding** — transparent proxy to upstream collectors (set `OTEL_FORWARD_URL`)
+- **Auto-export** — hourly JSON snapshots to `exports/` (last 24 kept)
+- **MCP server** — 11 tools for AI-to-AI interaction (`POST /mcp`)
+- **Docker** — `docker compose up` for one-command deployment

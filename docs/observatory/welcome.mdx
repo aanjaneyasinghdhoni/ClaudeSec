@@ -1,0 +1,86 @@
+---
+title: "Welcome & Onboarding"
+description: "First-run experience, demo simulator, and getting started with ClaudeSec"
+icon: "rocket"
+---
+
+## First-Run Experience
+
+When you open ClaudeSec for the first time (with no data), you see a **Welcome Screen** that explains what the software does and helps you get started immediately — no documentation required.
+
+### What the Welcome Screen Shows
+
+1. **Hero**: "AI Agent Security Observatory" with a brief description
+2. **Value cards**: Three cards explaining why ClaudeSec exists:
+   - **See Everything** — every tool call, LLM request, file access, and bash command
+   - **Catch Threats** — 150+ detection rules for prompt injection, credential leaks, reverse shells
+   - **Stay in Control** — kill processes, set resource budgets, get webhook alerts
+3. **Try it now button**: Injects 3 realistic demo sessions to explore every feature
+4. **Auto-detect**: Shows which agents are already running on your machine
+5. **Quick-start cards**: Copy-paste env vars for each supported harness
+
+The welcome screen disappears automatically once real trace data arrives.
+
+## Demo Trace Simulator
+
+Click **"Try it now"** to inject 3 realistic sessions:
+
+| Session | Harness | Severity | What It Shows |
+|---------|---------|----------|---------------|
+| Clean development | Claude Code | None | Normal tool calls, LLM requests, file edits |
+| Suspicious activity | Aider | Medium | pip installs, chmod 777, env access, .env reads |
+| Prompt injection & exfiltration | Cursor | High | passwd read, curl piped to sh, SSH key access, API key leak |
+
+### What gets populated
+
+After running the demo:
+- **Graph tab**: Interactive node graph with color-coded threat levels
+- **Alerts tab**: Multiple fired alerts from the Cursor session
+- **Costs tab**: Token usage breakdown per model
+- **Timeline tab**: Gantt-style view of all 3 sessions
+- **Orchestration tab**: Multi-agent relationship graph
+- **Heatmap tab**: Threat activity grid
+
+### API
+
+```bash
+curl -X POST http://localhost:3000/api/simulate
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "sessions": 3,
+  "spans": 28,
+  "alerts": 12,
+  "message": "Demo traces injected — explore the dashboard!"
+}
+```
+
+## Connecting Real Agents
+
+Each harness needs 2-3 environment variables. The welcome screen provides copy-paste commands for all 14 supported harnesses. Example for Claude Code:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+```
+
+Set these in the terminal where you run the agent, then restart it. Traces flow in automatically.
+
+## Built-in Security Rules
+
+ClaudeSec ships with **153 built-in detection rules** across 6 categories:
+
+| Category | Count | Examples |
+|----------|-------|---------|
+| System compromise | 25+ | `rm -rf /`, reverse shells, container escape |
+| Prompt injection | 15+ | Instruction override, jailbreak personas, system prompt extraction |
+| Credential theft | 20+ | AWS keys, GitHub tokens, JWT, SSH keys, DB connection strings |
+| Data exfiltration | 15+ | curl POST, scp, clipboard access, screenshot capture |
+| Supply chain | 8+ | Custom PyPI/npm registries, pre-release installs |
+| Reconnaissance | 20+ | nmap, network enumeration, SUID search, process listing |
+
+Rules are evaluated in real-time as spans arrive. No configuration needed.

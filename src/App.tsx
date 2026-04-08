@@ -27,6 +27,7 @@ import { ComparePanel } from './ComparePanel';
 import { SearchTab } from './SearchTab';
 import { ProcessesTab } from './ProcessesTab';
 import { BookmarksTab } from './BookmarksTab';
+import { WelcomeScreen } from './WelcomeScreen';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ---------------------------------------------------------------------------
@@ -331,6 +332,7 @@ export default function App() {
   const [workflows, setWorkflows]           = useState<Workflow[]>([]);
   const [sessions, setSessions]             = useState<Session[]>([]);
   const [activeSession, setActiveSession]   = useState<string | null>(null);
+  const [hasEverHadData, setHasEverHadData] = useState(false);
 
   // ── Session rename ────────────────────────────────────────────────────────
   const [editingSession, setEditingSession] = useState<string | null>(null);
@@ -444,7 +446,11 @@ export default function App() {
   }
 
   const fetchSessions = () =>
-    fetch('/api/sessions').then(r => r.json()).then(({ sessions: s }) => setSessions(s ?? []));
+    fetch('/api/sessions').then(r => r.json()).then(({ sessions: s }) => {
+      const list = s ?? [];
+      setSessions(list);
+      if (list.length > 0) setHasEverHadData(true);
+    });
 
   const fetchAlertCount = () =>
     fetch('/api/alerts?limit=1')
@@ -1415,8 +1421,13 @@ export default function App() {
         {/* ── Main Area ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
 
-          {/* Tab switcher */}
-          <div className="flex border-b border-slate-800 bg-slate-900/30 shrink-0">
+          {/* Welcome screen when no data */}
+          {sessions.length === 0 && !hasEverHadData && (
+            <WelcomeScreen onDemoLoaded={() => { setHasEverHadData(true); fetchSessions(); }} />
+          )}
+
+          {/* Tab switcher (hidden during welcome) */}
+          <div className={`flex border-b border-slate-800 bg-slate-900/30 shrink-0 ${sessions.length === 0 && !hasEverHadData ? 'hidden' : ''}`}>
             <button
               onClick={() => setActiveTab('graph')}
               className={`px-4 py-2 text-xs font-medium flex items-center gap-1.5 border-b-2 transition-colors ${

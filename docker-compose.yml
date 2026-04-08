@@ -21,6 +21,10 @@ services:
       # Retention (optional)
       CLAUDESEC_MAX_SPANS: ${CLAUDESEC_MAX_SPANS:-50000}
       CLAUDESEC_RETENTION_DAYS: ${CLAUDESEC_RETENTION_DAYS:-30}
+      # OTLP forwarding (optional — send traces to upstream collector)
+      OTEL_FORWARD_URL: ${OTEL_FORWARD_URL:-}
+      # Auto-export directory
+      CLAUDESEC_AUTO_EXPORT_DIR: /data/exports
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]

@@ -634,7 +634,7 @@
   </div>
   <div class="progress-bar"><div class="progress-fill" id="p12" style="width:0%"></div></div>
   <div class="steps">
-    <div class="step" id="s49">
+    <div class="step done" id="s49">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Session comparison — side-by-side diff view</div>
@@ -643,7 +643,7 @@
         <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
       </div>
     </div>
-    <div class="step" id="s50">
+    <div class="step done" id="s50">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Threshold alert rules — numeric trigger conditions</div>
@@ -652,7 +652,7 @@
         <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
       </div>
     </div>
-    <div class="step" id="s51">
+    <div class="step done" id="s51">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Graph timeline replay / scrubber</div>
@@ -661,7 +661,7 @@
         <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
       </div>
     </div>
-    <div class="step" id="s52">
+    <div class="step done" id="s52">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">OTEL Collector config generator</div>
@@ -670,7 +670,7 @@
         <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
       </div>
     </div>
-    <div class="step" id="s53">
+    <div class="step done" id="s53">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Dark / light theme toggle</div>
@@ -697,7 +697,7 @@
     </div>
   </div>
   <div class="steps">
-    <div class="step" id="s54">
+    <div class="step done" id="s54">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Full-text span search</div>
@@ -706,7 +706,7 @@
         <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
       </div>
     </div>
-    <div class="step" id="s55">
+    <div class="step done" id="s55">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Session health score</div>
@@ -715,7 +715,7 @@
         <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
       </div>
     </div>
-    <div class="step" id="s56">
+    <div class="step done" id="s56">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Webhook delivery log &amp; retry</div>
@@ -724,7 +724,7 @@
         <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
       </div>
     </div>
-    <div class="step" id="s57">
+    <div class="step done" id="s57">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">Live span ticker in footer</div>
@@ -733,7 +733,7 @@
         <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
       </div>
     </div>
-    <div class="step" id="s58">
+    <div class="step done" id="s58">
       <input type="checkbox" onchange="recalc()" checked />
       <div class="step-body">
         <div class="step-title">CLI super-powers: top, search, sessions, report</div>
@@ -867,6 +867,63 @@
   </div>
 </div>
 
+<div class="phase">
+  <div class="phase-header">
+    <div>
+      <div class="phase-title">Phase 16 — Advanced Observatory &amp; Production Hardening</div>
+      <div class="phase-desc">Multi-agent cross-session timeline, webhook notifications, process kill switch, OTLP forwarding, Docker + CI</div>
+    </div>
+    <div class="progress-wrap"><div class="progress-bar" id="p16"></div></div>
+  </div>
+  <div class="steps">
+    <div class="step done" id="s69">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Multi-agent cross-session Gantt timeline</div>
+        <div class="step-desc">New MultiTimelineTab.tsx: fetch all sessions, render horizontal bars on a shared UTC time axis grouped by harness. Each session is a colored segment (width = duration, color = harness). Shows concurrent agent activity. Click bar navigates to session graph. Essential for "thousands of local agents" observatory use case.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">UI</span>
+      </div>
+    </div>
+    <div class="step done" id="s70">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Webhook notification channels</div>
+        <div class="step-desc">webhooks table (id, name, url, events, secret, enabled). POST payload on alert fire. Supports Slack (text), Discord (content), ntfy (topic URL), generic HTTP. CRUD: GET/POST/PATCH/DELETE /api/webhooks. Test button sends sample payload. Settings UI panel for webhook management. Retry once on timeout. Non-blocking async delivery.</div>
+        <span class="tag" style="background:#ef444422;color:#ef4444">alert</span>
+        <span class="tag" style="background:#a855f722;color:#a855f7">integration</span>
+      </div>
+    </div>
+    <div class="step done" id="s71">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Process kill switch &amp; resource thresholds</div>
+        <div class="step-desc">DELETE /api/processes/:pid sends SIGTERM (macOS/Linux). ProcessesTab: Kill button with confirm dialog. Per-process CPU/memory warning badges (orange &gt;50%, red &gt;80% CPU). Global resource budget: configurable per-harness max CPU% and max memory MB stored in settings. Exceeded thresholds emit a socket alert and create an alert row.</div>
+        <span class="tag" style="background:#f9731622;color:#f97316">observatory</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step done" id="s72">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">OTLP trace forwarding (transparent proxy mode)</div>
+        <div class="step-desc">After ingesting a trace via POST /v1/traces, optionally forward the raw payload to OTEL_FORWARD_URL (env var or settings). Fire-and-forget with 5s timeout. Forward stats: total forwarded, last error, last success timestamp shown in status endpoint and Settings UI. Makes ClaudeSec a transparent sidecar between agents and upstream collectors (Jaeger, Honeycomb, Grafana Tempo).</div>
+        <span class="tag" style="background:#a855f722;color:#a855f7">integration</span>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+      </div>
+    </div>
+    <div class="step done" id="s73">
+      <input type="checkbox" checked onchange="recalc()" />
+      <div class="step-body">
+        <div class="step-title">Docker Compose + GitHub Actions CI + install script</div>
+        <div class="step-desc">Dockerfile (multi-stage: node:22-alpine builder + runtime), docker-compose.yml (ports 3000:3000, volume for spans.db). .github/workflows/ci.yml: lint (tsc --noEmit) + build (vite build) on push/PR. install.sh: curl/bash one-liner that detects OS, installs node if missing, clones repo, runs npm install + build. CLAUDE.md and README updates with Docker usage.</div>
+        <span class="tag" style="background:#22c55e22;color:#22c55e">devex</span>
+        <span class="tag" style="background:#3b82f622;color:#3b82f6">CI</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recalc() {
   const phases = [
@@ -885,6 +942,7 @@ function recalc() {
     { steps: ['s54','s55','s56','s57','s58'], bar: 'p13' },
     { steps: ['s59','s60','s61','s62','s63'], bar: 'p14' },
     { steps: ['s64','s65','s66','s67','s68'], bar: 'p15' },
+    { steps: ['s69','s70','s71','s72','s73'], bar: 'p16' },
   ];
   phases.forEach(({ steps, bar }) => {
     const done = steps.filter(id => {
