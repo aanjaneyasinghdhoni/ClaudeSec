@@ -87,7 +87,22 @@
         "api-reference/search",
         "api-reference/orchestration",
         "api-reference/bookmarks",
-        "api-reference/export"
+        "api-reference/export",
+        "api-reference/webhooks",
+        "api-reference/costs",
+        "api-reference/processes",
+        "api-reference/annotations",
+        "api-reference/graph-export",
+        "api-reference/activity",
+        "api-reference/command-audit",
+        "api-reference/reports",
+        "api-reference/config",
+        "api-reference/db-stats",
+        "api-reference/import",
+        "api-reference/simulate",
+        "api-reference/threshold-rules",
+        "api-reference/suppressions",
+        "api-reference/mcp"
       ]
     }
   ],

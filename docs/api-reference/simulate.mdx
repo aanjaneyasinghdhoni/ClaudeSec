@@ -1,0 +1,40 @@
+---
+title: "Simulate API"
+description: "Inject demo traces to explore the dashboard without real agent data"
+icon: "play"
+---
+
+## Overview
+
+The Simulate API injects three pre-built demo sessions into the database, providing a quick way to explore ClaudeSec's features without connecting a real agent. The demo includes clean, suspicious, and malicious sessions across different agent harnesses.
+
+## Endpoints
+
+### POST /api/simulate
+
+Inject demo traces: 3 sessions with realistic span data and threat detections.
+
+```bash
+curl -X POST http://localhost:3000/api/simulate
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "sessions": 3,
+  "spans": 28,
+  "alerts": 12,
+  "message": "Demo traces injected — explore the dashboard!"
+}
+```
+
+The three demo sessions created:
+
+1. **Claude Code -- Clean development** — A normal coding session with `Read`, `Edit`, `Write`, `Bash`, and `Glob` tool calls. No threats detected. Uses `claude-sonnet-4-6`.
+
+2. **Aider -- Suspicious activity** — A session with medium-severity detections including `pip install`, `sudo chmod 777`, environment variable access (`process.env`), and `.env` file reads. Uses `gpt-4o`.
+
+3. **Cursor -- Prompt injection & exfiltration** — A high-severity session containing prompt injection (`ignore previous instructions`), credential access (`cat /etc/passwd`, `~/.ssh/id_rsa`), remote code execution (`curl ... | sh`), API key exposure (`sk-ant-...`), and a reverse shell attempt (`nc -e /bin/sh`). Uses `claude-sonnet-4-6`. Labeled as `incident`.
+
+All spans are timestamped relative to the current time (within the last 5 minutes). Threat detection rules are evaluated against each span, so alerts reflect what the built-in 153 rules would catch. Socket.io events (`graph-update`, `alerts-update`, `sessions-update`) are emitted after injection.

@@ -3,9 +3,10 @@ info:
   title: ClaudeSec API
   description: |
     Local AI Agent Observatory — ingests OpenTelemetry traces from any CLI agent
-    harness (Claude Code, GitHub Copilot, OpenHands, Cursor, Aider, Cline, Goose,
-    Continue.dev, Windsurf) and surfaces suspicious activity in real-time.
-  version: 0.4.0
+    harness (Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Cline, Goose,
+    Continue.dev, Windsurf, Codex CLI, Amazon Q Developer, Gemini CLI, Roo-Code, Bolt.new)
+    and surfaces suspicious activity in real-time.
+  version: 1.0.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT

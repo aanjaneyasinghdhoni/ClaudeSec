@@ -1,0 +1,120 @@
+---
+title: "Threshold Rules API"
+description: "Create numeric threshold alert rules for token usage, threat counts, and span volume"
+icon: "sliders"
+---
+
+## Overview
+
+Threshold rules let you define numeric conditions that trigger alerts when exceeded within a time window. For example, alert when input tokens exceed 50,000 in a 60-minute window, or when high-severity threat count exceeds 5 in 30 minutes. Rules are evaluated after each OTLP batch ingestion.
+
+## Endpoints
+
+### GET /api/threshold-rules
+
+List all threshold rules.
+
+```bash
+curl http://localhost:3000/api/threshold-rules
+```
+
+**Response:**
+```json
+{
+  "rules": [
+    {
+      "id": 1,
+      "name": "High token spend",
+      "metric": "tokens_in",
+      "operator": ">",
+      "value": 50000,
+      "window_min": 60,
+      "enabled": 1,
+      "createdAt": "2026-04-09T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+### POST /api/threshold-rules
+
+Create a new threshold rule.
+
+**Request body:**
+```json
+{
+  "name": "Too many threats",
+  "metric": "high_threat_count",
+  "operator": ">=",
+  "value": 5,
+  "window_min": 30,
+  "enabled": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Human-readable rule name |
+| `metric` | string | Yes | One of: `tokens_in`, `tokens_out`, `threat_count`, `span_count`, `high_threat_count` |
+| `operator` | string | Yes | One of: `>`, `>=`, `<`, `<=`, `=` |
+| `value` | number | Yes | Threshold value |
+| `window_min` | number | No | Time window in minutes (default: 60) |
+| `enabled` | boolean | No | Whether the rule is active (default: true) |
+
+**Response:** `201 Created` with the created rule object.
+
+```json
+{
+  "id": 2,
+  "name": "Too many threats",
+  "metric": "high_threat_count",
+  "operator": ">=",
+  "value": 5,
+  "window_min": 30,
+  "enabled": 1,
+  "createdAt": "2026-04-09T14:00:00.000Z"
+}
+```
+
+**Errors:**
+- `400` — Missing or invalid `name`, `metric`, `operator`, or `value`
+
+### PATCH /api/threshold-rules/:id
+
+Enable or disable a threshold rule.
+
+**Request body:**
+```json
+{ "enabled": false }
+```
+
+**Response:** `{ "status": "ok" }`
+
+**Errors:**
+- `400` — `enabled` field is required
+- `404` — Rule not found
+
+### DELETE /api/threshold-rules/:id
+
+Delete a threshold rule.
+
+```bash
+curl -X DELETE http://localhost:3000/api/threshold-rules/2
+```
+
+**Response:** `{ "status": "ok" }`
+
+**Errors:**
+- `404` — Rule not found
+
+## How Evaluation Works
+
+After each OTLP trace ingestion, ClaudeSec evaluates all enabled threshold rules for each affected session (`traceId`). It queries spans within the rule's time window and computes the metric:
+
+- **`span_count`** — Total number of spans in the window
+- **`threat_count`** — Spans with any non-`none` severity
+- **`high_threat_count`** — Spans with `high` severity only
+- **`tokens_in`** — Sum of `gen_ai.usage.input_tokens` (or `llm.usage.input_tokens`)
+- **`tokens_out`** — Sum of `gen_ai.usage.output_tokens` (or `llm.usage.output_tokens`)
+
+When a threshold is exceeded, a `medium` severity alert is created with the label `Threshold: <name> (<metric> <operator> <value>)`. The alert is deduplicated within the rule's time window to avoid repeated firing.

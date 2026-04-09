@@ -1,0 +1,237 @@
+---
+title: "MCP Server"
+description: "Model Context Protocol server with 11 tools for AI-to-AI interaction"
+icon: "bot"
+---
+
+## Overview
+
+ClaudeSec exposes an MCP (Model Context Protocol) server that allows AI agents to query the dashboard programmatically. The server implements JSON-RPC 2.0 over HTTP and provides 11 tools for reading health status, sessions, spans, alerts, and performing actions like bookmarking and tagging.
+
+## Endpoint
+
+### POST /mcp
+
+All MCP requests go to this single endpoint using JSON-RPC 2.0.
+
+```bash
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+## Protocol
+
+**Initialize handshake:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": { "tools": {} },
+    "serverInfo": { "name": "claudesec", "version": "1.0.0" }
+  }
+}
+```
+
+**List available tools:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list",
+  "params": {}
+}
+```
+
+**Call a tool:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "get_health",
+    "arguments": {}
+  }
+}
+```
+
+## Available Tools
+
+### get_health
+
+Server health, span/session/alert counts, DB size.
+
+**Arguments:** none
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "version": "1.0.0",
+  "uptime": 3600000,
+  "spanCount": 1245,
+  "sessionCount": 12,
+  "alertCount": 38,
+  "threatCount": 15,
+  "dbSizeBytes": 524288
+}
+```
+
+### get_sessions
+
+List all recorded sessions.
+
+**Arguments:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `label` | string | Filter by label: `normal`, `incident`, `investigation`, `automated`, `other` |
+
+### get_spans
+
+Get spans for a session by traceId.
+
+**Arguments:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `traceId` | string | Yes | Session trace ID |
+
+Returns up to 200 spans with fields: `spanId`, `name`, `severity`, `harness`, `startNano`, `endNano`.
+
+### get_alerts
+
+Get recent security alerts.
+
+**Arguments:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `limit` | number | Max alerts to return (default: 50, max: 200) |
+| `severity` | string | Filter by severity level |
+
+### search_spans
+
+Full-text search across all spans.
+
+**Arguments:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | Yes | Search term (case-insensitive) |
+| `limit` | number | No | Max results (default: 50, max: 200) |
+
+Returns matching spans with: `spanId`, `traceId`, `name`, `severity`, `harness`.
+
+### tag_span
+
+Add a tag to a span.
+
+**Arguments:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `spanId` | string | Yes | Span to tag |
+| `tag` | string | Yes | Tag text |
+
+### suppress_rule
+
+Snooze a detection rule for a duration.
+
+**Arguments:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ruleKey` | string | Yes | Rule identifier (e.g. `builtin-0` or `custom:<id>`) |
+| `durationMs` | number | Yes | Snooze duration in milliseconds |
+
+### bookmark_span
+
+Bookmark a span with an optional note.
+
+**Arguments:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `spanId` | string | Yes | Span to bookmark |
+| `traceId` | string | No | Session trace ID |
+| `note` | string | No | Free-text note |
+
+### get_processes
+
+List running AI agent processes on the local machine. No arguments.
+
+### get_incident_summary
+
+Summarize a session: spans, alerts, top threats, tags, bookmarks.
+
+**Arguments:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `traceId` | string | Yes | Session trace ID |
+
+**Response includes:**
+```json
+{
+  "traceId": "trace-abc-123",
+  "name": "Claude Code · 2:32 PM",
+  "label": "incident",
+  "notes": "",
+  "severity": "high",
+  "spanCount": 10,
+  "alertCount": 5,
+  "harnesses": ["cursor"],
+  "topThreats": [
+    { "rule": "Prompt injection: instruction override", "count": 2 }
+  ],
+  "tags": ["reviewed"],
+  "bookmarks": 1,
+  "startTime": "2026-04-09T14:28:00.000Z"
+}
+```
+
+### list_bookmarks
+
+List saved span bookmarks.
+
+**Arguments:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `traceId` | string | Optional: filter by session traceId |
+
+## Error Handling
+
+Errors follow JSON-RPC 2.0 conventions:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32602,
+    "message": "traceId required"
+  }
+}
+```
+
+| Code | Meaning |
+|------|---------|
+| `-32600` | Invalid Request (not JSON-RPC 2.0) |
+| `-32601` | Method or tool not found |
+| `-32602` | Invalid params (missing required arguments) |
+| `-32603` | Internal error |

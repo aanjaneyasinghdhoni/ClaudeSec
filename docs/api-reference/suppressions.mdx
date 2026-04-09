@@ -1,0 +1,92 @@
+---
+title: "Suppressions API"
+description: "Temporarily snooze security detection rules"
+icon: "bell-off"
+---
+
+## Overview
+
+The Suppressions API lets you temporarily suppress (snooze) specific security detection rules. A suppressed rule will not trigger alerts until the suppression expires. This is useful for known false positives or during maintenance windows. Only active (not yet expired) suppressions are returned.
+
+## Endpoints
+
+### GET /api/suppressions
+
+List all currently active suppressions.
+
+```bash
+curl http://localhost:3000/api/suppressions
+```
+
+**Response:**
+```json
+{
+  "suppressions": [
+    {
+      "id": 1,
+      "ruleKey": "builtin-65",
+      "suppressUntil": "2026-04-10T14:00:00.000Z",
+      "reason": "Known CI/CD pattern — not a real threat",
+      "createdAt": "2026-04-09T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+Only suppressions where `suppressUntil` is in the future are returned.
+
+### POST /api/suppressions
+
+Create a new suppression.
+
+**Request body:**
+```json
+{
+  "ruleKey": "builtin-65",
+  "durationMs": 86400000,
+  "reason": "Known CI/CD pattern — not a real threat"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ruleKey` | string | Yes | Rule identifier, e.g. `builtin-0` through `builtin-152` for built-in rules, or `custom:<id>` for custom rules |
+| `durationMs` | number | Yes | Duration in milliseconds (must be > 0) |
+| `reason` | string | No | Free-text reason for the suppression |
+
+**Response:** `201 Created` with the created suppression object:
+
+```json
+{
+  "id": 2,
+  "ruleKey": "builtin-65",
+  "suppressUntil": "2026-04-10T14:00:00.000Z",
+  "reason": "Known CI/CD pattern — not a real threat",
+  "createdAt": "2026-04-09T14:00:00.000Z"
+}
+```
+
+A Socket.io `rules-update` event is emitted after creation.
+
+**Errors:**
+- `400` — Missing `ruleKey` or `durationMs` is not a positive number
+
+### DELETE /api/suppressions/:id
+
+Delete a suppression, immediately re-enabling the rule.
+
+```bash
+curl -X DELETE http://localhost:3000/api/suppressions/2
+```
+
+**Response:** `{ "status": "ok" }`
+
+A Socket.io `rules-update` event is emitted after deletion.
+
+**Errors:**
+- `404` — Suppression not found
+
+## Rule Key Format
+
+- **Built-in rules**: `builtin-0` through `builtin-152` (index into the `SEVERITY_RULES` array). Use `GET /api/rules` to list all rules with their IDs.
+- **Custom rules**: `custom:<id>` where `<id>` is the custom rule's unique identifier.

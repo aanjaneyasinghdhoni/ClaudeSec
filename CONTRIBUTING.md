@@ -86,10 +86,10 @@ Example: `feat: add prompt-injection detection rule`
 
 ## Adding a New Threat Rule
 
-Threat-detection rules live in `server.ts` in the `SEVERITY_RULES` array. Each rule is an object with two fields:
+Threat-detection rules live in `server.ts` in the `SEVERITY_RULES` array. Each rule is an object with three fields:
 
 ```ts
-{ pattern: /your-regex/i, severity: 'HIGH' | 'MEDIUM' | 'LOW' }
+{ pattern: /your-regex/i, severity: 'HIGH' | 'MEDIUM' | 'LOW', label: 'Short description of what this rule detects' }
 ```
 
 Steps:
@@ -103,14 +103,18 @@ Steps:
 
 ## Adding Harness Support
 
-Harness integrations will live in `src/harnesses.ts` once that registry is implemented (roadmap step S6). When that file exists, each harness entry will declare:
+Harness integrations live in `src/harnesses.ts`. The registry currently supports 14 agent frameworks. Each harness entry declares:
 
-- The harness name and logo
-- The OTLP environment variable names it uses
-- Span attribute mappings (e.g. `gen_ai.tool.name`, `service.name`)
-- Default OTLP port
+- `id` — unique slug used as graph node ID prefix
+- `name` — display name shown in the UI
+- `color` — Tailwind-compatible hex color for the agent node
+- `description` — short description shown in the setup wizard
+- `envVars` — environment variables the user must set (use `{{ENDPOINT}}` as placeholder)
+- `serviceNamePattern` — regex to identify spans from this harness
+- `spanAttributes` — known span attribute keys this harness emits
+- `docsUrl` — link to the harness documentation
 
-Until then, new harness support should be discussed in a GitHub Discussion first so the registry shape can be agreed upon before implementation.
+To add a new harness, add an entry to the `HARNESSES` array in `src/harnesses.ts` and create a corresponding docs page at `docs/harnesses/<id>.mdx`.
 
 ---
 

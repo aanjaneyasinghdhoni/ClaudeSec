@@ -13,7 +13,7 @@ When you open ClaudeSec for the first time (with no data), you see a **Welcome S
 1. **Hero**: "AI Agent Security Observatory" with a brief description
 2. **Value cards**: Three cards explaining why ClaudeSec exists:
    - **See Everything** — every tool call, LLM request, file access, and bash command
-   - **Catch Threats** — 150+ detection rules for prompt injection, credential leaks, reverse shells
+   - **Catch Threats** — 183 detection rules for prompt injection, credential leaks, reverse shells
    - **Stay in Control** — kill processes, set resource budgets, get webhook alerts
 3. **Try it now button**: Injects 3 realistic demo sessions to explore every feature
 4. **Auto-detect**: Shows which agents are already running on your machine
@@ -72,15 +72,16 @@ Set these in the terminal where you run the agent, then restart it. Traces flow 
 
 ## Built-in Security Rules
 
-ClaudeSec ships with **153 built-in detection rules** across 6 categories:
+ClaudeSec ships with **183 built-in detection rules** across HIGH, MEDIUM, and LOW severities covering:
 
-| Category | Count | Examples |
-|----------|-------|---------|
-| System compromise | 25+ | `rm -rf /`, reverse shells, container escape |
-| Prompt injection | 15+ | Instruction override, jailbreak personas, system prompt extraction |
-| Credential theft | 20+ | AWS keys, GitHub tokens, JWT, SSH keys, DB connection strings |
-| Data exfiltration | 15+ | curl POST, scp, clipboard access, screenshot capture |
-| Supply chain | 8+ | Custom PyPI/npm registries, pre-release installs |
-| Reconnaissance | 20+ | nmap, network enumeration, SUID search, process listing |
+| Category | Examples |
+|----------|---------|
+| System compromise | `rm -rf /`, reverse shells, container escape, destructive DDL |
+| Prompt injection | Instruction override, jailbreak personas, system prompt extraction, DAN attempts |
+| Credential theft | AWS keys, GitHub tokens, JWT, SSH keys, DB connection strings, OpenAI keys |
+| Data exfiltration | curl POST, scp, clipboard access, screenshot capture |
+| Supply chain | Custom PyPI/npm registries, pre-release installs, clone-and-execute |
+| Reconnaissance | nmap, network enumeration, SUID search, process listing |
+| Sensitive file access | dotenv files, SSH directories, macOS keychain, system files |
 
 Rules are evaluated in real-time as spans arrive. No configuration needed.

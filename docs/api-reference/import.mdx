@@ -1,0 +1,86 @@
+---
+title: "Import API"
+description: "Import spans from ClaudeSec JSON exports or raw OTLP payloads"
+icon: "upload"
+---
+
+## Overview
+
+The Import API lets you load previously exported span data back into ClaudeSec. It accepts two formats: the ClaudeSec JSON export format (`{ spans: [...] }`) and raw OTLP trace payloads (`{ resourceSpans: [...] }`). Imported spans are processed through threat detection and alerts are generated as needed.
+
+## Endpoints
+
+### POST /api/import
+
+Import spans into the database.
+
+**ClaudeSec export format:**
+```bash
+curl -X POST http://localhost:3000/api/import \
+  -H "Content-Type: application/json" \
+  -d @claudesec-export.json
+```
+
+```json
+{
+  "spans": [
+    {
+      "spanId": "abc123def456",
+      "traceId": "trace-xyz-789",
+      "parentId": "parent-span-id",
+      "name": "tool_call/Edit",
+      "protocol": "HTTPS",
+      "reason": "Processing step",
+      "severity": "none",
+      "harness": "claude-code",
+      "attributes": "{\"gen_ai.tool.name\":\"Edit\"}",
+      "startNano": "1712659200000000000",
+      "endNano": "1712659200280000000"
+    }
+  ]
+}
+```
+
+**Raw OTLP format:**
+```json
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "trace-xyz-789",
+              "spanId": "abc123def456",
+              "name": "llm_request",
+              "startTimeUnixNano": "1712659200000000000",
+              "endTimeUnixNano": "1712659203200000000",
+              "attributes": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "imported": 10,
+  "alertsAdded": 2
+}
+```
+
+**Errors:**
+- `400` — Unrecognized format, or batch exceeds the maximum span limit (default: 500)
+- `503` — Span buffer near capacity; prune before importing
+
+Sessions are auto-created for new `traceId` values. Threat detection rules are evaluated against all imported spans.

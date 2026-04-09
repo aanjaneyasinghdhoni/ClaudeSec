@@ -1,0 +1,151 @@
+---
+title: "Webhooks API"
+description: "Configure webhook alerts, view delivery history, and retry failed deliveries"
+icon: "bell"
+---
+
+## Overview
+
+The Webhooks API lets you configure an HTTP webhook endpoint that receives real-time security alert notifications. ClaudeSec supports Slack, Discord, and generic JSON webhook formats. Deliveries are logged with retry support (up to 3 attempts with exponential backoff).
+
+## Endpoints
+
+### GET /api/webhook
+
+Get the current webhook configuration.
+
+**Response:**
+```json
+{
+  "configured": true,
+  "urlPreview": "https://hooks.slack.com/services/***",
+  "threshold": "high",
+  "envOverride": false
+}
+```
+
+The full webhook URL is never exposed in the response. `envOverride` is `true` when the `CLAUDESEC_WEBHOOK_URL` environment variable is set, which takes precedence over the API-configured URL.
+
+### POST /api/webhook
+
+Configure a webhook URL. Blocked if the `CLAUDESEC_WEBHOOK_URL` environment variable is set.
+
+**Request body:**
+```json
+{
+  "url": "https://hooks.slack.com/services/T00/B00/xxxx",
+  "threshold": "medium"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | Webhook URL (must be `http` or `https`, no private/internal networks) |
+| `threshold` | string | No | Minimum severity to fire: `low`, `medium`, or `high` (default: `high`) |
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "urlPreview": "https://hooks.slack.com/services/***",
+  "threshold": "medium"
+}
+```
+
+**Errors:**
+- `400` — Invalid or missing URL, or URL points to a private/internal network (SSRF protection)
+- `409` — `CLAUDESEC_WEBHOOK_URL` env var is set; remove it to manage via API
+
+### DELETE /api/webhook
+
+Remove the configured webhook URL. Blocked if the `CLAUDESEC_WEBHOOK_URL` environment variable is set.
+
+**Response:** `{ "status": "ok" }`
+
+**Errors:**
+- `409` — `CLAUDESEC_WEBHOOK_URL` env var is set; unset it instead
+
+### POST /api/webhook/test
+
+Send a test alert delivery to the configured webhook URL.
+
+```bash
+curl -X POST http://localhost:3000/api/webhook/test
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "url": "https://hooks.slack.com/services/***"
+}
+```
+
+**Errors:**
+- `404` — No webhook URL configured
+
+### GET /api/webhook-deliveries
+
+List recent webhook delivery attempts.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | number | Max rows to return (default: 50, max: 200) |
+
+**Response:**
+```json
+{
+  "deliveries": [
+    {
+      "id": 42,
+      "ruleLabel": "AWS access key detected",
+      "severity": "high",
+      "urlPreview": "https://hooks.slack.com/services/***",
+      "status": "success",
+      "httpCode": 200,
+      "latencyMs": 312,
+      "error": null,
+      "attempts": 1,
+      "createdAt": "2026-04-09T10:15:00.000Z",
+      "lastAttemptAt": "2026-04-09T10:15:00.312Z"
+    }
+  ],
+  "total": 42
+}
+```
+
+Possible `status` values: `pending`, `success`, `retrying`, `failed`.
+
+### POST /api/webhook-deliveries/:id/retry
+
+Retry a failed webhook delivery.
+
+```bash
+curl -X POST http://localhost:3000/api/webhook-deliveries/42/retry
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "httpCode": 200
+}
+```
+
+**Errors:**
+- `404` — Delivery not found
+- `409` — Delivery already succeeded
+- `502` — Retry failed (network error)
+- `503` — No webhook URL configured
+
+### DELETE /api/webhook-deliveries
+
+Clear all delivery history.
+
+```bash
+curl -X DELETE http://localhost:3000/api/webhook-deliveries
+```
+
+**Response:** `{ "status": "ok" }`

@@ -37,7 +37,7 @@ AI agent → POST /v1/traces (OTLP JSON) → server.ts
 
 - **SQLite via `better-sqlite3`** persists spans across server restarts (`spans.db` is gitignored but created automatically).
 - **Dagre** computes graph layout on the server side (via `/api/graph`) and on the client whenever new spans arrive.
-- **Threat detection** lives in `server.ts` as `SEVERITY_RULES` (153 built-in regex rules: prompt injection, credential theft, reverse shells, supply-chain, exfiltration, recon) evaluated against every incoming span.
+- **Threat detection** lives in `server.ts` as `SEVERITY_RULES` (183 built-in regex rules: prompt injection, credential theft, reverse shells, supply-chain, exfiltration, recon) evaluated against every incoming span.
 - **Path alias** `@/*` resolves to the repo root (not `src/`). Configured in both `vite.config.ts` and `tsconfig.json`.
 
 ### Connecting Claude Code to the dashboard
@@ -51,7 +51,7 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ### Key features
 
 - **Welcome screen** with demo trace simulator (`POST /api/simulate`) — first-run UX
-- **153 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
+- **183 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
 - **14 harness support** — Claude Code, Copilot, Cursor, Aider, OpenHands, Cline, Goose, etc.
 - **Process scanner** — detects running agent CLIs via `ps aux`, kill switch via `DELETE /api/processes/:pid`
 - **OTLP forwarding** — transparent proxy to upstream collectors (set `OTEL_FORWARD_URL`)

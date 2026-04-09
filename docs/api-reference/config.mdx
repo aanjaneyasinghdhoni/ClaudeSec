@@ -1,0 +1,82 @@
+---
+title: "Config API"
+description: "Read server configuration and generate OTLP collector YAML"
+icon: "settings"
+---
+
+## Overview
+
+The Config API exposes the current server configuration (retention limits, rate limiting, webhook status) and can generate an OpenTelemetry Collector YAML configuration file for proxy deployments.
+
+## Endpoints
+
+### GET /api/config
+
+Get the current server configuration.
+
+```bash
+curl http://localhost:3000/api/config
+```
+
+**Response:**
+```json
+{
+  "maxSpans": 50000,
+  "retentionDays": 30,
+  "rateLimitRps": 50,
+  "rateLimitBurst": 200,
+  "maxSpansBatch": 500,
+  "webhookUrl": "***",
+  "webhookThreshold": "high"
+}
+```
+
+`webhookUrl` is `"***"` when configured (never reveals the actual URL) or `null` when not set. Rate limiting values come from environment variables or their defaults.
+
+### GET /api/collector-config
+
+Download an OpenTelemetry Collector configuration file (YAML) pre-configured to forward traces to this ClaudeSec instance.
+
+```bash
+curl http://localhost:3000/api/collector-config -o otel-collector-config.yaml
+```
+
+**Response:** YAML file with `Content-Type: text/yaml` and a download disposition header.
+
+```yaml
+# OpenTelemetry Collector configuration for ClaudeSec
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 200ms
+    send_batch_size: 100
+    send_batch_max_size: 500
+
+exporters:
+  otlphttp:
+    endpoint: http://host.docker.internal:3000
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp, debug]
+```
+
+The `endpoint` in the exporter automatically uses the server's current `PORT` value.

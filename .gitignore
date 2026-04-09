@@ -14,3 +14,12 @@ exports/
 .claude/
 hooks/
 plan.html
+
+# Local-only: audits, specs, plans, and internal analysis
+# These contain security details, private context, or strategic decisions — never commit
+docs/superpowers/
+audits/
+specs/
+plans/
+*.audit.md
+*.spec.local.md

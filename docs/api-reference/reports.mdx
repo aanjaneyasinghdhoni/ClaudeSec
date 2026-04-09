@@ -1,0 +1,66 @@
+---
+title: "Reports API"
+description: "Generate session summary reports and health scores"
+icon: "file-text"
+---
+
+## Overview
+
+The Reports API produces per-session summary reports and health scores. Reports are rendered as self-contained HTML pages suitable for sharing. Health scores provide a numeric assessment of session security posture.
+
+## Endpoints
+
+### GET /api/sessions/:traceId/report
+
+Generate a downloadable HTML report for a session. Includes span listing, alert table, token counts, and threat breakdown with styled formatting.
+
+```bash
+curl http://localhost:3000/api/sessions/trace-abc-123/report -o report.html
+```
+
+**Response:** `Content-Type: text/html` with a download disposition header.
+
+The HTML report contains:
+- Session name and timestamp
+- Harness badges for all agents in the session
+- Summary cards: total spans, high/medium/low threats, input/output tokens
+- Security alerts table (time, severity, rule, matched text, span)
+- Full span table (ID, name, severity, tool, duration, threat rule)
+- ClaudeSec branding and generation timestamp
+
+**Errors:**
+- `404` — Session not found
+
+### GET /api/sessions/:traceId/health
+
+Get a numeric health score and threat breakdown for a session.
+
+```bash
+curl http://localhost:3000/api/sessions/trace-abc-123/health
+```
+
+**Response:**
+```json
+{
+  "score": 72,
+  "grade": "C",
+  "threatHigh": 0,
+  "threatMedium": 2,
+  "threatLow": 3,
+  "alertCount": 4
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `score` | number | Health score from 0 (worst) to 100 (best) |
+| `grade` | string | Letter grade: A (90+), B (75+), C (60+), D (40+), F (<40) |
+| `threatHigh` | number | Count of high-severity spans |
+| `threatMedium` | number | Count of medium-severity spans |
+| `threatLow` | number | Count of low-severity spans |
+| `alertCount` | number | Total alerts for this session |
+
+The score formula: `100 - (high * 15) - (medium * 8) - (low * 3) - min(alerts * 10, 30)`, clamped to 0.
+
+**Errors:**
+- `404` — Session not found

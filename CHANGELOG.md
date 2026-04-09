@@ -20,8 +20,8 @@ OTLP ingestion, real-time threat detection, and interactive visualization.
 - Two-process dev mode: Vite HMR proxied through the Express server
 
 #### Multi-Harness Support
-- Harness detection registry (`src/harnesses.ts`) covering 10 agent frameworks:
-  Claude Code, GitHub Copilot, OpenHands, Cursor, Aider, Cline, Goose, Continue.dev, Windsurf, and Unknown
+- Harness detection registry (`src/harnesses.ts`) covering 14 agent frameworks:
+  Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Cline, Goose, Continue.dev, Windsurf, Codex CLI, Amazon Q Developer, Gemini CLI, Roo-Code, and Bolt.new
 - Automatic harness identification from `service.name` / `telemetry.sdk.name` resource attributes
 - Per-harness colored root nodes in the graph
 - Interactive CLI setup wizard (`npx claudesec init` / `npm run init`)
@@ -42,15 +42,14 @@ OTLP ingestion, real-time threat detection, and interactive visualization.
 - Suspicious tool flagging (bash, eval, exec, curl, etc.)
 
 #### Security Engine
-- 31 built-in threat detection rules across HIGH / MEDIUM / LOW severities:
-  - HIGH: `rm -rf /`, passwd read, curl|sh, wget|sh, SQL DROP/TRUNCATE, eval/exec injection,
-    prompt injection (3 patterns), AWS/GitHub/OpenAI secret patterns,
-    supply-chain (custom PyPI/npm registry, clone-and-execute), TCP reverse shell
-  - MEDIUM: process.env, .env files, SSH key manipulation, /etc/shadow|hosts|sudoers,
-    base64 decode, SSH dir access, macOS keychain, Python one-liner
-  - LOW: SELECT *, world-executable chmod, sudo, global npm install, pip install
+- 183 built-in threat detection rules across HIGH / MEDIUM / LOW severities covering:
+  system compromise, prompt injection, credential theft, data exfiltration, supply-chain attacks,
+  reverse shells, container escape, reconnaissance, and more
 - Custom rule CRUD via dashboard UI and REST API (saved to `rules.json`)
+- Rule suppressions — temporarily or permanently suppress noisy rules
 - Immutable alert log (SQLite `alerts` table) with timestamp, matched text, and span context
+- Alert deduplication via fingerprinting — prevents duplicate alerts for the same pattern
+- Alert triage — mark alerts as dismissed or false-positive
 - Web Notifications API integration for desktop HIGH severity alerts
 - Alerts tab with severity filtering, JSON export, and clear
 
@@ -67,6 +66,57 @@ OTLP ingestion, real-time threat detection, and interactive visualization.
 - In-dashboard webhook management UI with test delivery button
 - `CLAUDESEC_WEBHOOK_URL` env var override for CI/CD environments
 
+#### MCP Server
+- Model Context Protocol server at `POST /mcp` with 11 tools for AI-to-AI interaction:
+  get_health, get_sessions, get_spans, get_alerts, search_spans, tag_span, suppress_rule,
+  bookmark_span, get_processes, get_incident_summary, list_bookmarks
+
+#### Process Scanner
+- Detects running AI agent CLIs on the local machine (14 harness patterns)
+- Kill, pause, and resume individual agents or all agents from the dashboard
+- Endpoints: `GET /api/processes`, `DELETE /api/processes/:pid`, `POST /api/processes/kill-all`, pause-all, resume-all
+
+#### OTLP Forwarding
+- Transparent proxy to upstream OpenTelemetry collectors via `OTEL_FORWARD_URL` environment variable
+- Traces are analyzed locally and forwarded simultaneously
+
+#### Auto-Export
+- Hourly JSON snapshots of spans, alerts, and sessions to `exports/` directory
+- Rolling retention: last 24 exports kept automatically
+
+#### Span Bookmarks, Tags & Annotations
+- Bookmark interesting spans for later review (`GET/POST/DELETE /api/bookmarks`)
+- Add custom tags to any span (`GET/POST/DELETE /api/spans/:spanId/tags`)
+- Add text annotations to spans (`GET/POST/DELETE /api/spans/:spanId/annotations`)
+
+#### Session Labels & Notes
+- Assign labels to sessions: normal, incident, investigation, automated, other
+- Add free-text notes to any session
+- Filter sessions by label
+
+#### Graph Export
+- Export span graph as Mermaid format (`GET /api/graph/mermaid`)
+- Export span graph as Graphviz DOT format (`GET /api/graph/dot`)
+
+#### Command Audit & File Access Tracking
+- Track commands executed by agents (`GET /api/command-audit`)
+- Track file access patterns (`GET /api/file-access`)
+
+#### Activity & Heatmap
+- Activity timeline (`GET /api/activity`)
+- Live activity stream (`GET /api/live-activity`)
+- Threat activity heatmap (`GET /api/heatmap`)
+- Server-sent events tail (`GET /api/tail`)
+
+#### Welcome Screen & Demo Simulator
+- First-run welcome screen with onboarding flow
+- Demo trace simulator injects 3 realistic sessions (`POST /api/simulate`)
+- Auto-detects running agents on the machine
+
+#### Docker Support
+- Production-ready Dockerfile with multi-stage build
+- docker-compose.yml with volumes, health checks, and environment variables
+
 #### Observability
 - `GET /api/health` — server status, uptime, span/session/alert counts, DB size
 - `GET /metrics` — Prometheus text format with spans_total, threats_total,
@@ -74,10 +124,12 @@ OTLP ingestion, real-time threat detection, and interactive visualization.
 
 #### Documentation
 - Mintlify documentation site in `docs/` — run with `npx mintlify dev`
-  - Getting Started: overview, quickstart
-  - Harness guides: one page per supported agent with copy-paste setup commands
-  - Security: threat rules reference, alert system guide
-  - API Reference: 9 pages covering all endpoints
+  - Getting Started: overview, quickstart, architecture
+  - Harness guides: one page per supported agent (14 harnesses) with copy-paste setup commands
+  - Security: threat rules reference, alert system guide, rule suppressions
+  - Observatory: welcome screen, process scanner, session labels
+  - Integrations: MCP server, OTLP collector
+  - API Reference: comprehensive endpoint documentation
 - Complete OpenAPI 3.0.3 spec (`openapi.yaml`) with all schemas and examples
 - `CLAUDE.md` for AI-assisted development context
 
@@ -90,28 +142,29 @@ OTLP ingestion, real-time threat detection, and interactive visualization.
 - Pull request template
 - `npm run init` / `npx claudesec init` CLI wizard
 
-### API
+### API (73 endpoints)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST   | `/v1/traces` | Ingest OTLP JSON traces |
-| GET    | `/api/graph` | ReactFlow graph data |
-| GET    | `/api/sessions` | List sessions with stats |
-| PATCH  | `/api/sessions/:id` | Rename session |
-| GET    | `/api/spans` | Search spans (`?q=`, `?session=`) |
-| GET/POST/DELETE | `/api/rules` | Manage custom threat rules |
-| GET/DELETE | `/api/alerts` | Threat alert log |
-| GET    | `/api/alerts/export` | Export alerts JSON |
-| GET    | `/api/export` | Export all spans JSON |
-| GET    | `/api/export/csv` | Export spans CSV |
-| GET    | `/api/harnesses` | Active harness list |
-| GET    | `/api/orchestration` | Agent DAG, tools, spawn tree |
-| GET    | `/api/costs` | Token usage and cost estimates |
-| GET    | `/api/health` | Server health status |
-| GET    | `/metrics` | Prometheus metrics |
-| GET/POST/DELETE | `/api/webhook` | Webhook alert config |
-| POST   | `/api/webhook/test` | Test webhook delivery |
-| POST   | `/api/reset` | Clear all data |
+Key endpoint groups — see `openapi.yaml` for the full specification:
+
+| Group | Key Paths | Description |
+|-------|-----------|-------------|
+| OTLP | `POST /v1/traces` | Ingest OTLP JSON traces |
+| MCP | `POST /mcp` | Model Context Protocol server (11 tools) |
+| Graph | `/api/graph`, `/api/graph/mermaid`, `/api/graph/dot` | Graph state + export |
+| Sessions | `/api/sessions`, `PATCH`, compare, report, health | Session management |
+| Spans | `/api/spans`, search, tags, annotations, bookmarks | Span queries + metadata |
+| Alerts | `/api/alerts`, export, `PATCH` triage | Threat alert log |
+| Rules | `/api/rules`, threshold rules, suppressions | Rule management |
+| Webhooks | `/api/webhook`, test, deliveries | Webhook config + history |
+| Costs | `/api/costs`, `/api/cost-trend` | Token usage + cost |
+| Processes | `/api/processes`, kill-all, pause, resume | Agent management |
+| Export | `/api/export`, csv, `POST /api/import` | Data import/export |
+| Monitoring | `/api/health`, `/metrics` | Health + Prometheus |
+| Activity | `/api/activity`, live-activity, heatmap, tail | Activity streams |
+| Audit | `/api/command-audit`, `/api/file-access` | Audit logs |
+| Config | `/api/config`, collector-config, db-stats | Server config |
+| Simulate | `POST /api/simulate` | Demo trace injection |
+| Reset | `POST /api/reset` | Clear all data |
 
 ---
 

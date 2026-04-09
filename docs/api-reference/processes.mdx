@@ -1,0 +1,133 @@
+---
+title: "Processes API"
+description: "Detect, monitor, and control running AI agent processes on the local machine"
+icon: "cpu"
+---
+
+## Overview
+
+The Processes API scans for running AI agent CLI processes (Claude Code, Copilot, Cursor, Aider, OpenHands, Cline, Goose, etc.) by matching patterns in `ps aux` output. It supports killing, pausing, and resuming detected agents. Only recognized agent PIDs can be targeted — arbitrary process control is blocked for security.
+
+Supported platforms: macOS and Linux. Windows returns an empty list.
+
+## Endpoints
+
+### GET /api/processes
+
+List detected running agent processes, enriched with recent session data.
+
+```bash
+curl http://localhost:3000/api/processes
+```
+
+**Response:**
+```json
+{
+  "processes": [
+    {
+      "pid": 12345,
+      "harness": "claude-code",
+      "harnessName": "Claude Code",
+      "cmd": "/Users/***/claude --session ...",
+      "cpuPct": 8.2,
+      "memMb": 156.3,
+      "startedAt": null,
+      "user": "***",
+      "recentSessions": [
+        {
+          "traceId": "trace-abc-123",
+          "name": "Claude Code · 2:32 PM"
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "scannedAt": "2026-04-09T14:00:00.000Z",
+  "supported": true
+}
+```
+
+The `cmd` field is redacted to hide usernames. The `user` field is always `***` for security. `recentSessions` shows sessions from the last 2 hours matching the agent's harness. Electron helper sub-processes (GPU, renderer, etc.) are excluded.
+
+### DELETE /api/processes/:pid
+
+Kill a specific agent process by sending `SIGTERM`.
+
+```bash
+curl -X DELETE http://localhost:3000/api/processes/12345
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "pid": 12345,
+  "signal": "SIGTERM"
+}
+```
+
+**Errors:**
+- `400` — Invalid PID
+- `403` — PID is not a recognized agent process, or permission denied
+- `404` — Process not found (already terminated)
+- `501` — Not supported on Windows
+
+### POST /api/processes/kill-all
+
+Send `SIGTERM` to all detected agent processes.
+
+```bash
+curl -X POST http://localhost:3000/api/processes/kill-all
+```
+
+**Response:**
+```json
+{
+  "killed": 3,
+  "failed": 0,
+  "total": 3,
+  "results": [
+    { "pid": 12345, "name": "Claude Code", "ok": true },
+    { "pid": 12346, "name": "Cursor", "ok": true },
+    { "pid": 12347, "name": "Aider", "ok": true }
+  ]
+}
+```
+
+### POST /api/processes/pause-all
+
+Pause (suspend) all detected agent processes by sending `SIGSTOP`.
+
+```bash
+curl -X POST http://localhost:3000/api/processes/pause-all
+```
+
+**Response:**
+```json
+{
+  "paused": 2,
+  "results": [
+    { "pid": 12345, "name": "Claude Code", "ok": true },
+    { "pid": 12346, "name": "Cursor", "ok": true }
+  ]
+}
+```
+
+### POST /api/processes/resume-all
+
+Resume all paused agent processes by sending `SIGCONT`.
+
+```bash
+curl -X POST http://localhost:3000/api/processes/resume-all
+```
+
+**Response:**
+```json
+{
+  "resumed": 2,
+  "results": [
+    { "pid": 12345, "name": "Claude Code", "ok": true },
+    { "pid": 12346, "name": "Cursor", "ok": true }
+  ]
+}
+```

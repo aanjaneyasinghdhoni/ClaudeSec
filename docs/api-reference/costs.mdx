@@ -1,0 +1,103 @@
+---
+title: "Costs API"
+description: "Token usage tracking and cost estimation per session and model"
+icon: "dollar-sign"
+---
+
+## Overview
+
+The Costs API provides token usage and estimated cost data across all sessions and models. Pricing is based on a built-in table covering Claude, GPT, and Gemini model families. Costs are computed from `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` span attributes.
+
+## Endpoints
+
+### GET /api/costs
+
+Get token usage and cost estimates aggregated by session and model.
+
+```bash
+curl http://localhost:3000/api/costs
+```
+
+**Response:**
+```json
+{
+  "sessions": [
+    {
+      "traceId": "trace-abc-123",
+      "sessionName": "Claude Code · 2:32 PM",
+      "harness": "claude-code",
+      "model": "claude-sonnet-4-6",
+      "modelLabel": "Claude Sonnet 4.6",
+      "tokensIn": 15200,
+      "tokensOut": 4800,
+      "costUsd": 0.1176,
+      "knownPrice": true
+    }
+  ],
+  "models": [
+    {
+      "model": "claude-sonnet-4-6",
+      "label": "Claude Sonnet 4.6",
+      "tokensIn": 15200,
+      "tokensOut": 4800,
+      "costUsd": 0.1176,
+      "knownPrice": true
+    }
+  ],
+  "totalCostUsd": 0.1176,
+  "totalTokensIn": 15200,
+  "totalTokensOut": 4800,
+  "pricingTable": [
+    {
+      "model": "claude-opus-4-6",
+      "inputPer1M": 15,
+      "outputPer1M": 75,
+      "label": "Claude Opus 4.6"
+    }
+  ]
+}
+```
+
+The `sessions` array is sorted by cost (highest first). Each row represents a unique `(traceId, model)` pair. The `pricingTable` includes all supported models and their per-1M-token rates.
+
+When a model is not in the pricing table, `knownPrice` is `false` and `costUsd` is `0`.
+
+### GET /api/cost-trend
+
+Get cumulative token usage over time, optionally filtered to a single session.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `traceId` | string | Filter to a specific session (optional) |
+
+```bash
+curl "http://localhost:3000/api/cost-trend?traceId=trace-abc-123"
+```
+
+**Response:**
+```json
+{
+  "points": [
+    {
+      "ts": 1712659200000,
+      "tokensIn": 1250,
+      "tokensOut": 890,
+      "cumIn": 1250,
+      "cumOut": 890
+    },
+    {
+      "ts": 1712659203200,
+      "tokensIn": 2400,
+      "tokensOut": 1600,
+      "cumIn": 3650,
+      "cumOut": 2490
+    }
+  ],
+  "totalIn": 3650,
+  "totalOut": 2490
+}
+```
+
+Each point represents a span with token data, ordered by time. `cumIn` and `cumOut` are running totals. `ts` is a Unix timestamp in milliseconds.
