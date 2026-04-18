@@ -215,6 +215,20 @@ export const HARNESSES: HarnessConfig[] = [
     docsUrl: 'https://bolt.new',
   },
   {
+    id: 'antigravity',
+    name: 'Google Antigravity',
+    color: '#ea580c',
+    description: 'Google Labs\' agent-first IDE with autonomous coding, browser, and terminal agents.',
+    envVars: [
+      { key: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: '{{ENDPOINT}}',   description: 'OTLP collector URL' },
+      { key: 'OTEL_EXPORTER_OTLP_PROTOCOL', value: 'http/json',      description: 'Protocol' },
+      { key: 'OTEL_SERVICE_NAME',            value: 'antigravity',    description: 'Service name for detection' },
+    ],
+    serviceNamePattern: /antigravity/i,
+    spanAttributes: ['gen_ai.request.model', 'antigravity.agent_kind'],
+    docsUrl: 'https://antigravity.google',
+  },
+  {
     id: 'unknown',
     name: 'Unknown Agent',
     color: '#64748b',

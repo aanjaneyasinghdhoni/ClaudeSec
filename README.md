@@ -107,9 +107,60 @@ The Docker image runs both the Express backend and serves the production-built f
 | Gemini CLI | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Roo-Code | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Bolt.new | `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| Google Antigravity | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Any OTLP-compatible tool | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 
 All harnesses use the same OTLP HTTP/JSON wire format. Set the endpoint to `http://localhost:3000/v1/traces` and set `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`.
+
+---
+
+## Configuration
+
+All configuration is via optional environment variables — see `.env.example` for defaults. A few are worth calling out:
+
+### Privacy — attribute scrubbing (default: **ON**)
+
+ClaudeSec inline-redacts personal / machine-specific information from span attributes before persisting, broadcasting, or exporting them. The OTLP attribute **shape** is preserved, so every harness and downstream collector (Jaeger, Tempo, Honeycomb, DataDog, …) keeps working unchanged. What gets redacted:
+
+- `/Users/<name>`, `/home/<name>`, `C:\Users\<name>` → `/Users/***`, etc.
+- The current process `$HOME` → `~`
+- Host OS username → `***`
+- Email addresses → `***@<domain>`
+- Attribute keys matching `authorization`, `token`, `secret`, `password`, `cookie`, `api_key`, `bearer`, etc. → `***`
+
+Set `CLAUDESEC_DISABLE_SCRUB=1` to forward raw attributes.
+
+### Honeytokens (exfiltration canaries)
+
+Plant unique strings that should never legitimately appear in telemetry. If any span contains one, a HIGH-severity `Honeytoken exfiltration` alert fires regardless of other rules.
+
+```bash
+export CLAUDESEC_HONEYTOKENS='aws-prod-key-DO-NOT-LEAK,CanaryDB-SensitiveRow-42'
+```
+
+Or manage them at runtime via `POST /api/honeytokens` (body: `{ "tokens": ["..."] }`).
+
+### Optional API authentication
+
+```bash
+export CLAUDESEC_API_TOKEN=$(openssl rand -hex 32)
+```
+
+When set, all mutating routes (POST / PATCH / DELETE, `/mcp`, process kill switch, webhook management) require `Authorization: Bearer <token>`. Read routes, `/api/health`, `/metrics`, and OTLP ingest (`/v1/traces`) remain public.
+
+### Other useful vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CLAUDESEC_PORT` | `3000` | Dashboard + OTLP listen port |
+| `CLAUDESEC_MAX_SPANS` | `50000` | Count-based retention |
+| `CLAUDESEC_RETENTION_DAYS` | `30` | Age-based retention |
+| `CLAUDESEC_RATE_LIMIT_RPS` | `50` | OTLP ingest ceiling per IP |
+| `CLAUDESEC_RATE_LIMIT_BURST` | `200` | Burst capacity |
+| `CLAUDESEC_CORS_ORIGINS` | loopback only | Extra dashboard origins |
+| `OTEL_FORWARD_URL` | — | Transparent OTLP proxy target (SSRF-blocked for private networks) |
+| `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / generic JSON — format auto-detected |
+| `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to webhook |
 
 ---
 

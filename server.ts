@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import bodyParser from 'body-parser';
+import helmet from 'helmet';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -10,6 +11,8 @@ import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
 import { detectHarness, HARNESSES } from './src/harnesses.js';
+import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
+import { requireAuth, getConfiguredToken } from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,6 +121,18 @@ const upsertSession = db.prepare(
 const deleteAllSpans    = db.prepare(`DELETE FROM spans`);
 const deleteAllSessions = db.prepare(`DELETE FROM sessions`);
 const getAllSpans        = db.prepare(`SELECT * FROM spans`);
+
+// Query accelerators — covers the hot-path reads (session filter, severity
+// dashboards, per-harness aggregation).  Safe to add on existing DBs.
+for (const stmt of [
+  `CREATE INDEX IF NOT EXISTS idx_spans_traceId_startNano ON spans(traceId, startNano)`,
+  `CREATE INDEX IF NOT EXISTS idx_spans_severity          ON spans(severity)`,
+  `CREATE INDEX IF NOT EXISTS idx_spans_harness           ON spans(harness)`,
+  `CREATE INDEX IF NOT EXISTS idx_alerts_traceId          ON alerts(traceId)`,
+  `CREATE INDEX IF NOT EXISTS idx_alerts_dismissed_ts     ON alerts(dismissed, ts)`,
+]) {
+  try { db.prepare(stmt).run(); } catch {}
+}
 
 // ---------------------------------------------------------------------------
 // Alerts table
@@ -461,6 +476,53 @@ db.exec(`
 const getConfig = db.prepare<[string], { value: string }>(`SELECT value FROM config WHERE key = ?`);
 const setConfig = db.prepare(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`);
 const delConfig = db.prepare(`DELETE FROM config WHERE key = ?`);
+
+// ---------------------------------------------------------------------------
+// Honeytokens — operator-planted canary strings that must never appear in
+// legitimate span attributes.  Any match is an exfiltration signal and fires
+// a dedicated HIGH-severity alert regardless of the scrubber's state.
+// ---------------------------------------------------------------------------
+
+function loadHoneytokens(): string[] {
+  const fromDb = (getConfig.get('honeytokens')?.value ?? '')
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  const fromEnv = (process.env.CLAUDESEC_HONEYTOKENS ?? '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  return [...new Set([...fromDb, ...fromEnv])];
+}
+
+function saveHoneytokens(tokens: string[]): void {
+  const clean = [...new Set(tokens.map(t => t.trim()).filter(t => t.length >= 6))];
+  setConfig.run('honeytokens', clean.join('\n'));
+  scrubOptions = loadScrubOptions(clean);
+}
+
+// Scrub options are rebuilt whenever honeytokens change.  Default: enabled,
+// with the current process's $HOME and OS username masked inline.
+let scrubOptions: ScrubOptions = loadScrubOptions(loadHoneytokens());
+
+// ---------------------------------------------------------------------------
+// Suppressed-rule cache — short-lived so ingest doesn't round-trip SQLite per
+// rule per span.  TTL is intentionally small so UI changes propagate fast.
+// ---------------------------------------------------------------------------
+
+let _suppressedCache: { keys: Set<string>; at: number } | null = null;
+const SUPPRESSED_TTL_MS = 2_000;
+
+function getSuppressedKeysCached(): Set<string> {
+  const now = Date.now();
+  if (_suppressedCache && now - _suppressedCache.at < SUPPRESSED_TTL_MS) {
+    return _suppressedCache.keys;
+  }
+  const rows = db.prepare(
+    `SELECT ruleKey FROM suppressions WHERE suppressUntil > ?`
+  ).all(new Date().toISOString()) as { ruleKey: string }[];
+  const keys = new Set(rows.map(r => r.ruleKey));
+  _suppressedCache = { keys, at: now };
+  return keys;
+}
+
+function invalidateSuppressedCache() { _suppressedCache = null; }
 
 // ---------------------------------------------------------------------------
 // Custom rules persistence
@@ -1086,24 +1148,61 @@ const SEVERITY_RULES: { pattern: RegExp; severity: Severity; label: string }[] =
   { pattern: /zip\s+/i,                                          severity: 'low', label: 'Zip archive operation' },
 ];
 
-function detectSeverity(text: string): { severity: Severity; matchedLabel: string; matchedText: string } {
-  // Check custom rules first
+interface DetectHit {
+  severity: Severity;
+  matchedLabel: string;
+  matchedText: string;
+  matchStart: number;
+  matchEnd:   number;
+  ruleKey:    string;
+}
+
+function detectSeverity(text: string): DetectHit {
+  // SECURITY: batch the suppression lookup — cached for ~2s, so ingest never
+  // round-trips SQLite per rule per span under load.
+  const suppressed = getSuppressedKeysCached();
+
+  // Custom rules first — user overrides beat built-ins.
   for (const rule of customRules) {
-    if (isRuleSuppressed(`custom:${rule.id}`)) continue;
+    const key = `custom:${rule.id}`;
+    if (suppressed.has(key)) continue;
     try {
       const re = new RegExp(rule.pattern, rule.flags);
       const m = re.exec(text);
-      if (m) return { severity: rule.severity, matchedLabel: rule.label, matchedText: m[0].slice(0, 100) };
+      if (m) {
+        return {
+          severity: rule.severity,
+          matchedLabel: rule.label,
+          matchedText: m[0].slice(0, 100),
+          matchStart: m.index,
+          matchEnd:   m.index + m[0].length,
+          ruleKey:    key,
+        };
+      }
     } catch { /* invalid regex — skip */ }
   }
-  // Built-in rules
+
   for (let i = 0; i < SEVERITY_RULES.length; i++) {
+    const key = `builtin-${i}`;
+    if (suppressed.has(key)) continue;
     const rule = SEVERITY_RULES[i];
-    if (isRuleSuppressed(`builtin-${i}`)) continue;
     const m = rule.pattern.exec(text);
-    if (m) return { severity: rule.severity, matchedLabel: rule.label, matchedText: m[0].slice(0, 100) };
+    if (m) {
+      return {
+        severity: rule.severity,
+        matchedLabel: rule.label,
+        matchedText: m[0].slice(0, 100),
+        matchStart: m.index,
+        matchEnd:   m.index + m[0].length,
+        ruleKey:    key,
+      };
+    }
   }
-  return { severity: 'none', matchedLabel: '', matchedText: '' };
+
+  return {
+    severity: 'none', matchedLabel: '', matchedText: '',
+    matchStart: -1, matchEnd: -1, ruleKey: '',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,8 +1504,40 @@ async function startServer() {
 
   const io = new Server(httpServer, { cors: { origin: corsOrigins } });
 
+  // Security headers.  CSP is disabled because the dashboard uses inline
+  // event handlers and dynamic Tailwind classes; the dashboard is intended
+  // for localhost use, where CSP adds little.  All other helmet defaults
+  // (X-Content-Type-Options, Referrer-Policy, frame-ancestors, etc.) apply.
+  app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
   app.use(cors({ origin: corsOrigins }));
   app.use(bodyParser.json({ limit: '10mb' }));
+
+  // ── Optional bearer-token auth ──────────────────────────────────────────
+  // Takes effect only when CLAUDESEC_API_TOKEN is set.  Always-public routes:
+  //  * All GETs (dashboard reads, Prometheus scrapes, health checks)
+  //  * POST /v1/traces (OTLP ingest — already rate-limited, agents need access)
+  // Everything else (mutating API, MCP, reset, kill-switch, webhooks) is
+  // gated behind Authorization: Bearer <token>.
+  const PUBLIC_NON_GET = new Set<string>(['/v1/traces']);
+  app.use((req, res, next) => {
+    if (!getConfiguredToken())          return next();
+    if (req.method === 'GET')           return next();
+    if (PUBLIC_NON_GET.has(req.path))   return next();
+    return requireAuth(req, res, next);
+  });
+
+  // ── Graph-broadcast throttle ────────────────────────────────────────────
+  // Coalesce full-graph broadcasts to at most one every 250ms.  High-volume
+  // OTLP batches were triggering a full rebuild + emit per request before
+  // this; browser-side React Flow could not keep up.
+  let _pendingGraphEmit: NodeJS.Timeout | null = null;
+  function emitGraphUpdateThrottled(sessionFilter?: string): void {
+    if (_pendingGraphEmit) return;
+    _pendingGraphEmit = setTimeout(() => {
+      _pendingGraphEmit = null;
+      io.emit('graph-update', buildGraph(sessionFilter));
+    }, 250);
+  }
 
   // ── OTLP ingestion ──────────────────────────────────────────────────────
   app.post('/v1/traces', (req, res) => {
@@ -1455,18 +1586,26 @@ async function startServer() {
 
       rs.scopeSpans?.forEach(ss => {
         ss.spans?.forEach(span => {
-          const attrs: Record<string, any> = {};
+          // Step 1 — assemble raw attrs from OTLP wire format.
+          const rawAttrs: Record<string, any> = {};
           (span.attributes || []).forEach(attr => {
-            attrs[attr.key] =
+            rawAttrs[attr.key] =
               attr.value?.stringValue ??
               attr.value?.intValue    ??
               attr.value?.boolValue   ??
               JSON.stringify(attr.value);
           });
 
-          const searchText = JSON.stringify(attrs) + ' ' + span.name;
-          const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
-          if (matchedLabel) attrs['claudesec.threat.rule'] = matchedLabel;
+          // Step 2 — run detection on RAW data so secret/path rules still fire.
+          const searchText = JSON.stringify(rawAttrs) + ' ' + span.name;
+          const hit = detectSeverity(searchText);
+          if (hit.matchedLabel) rawAttrs['claudesec.threat.rule'] = hit.matchedLabel;
+
+          // Step 3 — scrub for persistence & broadcast.  Honeytoken detection
+          // runs against raw values, independent of the scrub flag.
+          const { attrs, honeytokenHits } = scrubAttributes(rawAttrs, scrubOptions);
+          const scrubbedName = scrubText(span.name, scrubOptions);
+          const scrubbedMatched = scrubText(hit.matchedText, scrubOptions);
 
           const traceId  = span.traceId  || 'unknown';
           const parentId = span.parentSpanId || harness.id;
@@ -1478,14 +1617,22 @@ async function startServer() {
             newSessions = true;
           }
 
+          // Honeytokens escalate severity even if no other rule fired.
+          const finalSeverity: Severity =
+            honeytokenHits.length > 0 ? 'high' : hit.severity;
+          const finalLabel =
+            honeytokenHits.length > 0
+              ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
+              : hit.matchedLabel;
+
           const spanRecord: SpanRecord = {
             spanId:    span.spanId,
             traceId,
             parentId,
-            name:      span.name,
+            name:      scrubbedName,
             protocol:  String(attrs['protocol'] ?? 'HTTPS'),
             reason:    String(attrs['reason']   ?? 'Processing step'),
-            severity,
+            severity:  finalSeverity,
             harness:   harness.id,
             attributes: JSON.stringify(attrs),
             startNano:  String(span.startTimeUnixNano ?? '0'),
@@ -1502,25 +1649,25 @@ async function startServer() {
             ts:       new Date().toISOString(),
           });
 
-          if (matchedLabel) {
+          if (finalLabel) {
             insertOrDedupeAlert({
               ts:          new Date().toISOString(),
-              ruleLabel:   matchedLabel,
-              severity,
+              ruleLabel:   finalLabel,
+              severity:    finalSeverity,
               spanId:      span.spanId,
               traceId,
               harness:     harness.id,
-              spanName:    span.name,
-              matchedText,
+              spanName:    scrubbedName,
+              matchedText: scrubbedMatched || '(honeytoken)',
             });
             alertsChanged = true;
             // Fire webhook asynchronously — don't block OTLP ingestion
             fireWebhook({
-              ruleLabel:   matchedLabel,
-              severity,
+              ruleLabel:   finalLabel,
+              severity:    finalSeverity,
               harness:     harness.id,
-              spanName:    span.name,
-              matchedText,
+              spanName:    scrubbedName,
+              matchedText: scrubbedMatched || '(honeytoken)',
               traceId,
             }).catch(() => {});
           }
@@ -1567,7 +1714,7 @@ async function startServer() {
       }
     });
 
-    io.emit('graph-update', buildGraph());
+    emitGraphUpdateThrottled();
     if (newSessions)   io.emit('sessions-update');
     if (alertsChanged) io.emit('alerts-update');
 
@@ -1802,12 +1949,19 @@ async function startServer() {
             upsertSession.run(span.traceId, `Import · ${new Date().toLocaleTimeString()}`, new Date().toISOString());
             newSessions = true;
           }
-          const attrs = typeof span.attributes === 'string' ? JSON.parse(span.attributes) : span.attributes;
-          const searchText = JSON.stringify(attrs) + ' ' + span.name;
-          const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
-          insertSpan.run({ ...span, severity, attributes: JSON.stringify(attrs) } satisfies SpanRecord);
-          if (matchedLabel) {
-            insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: span.name, matchedText });
+          const rawAttrs = typeof span.attributes === 'string' ? JSON.parse(span.attributes) : span.attributes;
+          const searchText = JSON.stringify(rawAttrs) + ' ' + span.name;
+          const hit = detectSeverity(searchText);
+          const { attrs, honeytokenHits } = scrubAttributes(rawAttrs, scrubOptions);
+          const scrubbedName    = scrubText(span.name, scrubOptions);
+          const scrubbedMatched = scrubText(hit.matchedText, scrubOptions);
+          const severity: Severity = honeytokenHits.length > 0 ? 'high' : hit.severity;
+          const label = honeytokenHits.length > 0
+            ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
+            : hit.matchedLabel;
+          insertSpan.run({ ...span, severity, name: scrubbedName, attributes: JSON.stringify(attrs) } satisfies SpanRecord);
+          if (label) {
+            insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: label, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: scrubbedName, matchedText: scrubbedMatched || '(honeytoken)' });
             alertsAdded++;
           }
           imported++;
@@ -1822,9 +1976,9 @@ async function startServer() {
         const harness = detectHarness(serviceName, sdkName);
         rs.scopeSpans?.forEach(ss => {
           ss.spans?.forEach(span => {
-            const attrs: Record<string, any> = {};
+            const rawAttrs: Record<string, any> = {};
             (span.attributes || []).forEach(attr => {
-              attrs[attr.key] = attr.value?.stringValue ?? attr.value?.intValue ?? attr.value?.boolValue ?? JSON.stringify(attr.value);
+              rawAttrs[attr.key] = attr.value?.stringValue ?? attr.value?.intValue ?? attr.value?.boolValue ?? JSON.stringify(attr.value);
             });
             const traceId  = span.traceId  || 'unknown';
             const parentId = span.parentSpanId || harness.id;
@@ -1832,11 +1986,18 @@ async function startServer() {
               upsertSession.run(traceId, `Import · ${new Date().toLocaleTimeString()}`, new Date().toISOString());
               newSessions = true;
             }
-            const searchText = JSON.stringify(attrs) + ' ' + span.name;
-            const { severity, matchedLabel, matchedText } = detectSeverity(searchText);
-            insertSpan.run({ spanId: span.spanId, traceId, parentId, name: span.name, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0') } satisfies SpanRecord);
-            if (matchedLabel) {
-              insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: matchedLabel, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: span.name, matchedText });
+            const searchText = JSON.stringify(rawAttrs) + ' ' + span.name;
+            const hit = detectSeverity(searchText);
+            const { attrs, honeytokenHits } = scrubAttributes(rawAttrs, scrubOptions);
+            const scrubbedName    = scrubText(span.name, scrubOptions);
+            const scrubbedMatched = scrubText(hit.matchedText, scrubOptions);
+            const severity: Severity = honeytokenHits.length > 0 ? 'high' : hit.severity;
+            const label = honeytokenHits.length > 0
+              ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
+              : hit.matchedLabel;
+            insertSpan.run({ spanId: span.spanId, traceId, parentId, name: scrubbedName, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0') } satisfies SpanRecord);
+            if (label) {
+              insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: label, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: scrubbedName, matchedText: scrubbedMatched || '(honeytoken)' });
               alertsAdded++;
             }
             imported++;
@@ -3535,6 +3696,113 @@ ${alerts.length > 0 ? `
     res.json({ exportedAt: new Date().toISOString(), query: q, count: spans.length, spans });
   });
 
+  // ── FTS5 full-text search over span name + attributes ──────────────────
+  // Backed by the existing spans_fts virtual table (kept in sync by trigger).
+  app.get('/api/search/fts', (req, res) => {
+    const raw   = String(req.query.q ?? '').trim();
+    const limit = Math.min(Math.max(1, Number(req.query.limit ?? 50)), 200);
+    if (raw.length < 2) {
+      res.json({ spans: [], total: 0, query: raw });
+      return;
+    }
+    // Escape FTS5 special characters; wrap each term as a prefix match.
+    const terms = raw.replace(/["']/g, ' ').split(/\s+/).filter(Boolean);
+    if (terms.length === 0) {
+      res.json({ spans: [], total: 0, query: raw });
+      return;
+    }
+    const ftsQuery = terms.map(t => `"${t}"*`).join(' ');
+    try {
+      const rows = db.prepare(`
+        SELECT s.*
+        FROM   spans_fts f
+        JOIN   spans s ON s.spanId = f.spanId
+        WHERE  spans_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      `).all(ftsQuery, limit) as SpanRecord[];
+      const total = (db.prepare(`
+        SELECT COUNT(*) as c FROM spans_fts WHERE spans_fts MATCH ?
+      `).get(ftsQuery) as { c: number }).c;
+      res.json({ spans: rows, total, query: raw });
+    } catch (err) {
+      res.status(400).json({ error: 'Invalid FTS query', detail: (err as Error).message });
+    }
+  });
+
+  // ── Match ranges — byte offsets of the first matching rule per span ────
+  // Lets the UI highlight exactly what triggered a severity flag instead of
+  // making the analyst re-scan the whole attributes blob.
+  app.get('/api/spans/:spanId/match', (req, res) => {
+    const row = db.prepare('SELECT * FROM spans WHERE spanId = ?').get(req.params.spanId) as SpanRecord | undefined;
+    if (!row) {
+      res.status(404).json({ error: 'span not found' });
+      return;
+    }
+    const searchText = row.attributes + ' ' + row.name;
+    const hit = detectSeverity(searchText);
+    res.json({
+      spanId:       row.spanId,
+      severity:     hit.severity,
+      matchedLabel: hit.matchedLabel,
+      matchedText:  hit.matchedText,
+      matchStart:   hit.matchStart,
+      matchEnd:     hit.matchEnd,
+      ruleKey:      hit.ruleKey,
+    });
+  });
+
+  // ── Honeytokens ────────────────────────────────────────────────────────
+  // Operator-planted canary strings that should never appear in legitimate
+  // telemetry.  Any match fires a HIGH-severity "Honeytoken exfiltration"
+  // alert regardless of other rules.
+  app.get('/api/honeytokens', (_req, res) => {
+    const tokens = loadHoneytokens();
+    res.json({
+      tokens: tokens.map(t => ({
+        preview:  t.slice(0, 4) + '***' + t.slice(-2),
+        length:   t.length,
+      })),
+      count: tokens.length,
+      envOverride: !!process.env.CLAUDESEC_HONEYTOKENS,
+    });
+  });
+
+  app.post('/api/honeytokens', (req, res) => {
+    if (process.env.CLAUDESEC_HONEYTOKENS) {
+      res.status(409).json({ error: 'CLAUDESEC_HONEYTOKENS env var is set — remove it to manage via API' });
+      return;
+    }
+    const { tokens } = req.body as { tokens?: string[] };
+    if (!Array.isArray(tokens)) {
+      res.status(400).json({ error: 'tokens must be an array of strings' });
+      return;
+    }
+    const clean = tokens.filter((t): t is string => typeof t === 'string' && t.trim().length >= 6);
+    saveHoneytokens(clean);
+    res.json({ status: 'ok', count: clean.length });
+  });
+
+  app.delete('/api/honeytokens', (_req, res) => {
+    if (process.env.CLAUDESEC_HONEYTOKENS) {
+      res.status(409).json({ error: 'CLAUDESEC_HONEYTOKENS env var is set — unset it instead' });
+      return;
+    }
+    delConfig.run('honeytokens');
+    scrubOptions = loadScrubOptions([]);
+    res.json({ status: 'ok' });
+  });
+
+  // ── Scrub status (read-only) ───────────────────────────────────────────
+  app.get('/api/scrub', (_req, res) => {
+    res.json({
+      enabled:     scrubOptions.enabled,
+      envOverride: process.env.CLAUDESEC_DISABLE_SCRUB === '1',
+      honeytokens: loadHoneytokens().length,
+      description: 'Inline redaction of /Users/<n>, /home/<n>, C:\\Users\\<n>, $HOME, OS username, email local-parts, and sensitive attribute keys (authorization, token, secret, password, …). Preserves the OTLP attribute shape so downstream dashboards and FTS search keep working.',
+    });
+  });
+
   // ── Webhook delivery log (s56) ────────────────────────────────────────────
 
   app.get('/api/webhook-deliveries', (req, res) => {
@@ -3834,6 +4102,7 @@ ${alerts.length > 0 ? `
       VALUES (?, ?, ?, ?)
     `).run(ruleKey.trim(), suppressUntil, (reason ?? '').trim(), new Date().toISOString());
     const row = db.prepare('SELECT * FROM suppressions WHERE id = ?').get(result.lastInsertRowid);
+    invalidateSuppressedCache();
     io.emit('rules-update');
     res.status(201).json(row);
   });
@@ -3841,6 +4110,7 @@ ${alerts.length > 0 ? `
   app.delete('/api/suppressions/:id', (req, res) => {
     const changes = db.prepare('DELETE FROM suppressions WHERE id = ?').run(Number(req.params.id)).changes;
     if (!changes) return res.status(404).json({ error: 'suppression not found' }) as any;
+    invalidateSuppressedCache();
     io.emit('rules-update');
     res.json({ status: 'ok' });
   });
