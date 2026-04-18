@@ -62,7 +62,7 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
+    "@vitejs/plugin-react": "^6.0.1",
     "@xyflow/react": "^12.10.2",
     "better-sqlite3": "^12.8.0",
     "body-parser": "^2.2.2",
