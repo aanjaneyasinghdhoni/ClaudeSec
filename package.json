@@ -64,7 +64,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "@xyflow/react": "^12.10.2",
-    "better-sqlite3": "^12.8.0",
+    "better-sqlite3": "^12.9.0",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
