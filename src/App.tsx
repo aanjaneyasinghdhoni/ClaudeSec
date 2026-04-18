@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  ReactFlow, Controls, Background, useNodesState, useEdgesState,
-  addEdge, Panel, MarkerType, type Node, type Edge,
+  useNodesState, useEdgesState,
+  addEdge, type Node, type Edge,
 } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import {
@@ -21,14 +21,11 @@ import { ActivitySparkline } from './Sparkline';
 import { SettingsTab } from './SettingsTab';
 import { HarnessTab } from './HarnessTab';
 import { HeatmapTab } from './HeatmapTab';
-import { GraphSearch } from './GraphSearch';
-import { SpanAttributes } from './SpanAttributes';
-import { GraphReplay, type ReplayState } from './GraphReplay';
+import { type ReplayState } from './GraphReplay';
 import { ComparePanel } from './ComparePanel';
 import { SearchTab } from './SearchTab';
 import { ProcessesTab } from './ProcessesTab';
 import { BookmarksTab } from './BookmarksTab';
-import { SessionsTable } from './SessionsTable';
 import { WelcomeScreen } from './WelcomeScreen';
 import { LiveActivityPanel } from './LiveActivityPanel';
 import { motion, AnimatePresence } from 'motion/react';
@@ -242,7 +239,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'sessions' | 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
+type Tab        = 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
 
 interface Workflow {
   id: string;
@@ -524,7 +521,7 @@ export default function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   // ── UI state ──────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab]           = useState<Tab>('sessions');
+  const [activeTab, setActiveTab]           = useState<Tab>('timeline');
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
   const [layoutMode, setLayoutMode]         = useState<LayoutMode>('radial');
 
@@ -1087,17 +1084,6 @@ export default function App() {
     }));
   }, [nodes, graphSearchMatchIds, graphSearchIdx, graphSearchQuery, replay.active, replay.currentStep, allSpansSorted]);
 
-  // Keyboard shortcut: Ctrl/Cmd+F opens graph search
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && activeTab === 'graph') {
-        e.preventDefault();
-        setGraphSearchOpen(true);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [activeTab]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1704,8 +1690,6 @@ export default function App() {
             background: 'var(--cs-bg-surface)',
           }}>
             {([
-              { id: 'sessions' as Tab, icon: <Layers className="w-3.5 h-3.5" />, label: 'Sessions' },
-              { id: 'graph' as Tab, icon: <Activity className="w-3.5 h-3.5" />, label: 'Graph' },
               { id: 'timeline' as Tab, icon: <Clock className="w-3.5 h-3.5" />, label: 'Timeline' },
               { id: 'orchestration' as Tab, icon: <Cpu className="w-3.5 h-3.5" />, label: 'Orchestration' },
               { id: 'alerts' as Tab, icon: <AlertTriangle className="w-3.5 h-3.5" />, label: 'Alerts', badge: alertCount },
@@ -1749,469 +1733,7 @@ export default function App() {
             </button>
           </div>
 
-          {activeTab === 'sessions' && (
-            <main className="flex-1 relative min-h-0" style={{ height: '100%' }}>
-              <SessionsTable
-                sessions={sessions}
-                onOpenGraph={(traceId) => {
-                  setActiveSession(traceId);
-                  setActiveTab('graph');
-                }}
-                onPin={async (traceId, pinned) => {
-                  await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pinned }),
-                  });
-                  fetchSessions();
-                }}
-                onRename={async (traceId, name) => {
-                  await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name }),
-                  });
-                  fetchSessions();
-                }}
-                onDelete={async (traceId) => {
-                  await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, { method: 'DELETE' });
-                  fetchSessions();
-                }}
-              />
-            </main>
-          )}
 
-          {/* Graph view */}
-          {activeTab === 'graph' && (
-            <main className="flex-1 relative min-h-0" style={{ height: '100%', background: 'var(--cs-bg-primary)' }}>
-              {activeSession && (
-                <div className="absolute top-3 left-3 z-30">
-                  <button
-                    onClick={() => { setActiveTab('sessions'); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg backdrop-blur-md transition-all hover:scale-105"
-                    style={{
-                      background: 'color-mix(in srgb, var(--cs-bg-surface) 85%, transparent)',
-                      border: '1px solid var(--cs-border)',
-                      color: '#00d4aa',
-                    }}
-                  >
-                    <span style={{ fontSize: '14px' }}>&larr;</span> Sessions
-                  </button>
-                </div>
-              )}
-              <ReactFlow
-                nodes={displayNodes} edges={edges}
-                onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-                onConnect={onConnect} onNodeClick={onNodeClick}
-                onlyRenderVisibleElements
-                fitView colorMode={theme === 'light' ? 'light' : 'dark'}
-                defaultEdgeOptions={{
-                  type: layoutMode === 'radial' ? 'smoothstep' : 'default',
-                  markerEnd: { type: MarkerType.ArrowClosed, color: '#00d4aa', width: 16, height: 16 },
-                  style: { stroke: '#1c1e2a', strokeWidth: 2 },
-                  animated: true,
-                }}
-                proOptions={{ hideAttribution: true }}
-                minZoom={0.1}
-                maxZoom={4}
-              >
-                <Background color="var(--cs-svg-grid)" gap={24} size={1} />
-                <Controls className="bg-slate-800 border-slate-700 fill-slate-300" />
-                <GraphSearch
-                  query={graphSearchQuery} setQuery={setGraphSearchQuery}
-                  open={graphSearchOpen} setOpen={o => { setGraphSearchOpen(o); if (!o) setGraphSearchQuery(''); }}
-                  matchIds={graphSearchMatchIds} matchIndex={graphSearchIdx} setMatchIndex={setGraphSearchIdx}
-                />
-                <GraphReplay
-                  replay={replay}
-                  onPlay={handleReplayPlay}
-                  onPause={handleReplayPause}
-                  onRestart={handleReplayRestart}
-                  onStop={handleReplayStop}
-                  onSetSpeed={handleReplaySetSpeed}
-                  onScrub={handleReplayScrub}
-                />
-                <Panel position="top-right" className="backdrop-blur-md p-3 rounded-xl shadow-2xl" style={{
-                  background: 'color-mix(in srgb, var(--cs-bg-surface) 85%, transparent)',
-                  border: '1px solid var(--cs-border)',
-                }}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <Activity className="w-3.5 h-3.5" style={{ color: '#00d4aa' }} />
-                    <h3 className="text-xs font-bold font-display flex-1">Stats</h3>
-                    {/* Layout toggle */}
-                    <div className="flex items-center rounded-md overflow-hidden" style={{ border: '1px solid var(--cs-border)' }}>
-                      <button
-                        onClick={() => {
-                          setLayoutMode('radial');
-                          fetch(activeSession ? `/api/graph?session=${encodeURIComponent(activeSession)}` : '/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
-                            setNodes(applyLayout(n, e, 'radial'));
-                            setEdges(e);
-                          });
-                        }}
-                        className="px-1.5 py-0.5 text-[10px] font-medium transition-all"
-                        style={layoutMode === 'radial'
-                          ? { background: 'rgba(0,212,170,0.15)', color: '#00d4aa' }
-                          : { color: 'var(--cs-text-faint)' }
-                        }
-                        title="Radial layout"
-                      >Radial</button>
-                      <button
-                        onClick={() => {
-                          setLayoutMode('dagre');
-                          fetch(activeSession ? `/api/graph?session=${encodeURIComponent(activeSession)}` : '/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
-                            setNodes(applyLayout(n, e, 'dagre'));
-                            setEdges(e);
-                          });
-                        }}
-                        className="px-1.5 py-0.5 text-[10px] font-medium transition-all"
-                        style={layoutMode === 'dagre'
-                          ? { background: 'rgba(0,212,170,0.15)', color: '#00d4aa' }
-                          : { color: 'var(--cs-text-faint)' }
-                        }
-                        title="Tree layout"
-                      >Tree</button>
-                    </div>
-                    <button
-                      onClick={() => setGraphSearchOpen(true)}
-                      title="Search nodes (Ctrl+F)"
-                      className="p-0.5 rounded hover:bg-slate-700 text-slate-500 hover:text-slate-300"
-                    >
-                      <Search className="w-3.5 h-3.5" />
-                    </button>
-                    {!replay.active && allSpansSorted.length > 0 && (
-                      <button
-                        onClick={startReplay}
-                        title="Replay spans in chronological order"
-                        className="p-0.5 rounded hover:bg-slate-700 text-slate-500 hover:text-blue-400 transition-colors"
-                      >
-                        <Play className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                    <div>
-                      <p className="text-[11px] text-slate-500 uppercase font-bold">Nodes</p>
-                      <p className="text-lg font-mono font-bold">{nodes.length}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-slate-500 uppercase font-bold">Edges</p>
-                      <p className="text-lg font-mono font-bold">{edges.length}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-slate-500 uppercase font-bold">Threats</p>
-                      <p className={`text-lg font-mono font-bold ${counts.high > 0 ? 'text-red-400' : counts.medium > 0 ? 'text-orange-400' : 'text-slate-400'}`}>
-                        {counts.low + counts.medium + counts.high}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-slate-500 uppercase font-bold">Clean</p>
-                      <p className="text-lg font-mono font-bold text-green-400">{counts.ok}</p>
-                    </div>
-                  </div>
-                  {(metrics.tokenIn > 0 || metrics.tokenOut > 0) && (
-                    <div className="border-t border-slate-700 mt-2 pt-2 space-y-1">
-                      <p className="text-[11px] text-slate-500 uppercase font-bold flex items-center gap-1">
-                        <Zap className="w-2.5 h-2.5" /> Tokens
-                      </p>
-                      <div className="flex gap-3">
-                        <div>
-                          <p className="text-[11px] text-slate-600">In</p>
-                          <p className="text-sm font-mono font-bold text-blue-400">{metrics.tokenIn.toLocaleString()}</p>
-                        </div>
-                        <div>
-                          <p className="text-[11px] text-slate-600">Out</p>
-                          <p className="text-sm font-mono font-bold text-purple-400">{metrics.tokenOut.toLocaleString()}</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  {metrics.toolCalls > 0 && (
-                    <div className="mt-1">
-                      <p className="text-[11px] text-slate-500 uppercase font-bold">Tool Calls</p>
-                      <p className="text-lg font-mono font-bold text-cyan-400">{metrics.toolCalls}</p>
-                    </div>
-                  )}
-                  {metrics.avgMs > 0 && (
-                    <div className="mt-1">
-                      <p className="text-[11px] text-slate-500 uppercase font-bold">Avg Latency</p>
-                      <p className="text-lg font-mono font-bold text-green-400">{metrics.avgMs}ms</p>
-                    </div>
-                  )}
-                </Panel>
-              </ReactFlow>
-
-              {/* Detail panel */}
-              <AnimatePresence>
-                {selectedNode && (
-                  <motion.div
-                    initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
-                    transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                    className="absolute top-0 right-0 h-full z-20 p-5 overflow-y-auto"
-                    style={{
-                      width: '320px',
-                      background: 'var(--cs-bg-surface)',
-                      borderLeft: '1px solid var(--cs-border)',
-                      boxShadow: '-20px 0 60px rgba(0,0,0,0.4)',
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-5">
-                      <h3 className="font-display font-bold text-sm">Span Details</h3>
-                      <div className="flex items-center gap-1">
-                        {/* Bookmark toggle */}
-                        <button
-                          onClick={async () => {
-                            if (!selectedNode) return;
-                            if (isBookmarked) {
-                              await fetch(`/api/bookmarks/span/${encodeURIComponent(selectedNode.id)}`, { method: 'DELETE' });
-                              setIsBookmarked(false);
-                            } else {
-                              await fetch('/api/bookmarks', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  spanId: selectedNode.id,
-                                  traceId: (selectedNode.data as any).traceId ?? '',
-                                }),
-                              });
-                              setIsBookmarked(true);
-                            }
-                          }}
-                          className={`p-1.5 rounded-md transition-colors ${
-                            isBookmarked
-                              ? 'bg-yellow-900/40 text-yellow-400 hover:bg-yellow-900/60'
-                              : 'hover:bg-slate-800 text-slate-500 hover:text-yellow-400'
-                          }`}
-                          title={isBookmarked ? 'Remove bookmark' : 'Bookmark this span'}
-                        >
-                          <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-yellow-400' : ''}`} />
-                        </button>
-                        <button onClick={() => setSelectedNode(null)} className="p-1 hover:bg-slate-800 rounded-md text-slate-500">
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3">
-                      <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                        <p className="text-xs text-slate-500 uppercase font-bold mb-1">Span Name</p>
-                        <p className="text-sm font-mono font-bold text-blue-400">{String(selectedNode.data.label)}</p>
-                      </div>
-
-                      {/* Threat alert */}
-                      {(selectedNode.data as any).severity && (selectedNode.data as any).severity !== 'none' && (
-                        <div className={`p-3 rounded-xl border ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].row}`}>
-                          <div className="flex items-center gap-2 mb-1">
-                            <AlertTriangle className={`w-3.5 h-3.5 ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].icon}`} />
-                            <p className={`text-xs font-bold uppercase ${SEVERITY_COLORS[(selectedNode.data as any).severity as Severity].icon}`}>
-                              {SEVERITY_LABEL[(selectedNode.data as any).severity as Severity]} Severity Alert
-                            </p>
-                          </div>
-                          {(selectedNode.data as any).attributes?.['claudesec.threat.rule'] && (
-                            <p className="text-[11px] text-slate-300 font-mono mt-1">
-                              Rule: {(selectedNode.data as any).attributes['claudesec.threat.rule']}
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Harness */}
-                      {(selectedNode.data as any).harness && (
-                        <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                          <p className="text-xs text-slate-500 uppercase font-bold mb-1.5">Agent Harness</p>
-                          <div className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: HARNESS_COLORS[(selectedNode.data as any).harness] ?? '#64748b' }} />
-                            <p className="text-sm font-mono text-slate-200">
-                              {HARNESS_NAMES[(selectedNode.data as any).harness] ?? 'Unknown'}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Session */}
-                      {(selectedNode.data as any).traceId && (
-                        <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                          <p className="text-xs text-slate-500 uppercase font-bold mb-1">Session</p>
-                          <p className="text-xs font-mono text-slate-300 truncate">
-                            {sessions.find(s => s.traceId === (selectedNode.data as any).traceId)?.name
-                              ?? (selectedNode.data as any).traceId}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Duration */}
-                      {(selectedNode.data as any).startNano && (selectedNode.data as any).startNano !== '0' && (
-                        <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                          <p className="text-xs text-slate-500 uppercase font-bold mb-1">Duration</p>
-                          <p className="text-sm font-mono font-bold text-cyan-400">
-                            {formatDuration((selectedNode.data as any).startNano, (selectedNode.data as any).endNano)}
-                          </p>
-                        </div>
-                      )}
-
-                      <div>
-                        <p className="text-xs text-slate-500 uppercase font-bold mb-2">Protocol & Reason</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          <span className="px-2 py-1 bg-slate-800 rounded text-xs font-mono border border-slate-700">
-                            {String((selectedNode.data as any).protocol ?? 'HTTPS')}
-                          </span>
-                          <span className="px-2 py-1 bg-slate-800 rounded text-xs font-mono border border-slate-700">
-                            {String((selectedNode.data as any).reason ?? '—')}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <p className="text-xs text-slate-500 uppercase font-bold mb-2">Attributes</p>
-                        <SpanAttributes attrs={(selectedNode.data as any).attributes || {}} />
-                      </div>
-
-                      {/* Span Tags */}
-                      <div className="border-t border-slate-800 pt-3">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-xs text-slate-500 uppercase font-bold flex items-center gap-1.5">
-                            <Zap className="w-3 h-3" /> Tags ({spanTags.length})
-                          </p>
-                          <button
-                            onClick={() => setShowTagInput(v => !v)}
-                            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
-                          >
-                            {showTagInput ? 'Cancel' : '+ Add'}
-                          </button>
-                        </div>
-                        <div className="flex flex-wrap gap-1 mb-2">
-                          {spanTags.map(tag => (
-                            <span
-                              key={tag}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-900/30 border border-blue-700/30 rounded-full text-xs text-blue-300 font-mono group"
-                            >
-                              {tag}
-                              <button
-                                onClick={async () => {
-                                  await fetch(`/api/spans/${encodeURIComponent(selectedNode!.id)}/tags/${encodeURIComponent(tag)}`, { method: 'DELETE' });
-                                  setSpanTags(prev => prev.filter(t => t !== tag));
-                                }}
-                                className="opacity-0 group-hover:opacity-100 text-blue-500 hover:text-red-400 transition-all ml-0.5"
-                                title={`Remove tag "${tag}"`}
-                              >
-                                ×
-                              </button>
-                            </span>
-                          ))}
-                          {spanTags.length === 0 && !showTagInput && (
-                            <span className="text-xs text-slate-700">No tags yet</span>
-                          )}
-                        </div>
-                        {showTagInput && (
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              value={tagInput}
-                              onChange={e => setTagInput(e.target.value)}
-                              onKeyDown={async e => {
-                                if (e.key === 'Enter' && tagInput.trim()) {
-                                  e.preventDefault();
-                                  setTagAdding(true);
-                                  const res = await fetch(`/api/spans/${encodeURIComponent(selectedNode!.id)}/tags`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tag: tagInput.trim() }),
-                                  });
-                                  if (res.ok) {
-                                    const { tag: saved } = await res.json();
-                                    setSpanTags(prev => [...prev.filter(t => t !== saved), saved]);
-                                    setTagInput('');
-                                    setShowTagInput(false);
-                                  }
-                                  setTagAdding(false);
-                                }
-                              }}
-                              placeholder="tag name (Enter to add)"
-                              className="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/50"
-                            />
-                            <button
-                              disabled={!tagInput.trim() || tagAdding}
-                              onClick={async () => {
-                                if (!tagInput.trim()) return;
-                                setTagAdding(true);
-                                const res = await fetch(`/api/spans/${encodeURIComponent(selectedNode!.id)}/tags`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ tag: tagInput.trim() }),
-                                });
-                                if (res.ok) {
-                                  const { tag: saved } = await res.json();
-                                  setSpanTags(prev => [...prev.filter(t => t !== saved), saved]);
-                                  setTagInput('');
-                                  setShowTagInput(false);
-                                }
-                                setTagAdding(false);
-                              }}
-                              className="px-2 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded text-[11px] text-white"
-                            >
-                              {tagAdding ? '…' : 'Add'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Annotations */}
-                      <div className="border-t border-slate-800 pt-3">
-                        <p className="text-xs text-slate-500 uppercase font-bold mb-2 flex items-center gap-1.5">
-                          <StickyNote className="w-3 h-3" /> Notes ({annotations.length})
-                        </p>
-                        {annotations.length > 0 && (
-                          <div className="space-y-1.5 mb-2">
-                            {annotations.map(a => (
-                              <div key={a.id} className="p-2 bg-slate-800/60 rounded border border-slate-700 group">
-                                <p className="text-[11px] text-slate-200 break-words leading-relaxed">{a.text}</p>
-                                <div className="flex items-center justify-between mt-1">
-                                  <p className="text-[11px] text-slate-600 font-mono">{a.author} · {new Date(a.createdAt).toLocaleTimeString()}</p>
-                                  <button
-                                    onClick={() => fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/annotations/${a.id}`, { method: 'DELETE' })
-                                      .then(() => setAnnotations(prev => prev.filter(x => x.id !== a.id)))}
-                                    className="hidden group-hover:block text-[11px] text-red-400 hover:text-red-300"
-                                  >✕</button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <div className="flex gap-1.5">
-                          <textarea
-                            value={annotationText}
-                            onChange={e => setAnnotationText(e.target.value)}
-                            placeholder="Add investigation note…"
-                            rows={2}
-                            className="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500/50"
-                          />
-                          <button
-                            disabled={!annotationText.trim() || annotationSaving}
-                            onClick={async () => {
-                              if (!annotationText.trim()) return;
-                              setAnnotationSaving(true);
-                              try {
-                                const res = await fetch(`/api/spans/${encodeURIComponent(selectedNode.id)}/annotations`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ text: annotationText.trim() }),
-                                });
-                                const newA = await res.json();
-                                setAnnotations(prev => [...prev, newA]);
-                                setAnnotationText('');
-                              } finally { setAnnotationSaving(false); }
-                            }}
-                            className="px-2 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded text-xs text-white font-medium"
-                          >
-                            {annotationSaving ? '…' : 'Add'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </main>
-          )}
 
           {/* Timeline view */}
           {activeTab === 'timeline' && (
@@ -2237,7 +1759,7 @@ export default function App() {
           {/* Harnesses view */}
           {activeTab === 'harnesses' && (
             <HarnessTab
-              onFilterHarness={h => { setHarnessFilter(h); if (h) setActiveTab('graph'); }}
+              onFilterHarness={h => { setHarnessFilter(h); if (h) setActiveTab('timeline'); }}
               activeFilter={harnessFilter}
             />
           )}
@@ -2256,7 +1778,7 @@ export default function App() {
             <ProcessesTab
               onSelectSession={traceId => {
                 setActiveSession(traceId);
-                setActiveTab('graph');
+                setActiveTab('timeline');
               }}
             />
           )}
@@ -2266,7 +1788,7 @@ export default function App() {
             <BookmarksTab
               onSelectSession={traceId => {
                 setActiveSession(traceId);
-                setActiveTab('graph');
+                setActiveTab('timeline');
               }}
             />
           )}
