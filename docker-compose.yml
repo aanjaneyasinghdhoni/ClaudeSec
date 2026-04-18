@@ -6,7 +6,7 @@ services:
     image: claudesec:latest
     container_name: claudesec
     ports:
-      - "${PORT:-3000}:3000"
+      - "127.0.0.1:${PORT:-3000}:3000"
     volumes:
       # Persist the SQLite database outside the container
       - claudesec-data:/data
@@ -15,6 +15,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      CLAUDESEC_HOST: 0.0.0.0
       # Webhook (optional — set in .env or shell)
       CLAUDESEC_WEBHOOK_URL: ${CLAUDESEC_WEBHOOK_URL:-}
       CLAUDESEC_WEBHOOK_THRESHOLD: ${CLAUDESEC_WEBHOOK_THRESHOLD:-high}

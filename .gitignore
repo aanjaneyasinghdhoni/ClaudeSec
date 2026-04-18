@@ -18,6 +18,12 @@ plan.html
 # Local-only: audits, specs, plans, and internal analysis
 # These contain security details, private context, or strategic decisions — never commit
 docs/superpowers/
+docs/**/*development-flow*.md
+docs/**/*development-flow*.mdx
+docs/**/*dev-flow*.md
+docs/**/*dev-flow*.mdx
+docs/**/*flow.local.md
+docs/**/*flow.local.mdx
 audits/
 specs/
 plans/

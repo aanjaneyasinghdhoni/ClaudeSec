@@ -12,7 +12,6 @@ import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
 import { detectHarness, HARNESSES } from './src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
-import { requireAuth, getConfiguredToken } from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1515,20 +1514,6 @@ async function startServer() {
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
   app.use(cors({ origin: corsOrigins }));
   app.use(bodyParser.json({ limit: '10mb' }));
-
-  // ── Optional bearer-token auth ──────────────────────────────────────────
-  // Takes effect only when CLAUDESEC_API_TOKEN is set.  Always-public routes:
-  //  * All GETs (dashboard reads, Prometheus scrapes, health checks)
-  //  * POST /v1/traces (OTLP ingest — already rate-limited, agents need access)
-  // Everything else (mutating API, MCP, reset, kill-switch, webhooks) is
-  // gated behind Authorization: Bearer <token>.
-  const PUBLIC_NON_GET = new Set<string>(['/v1/traces']);
-  app.use((req, res, next) => {
-    if (!getConfiguredToken())          return next();
-    if (req.method === 'GET')           return next();
-    if (PUBLIC_NON_GET.has(req.path))   return next();
-    return requireAuth(req, res, next);
-  });
 
   // ── Graph-broadcast throttle ────────────────────────────────────────────
   // Coalesce full-graph broadcasts to at most one every 250ms.  High-volume

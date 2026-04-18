@@ -15,15 +15,10 @@ ClaudeSec is local-first and runs as a single Express server. If you run it on a
 
 ## Authentication
 
-Authentication is **optional**.
+ClaudeSec is intentionally **local-only and unauthenticated**.
 
-- If `CLAUDESEC_API_TOKEN` is **not** set: all routes are open.
-- If `CLAUDESEC_API_TOKEN` **is** set: all non-GET routes require `Authorization: Bearer <token>`, except `POST /v1/traces` (kept public for OTLP ingestion).
-
-### Public routes when token auth is enabled
-
-1. All `GET` routes (`/api/*`, `/metrics`, static assets)
-2. `POST /v1/traces`
+All routes are open on the local instance. Keep the service bound to loopback
+or behind a private network boundary if you deploy it in containerized setups.
 
 ---
 

@@ -33,8 +33,23 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "files": [
+    ".env.example",
+    "CHANGELOG.md",
+    "Dockerfile",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "openapi.yaml",
+    "server.ts",
+    "scrub.ts",
+    "cli/init.ts",
+    "cli/init.mjs",
+    "src/harnesses.ts",
+    "dist"
+  ],
   "bin": {
-    "claudesec": "./cli/init.ts"
+    "claudesec": "./cli/init.mjs"
   },
   "scripts": {
     "dev": "tsx server.ts",
@@ -61,7 +76,8 @@
     "react-dom": "^19.0.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "vite": "^6.2.0"
+    "tsx": "^4.21.0",
+    "vite": "^6.4.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -71,8 +87,7 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.4.2"
   }
 }

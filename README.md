@@ -117,6 +117,8 @@ All harnesses use the same OTLP HTTP/JSON wire format. Set the endpoint to `http
 
 All configuration is via optional environment variables — see `.env.example` for defaults. A few are worth calling out:
 
+ClaudeSec is intentionally local-first and unauthenticated. Keep it on loopback/private networks.
+
 ### Privacy — attribute scrubbing (default: **ON**)
 
 ClaudeSec inline-redacts personal / machine-specific information from span attributes before persisting, broadcasting, or exporting them. The OTLP attribute **shape** is preserved, so every harness and downstream collector (Jaeger, Tempo, Honeycomb, DataDog, …) keeps working unchanged. What gets redacted:
@@ -138,14 +140,6 @@ export CLAUDESEC_HONEYTOKENS='aws-prod-key-DO-NOT-LEAK,CanaryDB-SensitiveRow-42'
 ```
 
 Or manage them at runtime via `POST /api/honeytokens` (body: `{ "tokens": ["..."] }`).
-
-### Optional API authentication
-
-```bash
-export CLAUDESEC_API_TOKEN=$(openssl rand -hex 32)
-```
-
-When set, all mutating routes (POST / PATCH / DELETE, `/mcp`, process kill switch, webhook management) require `Authorization: Bearer <token>`. Read routes, `/api/health`, `/metrics`, and OTLP ingest (`/v1/traces`) remain public.
 
 ### Other useful vars
 
