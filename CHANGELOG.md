@@ -5,6 +5,17 @@ All notable changes to ClaudeSec are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-04-18
+
+### Removed
+- **Graph tab** — the ReactFlow interactive span graph has been removed from the dashboard UI for performance. With 5+ agents running, rendering thousands of nodes caused severe browser lag. The graph API endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available for programmatic access and external visualization tools.
+
+### Changed
+- Default landing tab changed from Graph to **Timeline**
+- Architecture documentation updated to reflect the streamlined dashboard
+
+---
+
 ## [1.0.0] — 2026-04-07
 
 First production-ready release. Complete local AI agent observatory with multi-harness
@@ -16,19 +27,18 @@ OTLP ingestion, real-time threat detection, and interactive visualization.
 - Express + Socket.io backend (`server.ts`) with OTLP/HTTP JSON ingestion at `POST /v1/traces`
 - SQLite persistence via `better-sqlite3` (spans, sessions, alerts, config tables)
 - Vite 6 + React 19 + Tailwind CSS 4 frontend
-- Auto-layout via Dagre for the interactive ReactFlow span graph
+- Auto-layout via Dagre for the graph API (headless, no UI tab)
 - Two-process dev mode: Vite HMR proxied through the Express server
 
 #### Multi-Harness Support
 - Harness detection registry (`src/harnesses.ts`) covering 14 agent frameworks:
   Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Cline, Goose, Continue.dev, Windsurf, Codex CLI, Amazon Q Developer, Gemini CLI, Roo-Code, and Bolt.new
 - Automatic harness identification from `service.name` / `telemetry.sdk.name` resource attributes
-- Per-harness colored root nodes in the graph
+- Per-harness colored indicators in the dashboard
 - Interactive CLI setup wizard (`npx claudesec init` / `npm run init`)
 
 #### Observatory Features
-- Live span graph with ReactFlow — nodes color-coded by threat severity
-- Gantt-style timeline view with BigInt nanosecond precision
+- Gantt-style timeline view with BigInt nanosecond precision (default landing view)
 - Session isolation: each traceId becomes a named session with inline rename
 - Span search with `key=value` attribute filter syntax
 - Severity filter chips (All / Normal / Malicious)

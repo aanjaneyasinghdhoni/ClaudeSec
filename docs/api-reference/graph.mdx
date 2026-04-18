@@ -1,6 +1,6 @@
 ---
 title: "Graph API"
-description: "GET /api/graph — retrieve ReactFlow-compatible graph data for visualization."
+description: "GET /api/graph — retrieve span dependency graph data for programmatic access and external visualization tools."
 ---
 
 ## Endpoint
@@ -10,7 +10,7 @@ GET /api/graph
 GET /api/graph?session={traceId}
 ```
 
-Returns node and edge data in [React Flow](https://reactflow.dev) format, ready to render in the frontend graph canvas. Dagre layout positions are applied server-side before the response is sent.
+Returns node and edge data with Dagre-computed layout positions. This is a headless API endpoint — there is no graph tab in the dashboard UI. Use this endpoint for programmatic access, custom integrations, or to feed data into external visualization tools.
 
 ---
 

@@ -5,16 +5,15 @@
 [![npm version](https://img.shields.io/npm/v/claudesec.svg)](https://www.npmjs.com/package/claudesec)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
 
-**Real-time local observatory and security visualizer for AI agent telemetry.**
+**Real-time local observatory and security dashboard for AI agent telemetry.**
 
-ClaudeSec ingests OpenTelemetry traces from any AI agent harness — Claude Code, Copilot, Cursor, Aider, and more — and surfaces suspicious activity as an interactive graph. Built for developers running local AI agents who need visibility into what those agents are actually doing.
+ClaudeSec ingests OpenTelemetry traces from any AI agent harness — Claude Code, Copilot, Cursor, Aider, and more — and surfaces suspicious activity through a purpose-built security dashboard. Built for developers running local AI agents who need visibility into what those agents are actually doing.
 
 ---
 
 ## Features
 
-- **Live graph** — ReactFlow node graph, color-coded by threat severity, Dagre auto-layout. Watch spans appear in real time as your agent works.
-- **Timeline** — Gantt-style span timeline with BigInt nanosecond precision. Zoom into exactly when each tool call happened.
+- **Timeline** — Gantt-style span timeline with BigInt nanosecond precision. Zoom into exactly when each tool call happened. Default landing view.
 - **Orchestration** — Agent DAG showing inter-agent edges, sub-agent spawn trees across traces, and a tool inventory heatmap (tool x harness matrix).
 - **Alerts** — Immutable threat alert log with severity filtering, deduplication, triage (dismiss/false-positive), and JSON export.
 - **Rules engine** — 183 built-in regex rules (HIGH / MEDIUM / LOW) plus a custom rule CRUD UI with a live tester. Rules persist to `rules.json`.
@@ -31,7 +30,7 @@ ClaudeSec ingests OpenTelemetry traces from any AI agent harness — Claude Code
 - **Span bookmarks** — Save interesting spans for later review.
 - **Span tags & annotations** — Add custom metadata to any span.
 - **Session labels & notes** — Organize sessions with labels (normal, incident, investigation, automated) and free-text notes.
-- **Graph export** — Export the span graph as Mermaid or Graphviz DOT format.
+- **Graph export API** — Export the span dependency graph as Mermaid or Graphviz DOT format via `GET /api/graph/mermaid` and `GET /api/graph/dot`.
 - **Command audit log** — Track which commands agents have executed.
 - **Welcome screen** — First-run onboarding with a demo simulator that injects 3 realistic sessions (`POST /api/simulate`).
 - **Setup wizard** — `npx claudesec init` interactive CLI prints copy-paste env var commands for your harness.
@@ -188,10 +187,9 @@ server.ts (Express + Socket.io)
    +-- Auto-export  (hourly JSON snapshots)
    |
    v
-App.tsx (React 19 + ReactFlow)
+App.tsx (React 19 + Tailwind CSS 4)
    |
-   +-- Graph tab        (live node graph)
-   +-- Timeline tab     (Gantt, nanosecond precision)
+   +-- Timeline tab     (Gantt, nanosecond precision — default view)
    +-- Orchestration    (agent DAG + tool heatmap)
    +-- Alerts tab       (immutable detection log with triage)
    +-- Rules tab        (183 built-in + custom rules + suppressions)
@@ -200,7 +198,7 @@ App.tsx (React 19 + ReactFlow)
    +-- Bookmarks tab    (saved spans)
 ```
 
-**Tech stack:** Express + Socket.io + better-sqlite3 · React 19 + @xyflow/react + Tailwind CSS 4 · Vite 6 · TypeScript
+**Tech stack:** Express + Socket.io + better-sqlite3 · React 19 + Tailwind CSS 4 · Vite 6 · TypeScript
 
 ---
 
@@ -226,7 +224,7 @@ ClaudeSec exposes 73 REST endpoints. Key groups:
 |---|---|---|
 | **OTLP** | `POST /v1/traces` | Ingest OTLP JSON trace payloads |
 | **MCP** | `POST /mcp` | Model Context Protocol server (11 tools) |
-| **Graph** | `GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot` | Graph state + export formats |
+| **Graph** | `GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot` | Span dependency data + export formats (API only, no UI tab) |
 | **Sessions** | `GET /api/sessions`, `PATCH`, compare, report, health | Session management and analysis |
 | **Spans** | `GET /api/spans`, search, tags, annotations, bookmarks | Span queries and metadata |
 | **Alerts** | `GET /api/alerts`, export, triage (`PATCH`) | Threat alert log |

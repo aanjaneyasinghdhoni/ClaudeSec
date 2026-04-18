@@ -17,9 +17,9 @@ server.ts (Express)
   ├─ SQLite write (spans, sessions, alerts)
   ├─ Behavioral anomaly detection (per session)
   ├─ Threshold rule evaluation (per session)
-  └─ Socket.io broadcast (graph-update, alerts-update)
+  └─ Socket.io broadcast (sessions-update, alerts-update, span-added)
         ↓
-   src/App.tsx (React + ReactFlow)
+   src/App.tsx (React 19 + Tailwind CSS 4)
 ```
 
 ---
@@ -31,16 +31,15 @@ ClaudeSec runs as a single Node process but has two logical layers in one reposi
 ### server.ts — backend
 
 - **Express** handles all HTTP: OTLP ingestion at `POST /v1/traces`, REST endpoints under `/api/*`, and static file serving for the built frontend in production.
-- **Socket.io** emits real-time events (`graph-update`, `alerts-update`, `sessions-update`, `rules-update`, `span-added`) to connected browser clients.
+- **Socket.io** emits real-time events (`sessions-update`, `alerts-update`, `rules-update`, `span-added`) to connected browser clients.
 - **better-sqlite3** provides synchronous, embedded SQLite access with no separate database process.
 - In development, the backend also hosts a **Vite dev server** (middleware mode) for frontend HMR on the same port.
 
 ### src/App.tsx — frontend
 
-- A single large React component (~650 lines, no routing) that owns all UI state.
-- **ReactFlow** renders the interactive span graph on a canvas.
+- A single React component (no routing) that owns all UI state.
 - **Socket.io client** listens for server events and triggers local state updates.
-- **Dagre** computes hierarchical graph layout — the server exposes pre-computed layout via `GET /api/graph`, and the client re-runs Dagre locally when new spans arrive via Socket.io.
+- Dashboard views include timeline, orchestration, alerts, rules, costs, heatmap, search, processes, and bookmarks — each as a dedicated tab component.
 
 ---
 
@@ -53,7 +52,7 @@ ClaudeSec runs as a single Node process but has two logical layers in one reposi
 3. A **circuit breaker** rejects new ingestion with `503` when the span table is at 90% of its configured maximum (default 50,000 spans).
 4. Each span's attributes and name are concatenated into a search string and passed to `detectSeverity()`.
 5. The span record (with severity) is written to the `spans` table. An alert row is written to `alerts` if a rule matched.
-6. A `span-added` Socket.io event is emitted per span. A `graph-update` event is emitted once per batch with the full graph payload.
+6. A `span-added` Socket.io event is emitted per span. A `sessions-update` event is emitted once per batch.
 7. Behavioral anomaly detection and threshold rule evaluation run asynchronously after the batch.
 8. The HTTP response returns `200 { status: "ok" }` immediately after all spans are persisted.
 
@@ -128,23 +127,15 @@ All data lives in a single file (`spans.db`) created automatically on first run.
 
 ---
 
-## Session health score
+## Session health scoring
 
-Computed on demand by `computeHealthScore(traceId)` and included inline in the `GET /api/sessions` response.
+ClaudeSec currently exposes two related score paths:
 
-```
-score = max(0, 100 − (threatHigh × 15) − (threatMedium × 8) − (threatLow × 3) − min(alertCount × 10, 30))
-```
+1. **`GET /api/sessions/:traceId/health`** uses `computeHealthScore(traceId)` with:
+   `100 - (high*15) - (medium*8) - (low*3) - min(alerts*10, 30)` and returns `score + grade`.
+2. **`GET /api/sessions`** includes inline `riskScore` and `healthScore` derived from weighted threat counts, alert weight, and threat-density.
 
-| Score | Grade | Badge color |
-|-------|-------|-------------|
-| ≥ 90 | A | Green |
-| ≥ 75 | B | Green |
-| ≥ 60 | C | Yellow |
-| ≥ 40 | D | Yellow |
-| < 40 | F | Red |
-
-Dashboard badge colors: green ≥ 80, yellow 50–79, red < 50.
+The dashboard badge coloring uses the inline `healthScore` (`green >= 80`, `yellow 50-79`, `red < 50`).
 
 ---
 
@@ -164,17 +155,9 @@ Stale buckets (idle for >5 minutes) are evicted every 60 seconds.
 
 ---
 
-## ReactFlow graph
+## Graph API (headless)
 
-`GET /api/graph?session=<traceId>` returns `{ nodes, edges }` with Dagre-computed positions. Each span becomes a node; parent-child relationships become edges.
-
-Node style encodes severity:
-- High: red border `#ef4444`, red-tinted background
-- Medium: orange border `#f97316`
-- Low: yellow border `#eab308`
-- None: no custom style
-
-Harness root nodes (one per detected agent type in the session) appear as the graph's source nodes.
+The graph endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available as a headless API for programmatic access and export. They return span dependency data with Dagre-computed positions, suitable for rendering in external tools (Mermaid, Graphviz) or custom integrations. There is no graph UI tab in the dashboard.
 
 ---
 

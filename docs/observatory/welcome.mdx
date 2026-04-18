@@ -34,11 +34,10 @@ Click **"Try it now"** to inject 3 realistic sessions:
 ### What gets populated
 
 After running the demo:
-- **Graph tab**: Interactive node graph with color-coded threat levels
+- **Timeline tab**: Gantt-style view of all 3 sessions (default landing view)
 - **Alerts tab**: Multiple fired alerts from the Cursor session
 - **Costs tab**: Token usage breakdown per model
-- **Timeline tab**: Gantt-style view of all 3 sessions
-- **Orchestration tab**: Multi-agent relationship graph
+- **Orchestration tab**: Multi-agent relationship view
 - **Heatmap tab**: Threat activity grid
 
 ### API
@@ -60,7 +59,7 @@ curl -X POST http://localhost:3000/api/simulate
 
 ## Connecting Real Agents
 
-Each harness needs 2-3 environment variables. The welcome screen provides copy-paste commands for all 14 supported harnesses. Example for Claude Code:
+Each harness needs 2-3 environment variables. The welcome screen provides copy-paste commands for all supported harnesses. Example for Claude Code:
 
 ```bash
 export CLAUDE_CODE_ENABLE_TELEMETRY=1

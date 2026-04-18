@@ -40,7 +40,7 @@ This starts the Express backend with Vite HMR (hot module replacement) for the f
   ClaudeSec listening on :3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser. You should see an empty graph canvas — that is expected until your first agent session.
+Open [http://localhost:3000](http://localhost:3000) in your browser. You should see the welcome screen — that is expected until your first agent session.
 
 ---
 
@@ -76,9 +76,9 @@ See the [Harnesses](/harnesses/claude-code) section for per-agent setup instruct
 
 Open [http://localhost:3000](http://localhost:3000). Within a few seconds of the agent performing its first action you should see:
 
-- A colored root node labeled with the harness name (e.g., **Claude Code**) in the graph canvas.
-- Child span nodes connected by animated edges.
-- A session row in the Sessions sidebar.
+- A session row in the sidebar with the harness name (e.g., **Claude Code**).
+- Spans appearing in the Timeline view as colored bars.
+- Alert counts incrementing if any security rules match.
 
 ### Option B — curl
 
@@ -120,7 +120,7 @@ Expected response:
 {"status":"ok"}
 ```
 
-You should immediately see a new node in the graph canvas.
+You should immediately see a new session appear in the dashboard.
 
 ---
 
@@ -141,7 +141,7 @@ This compiles the React frontend into `dist/` and serves it from the Express ser
 
 <CardGroup cols={2}>
   <Card title="Claude Code harness" icon="terminal" href="/harnesses/claude-code">
-    Full guide including span attributes and what to look for in the graph.
+    Full guide including span attributes and what to look for in the dashboard.
   </Card>
   <Card title="Security rules" icon="shield" href="/security/rules">
     Understand the built-in threat library and add custom rules.

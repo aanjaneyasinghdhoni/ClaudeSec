@@ -1,11 +1,11 @@
 ---
 title: "ClaudeSec"
-description: "Real-time AI agent observability and security visualization. Ingest OpenTelemetry traces from any CLI agent and surface suspicious activity as an interactive graph."
+description: "Real-time AI agent observability and security dashboard. Ingest OpenTelemetry traces from any CLI agent and surface suspicious activity through purpose-built security views."
 ---
 
 ## What is ClaudeSec?
 
-ClaudeSec is a local-first observability dashboard designed for developers who run AI coding agents on their machines. It listens for [OpenTelemetry](https://opentelemetry.io/) (OTLP) traces, persists them in a local SQLite database, evaluates every span against a library of security detection rules, and renders the resulting activity as a live, interactive graph.
+ClaudeSec is a local-first observability dashboard designed for developers who run AI coding agents on their machines. It listens for [OpenTelemetry](https://opentelemetry.io/) (OTLP) traces, persists them in a local SQLite database, evaluates every span against a library of security detection rules, and renders the resulting activity through purpose-built dashboard views — timeline, orchestration, alerts, cost analysis, and more.
 
 Because everything runs locally — Express backend on `localhost:3000`, SQLite on disk — no data ever leaves your machine.
 
@@ -18,16 +18,13 @@ Because everything runs locally — Express backend on `localhost:3000`, SQLite 
     Accepts standard OTLP/HTTP JSON payloads at `POST /v1/traces`. Any OpenTelemetry-compatible agent works out of the box.
   </Card>
   <Card title="Multi-harness support" icon="grid-2">
-    14 built-in harness profiles for Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Cline, Goose, Continue.dev, Windsurf, Codex CLI, Amazon Q Developer, Gemini CLI, Roo-Code, and Bolt.new — each with its own color and detection heuristics.
+    15 built-in harness profiles for Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Cline, Goose, Continue.dev, Windsurf, Codex CLI, Amazon Q Developer, Gemini CLI, Roo-Code, Google Antigravity, and Bolt.new — each with its own color and detection heuristics.
   </Card>
   <Card title="Threat detection" icon="shield-halved">
     183 built-in regex rules covering prompt injection, secret leakage, destructive shell commands, supply-chain attacks, reverse shells, credential theft, and more. Add custom rules from the UI without restarting the server.
   </Card>
-  <Card title="Interactive graph" icon="diagram-project">
-    React Flow canvas shows every span as a node. Color-coded edges and node halos reveal severity at a glance. Zoom, pan, and click any node to inspect attributes.
-  </Card>
   <Card title="Timeline view" icon="timeline">
-    Gantt-style timeline shows when each span ran relative to others, making it easy to correlate suspicious events with agent actions.
+    Gantt-style timeline shows when each span ran relative to others, making it easy to correlate suspicious events with agent actions. Default landing view.
   </Card>
   <Card title="Orchestration view" icon="sitemap">
     Per-harness statistics (span count, threat count, tools used) and cross-harness co-occurrence data for sessions where multiple agents ran simultaneously.
@@ -50,8 +47,7 @@ flowchart LR
     B --> C[(spans.db\nSQLite)]
     B --> D[Threat Detection\nregex rules]
     D --> E[(alerts table)]
-    B -->|graph-update event| F[App.tsx\nReact 19 + React Flow]
-    F -->|GET /api/graph| B
+    B -->|real-time events| F[App.tsx\nReact 19 + Tailwind CSS 4]
     F -->|GET /api/sessions| B
     F -->|GET /api/alerts| B
 ```
@@ -61,8 +57,8 @@ flowchart LR
 1. An AI agent emits OTLP/HTTP JSON traces to `http://localhost:3000/v1/traces`.
 2. `server.ts` parses each `resourceSpan`, detects which harness produced it, and runs every span's serialized attributes through the security rule engine.
 3. Spans are written to `spans.db` (SQLite, persisted across restarts). Any matched rules create an alert row.
-4. The server broadcasts a `graph-update` Socket.io event to all connected browser clients.
-5. `App.tsx` receives the event, fetches the updated graph from `/api/graph`, and re-renders the React Flow canvas with [Dagre](https://github.com/dagrejs/dagre) layout applied.
+4. The server broadcasts real-time Socket.io events (`sessions-update`, `alerts-update`, `span-added`) to all connected browser clients.
+5. `App.tsx` receives the events and updates the dashboard views (timeline, alerts, orchestration, etc.) in real time.
 
 ---
 

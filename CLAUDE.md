@@ -25,18 +25,18 @@ AI agent → POST /v1/traces (OTLP JSON) → server.ts
   → threat detection (regex rules)
   → SQLite (spans.db)
   → Socket.io broadcast
-  → App.tsx (React Flow graph)
+  → App.tsx (dashboard views: timeline, alerts, orchestration, etc.)
 ```
 
 ### Two-process model in one repo
 
 - **`server.ts`** — Express backend. Handles OTLP ingestion, SQLite reads/writes, security rule evaluation, REST endpoints (`/api/graph`, `/api/export`, `/api/reset`), and Socket.io events. Also serves the Vite-built `dist/` in production.
-- **`src/App.tsx`** — Main React frontend component. Uses React Flow for the graph canvas, Socket.io client for live updates, and holds all UI state (selected span, filters, layout). Shows a `WelcomeScreen` on first run (zero sessions).
+- **`src/App.tsx`** — Main React frontend component. Uses Socket.io client for live updates and holds all UI state (filters, active tab, session selection). Shows a `WelcomeScreen` on first run (zero sessions). Default tab is Timeline.
 
 ### Key architectural decisions
 
 - **SQLite via `better-sqlite3`** persists spans across server restarts (`spans.db` is gitignored but created automatically).
-- **Dagre** computes graph layout on the server side (via `/api/graph`) and on the client whenever new spans arrive.
+- **Dagre** computes graph layout on the server side (via `/api/graph`) for the headless graph API. There is no graph UI tab in the dashboard.
 - **Threat detection** lives in `server.ts` as `SEVERITY_RULES` (183 built-in regex rules: prompt injection, credential theft, reverse shells, supply-chain, exfiltration, recon) evaluated against every incoming span.
 - **Path alias** `@/*` resolves to the repo root (not `src/`). Configured in both `vite.config.ts` and `tsconfig.json`.
 
