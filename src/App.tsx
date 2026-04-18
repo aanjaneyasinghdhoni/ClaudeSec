@@ -28,6 +28,7 @@ import { ComparePanel } from './ComparePanel';
 import { SearchTab } from './SearchTab';
 import { ProcessesTab } from './ProcessesTab';
 import { BookmarksTab } from './BookmarksTab';
+import { SessionsTable } from './SessionsTable';
 import { WelcomeScreen } from './WelcomeScreen';
 import { LiveActivityPanel } from './LiveActivityPanel';
 import { motion, AnimatePresence } from 'motion/react';
@@ -241,7 +242,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
+type Tab        = 'sessions' | 'graph' | 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
 
 interface Workflow {
   id: string;
@@ -523,7 +524,7 @@ export default function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   // ── UI state ──────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab]           = useState<Tab>('graph');
+  const [activeTab, setActiveTab]           = useState<Tab>('sessions');
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
   const [layoutMode, setLayoutMode]         = useState<LayoutMode>('radial');
 
@@ -1691,6 +1692,7 @@ export default function App() {
             background: 'var(--cs-bg-surface)',
           }}>
             {([
+              { id: 'sessions' as Tab, icon: <Layers className="w-3.5 h-3.5" />, label: 'Sessions' },
               { id: 'graph' as Tab, icon: <Activity className="w-3.5 h-3.5" />, label: 'Graph' },
               { id: 'timeline' as Tab, icon: <Clock className="w-3.5 h-3.5" />, label: 'Timeline' },
               { id: 'orchestration' as Tab, icon: <Cpu className="w-3.5 h-3.5" />, label: 'Orchestration' },
@@ -1734,6 +1736,38 @@ export default function App() {
               <Settings className="w-3.5 h-3.5" /> Settings
             </button>
           </div>
+
+          {activeTab === 'sessions' && (
+            <main className="flex-1 relative min-h-0" style={{ height: '100%' }}>
+              <SessionsTable
+                sessions={sessions}
+                onOpenGraph={(traceId) => {
+                  setActiveSession(traceId);
+                  setActiveTab('graph');
+                }}
+                onPin={async (traceId, pinned) => {
+                  await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pinned }),
+                  });
+                  fetchSessions();
+                }}
+                onRename={async (traceId, name) => {
+                  await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name }),
+                  });
+                  fetchSessions();
+                }}
+                onDelete={async (traceId) => {
+                  await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, { method: 'DELETE' });
+                  fetchSessions();
+                }}
+              />
+            </main>
+          )}
 
           {/* Graph view */}
           {activeTab === 'graph' && (
