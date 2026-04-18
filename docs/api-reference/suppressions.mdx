@@ -50,7 +50,7 @@ Create a new suppression.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ruleKey` | string | Yes | Rule identifier, e.g. `builtin-0` through `builtin-152` for built-in rules, or `custom:<id>` for custom rules |
+| `ruleKey` | string | Yes | Rule identifier, e.g. `builtin-0`...`builtin-<N>` for built-in rules, or `custom:<id>` for custom rules |
 | `durationMs` | number | Yes | Duration in milliseconds (must be > 0) |
 | `reason` | string | No | Free-text reason for the suppression |
 
@@ -88,5 +88,5 @@ A Socket.io `rules-update` event is emitted after deletion.
 
 ## Rule Key Format
 
-- **Built-in rules**: `builtin-0` through `builtin-152` (index into the `SEVERITY_RULES` array). Use `GET /api/rules` to list all rules with their IDs.
+- **Built-in rules**: `builtin-<index>` where `<index>` maps to the current `SEVERITY_RULES` array. Use `GET /api/rules` to discover the exact IDs at runtime.
 - **Custom rules**: `custom:<id>` where `<id>` is the custom rule's unique identifier.

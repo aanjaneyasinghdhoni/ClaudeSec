@@ -1,123 +1,81 @@
 ---
 title: "Bookmarks API"
-description: "Save and retrieve bookmarked spans for quick reference"
+description: "Create, list, update, and delete span bookmarks."
 icon: "bookmark"
 ---
 
-## Overview
+## GET /api/bookmarks
 
-The Bookmarks API lets you pin any span for later reference, attach investigative notes, and retrieve bookmarks filtered by session. Bookmarks persist in SQLite and survive server restarts.
+List bookmarks (latest first).
 
-## Endpoints
-
-### GET /api/bookmarks
-
-List saved bookmarks.
-
-**Query parameters:**
+### Query parameters
 
 | Parameter | Type | Description |
-|-----------|------|-------------|
-| `session` | string | Filter to bookmarks whose `traceId` matches this value |
+|---|---|---|
+| `session` | string | Optional traceId filter |
 
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "spanId": "abc123def456",
-    "traceId": "trace-xyz-789",
-    "note": "Suspicious tool call — investigate further",
-    "createdAt": "2026-04-08T14:32:01.000Z"
-  }
-]
-```
+### Response
 
-### POST /api/bookmarks
-
-Create a new bookmark.
-
-**Request body:**
 ```json
 {
-  "spanId": "abc123def456",
-  "traceId": "trace-xyz-789",
-  "note": "Optional free-text note"
+  "bookmarks": [
+    {
+      "id": 1,
+      "spanId": "abc123",
+      "traceId": "trace-1",
+      "note": "Investigate this path",
+      "createdAt": "2026-04-18T00:00:00.000Z",
+      "spanName": "tool_call/Bash",
+      "severity": "high",
+      "harness": "claude-code"
+    }
+  ]
 }
 ```
 
-`spanId` is required. `traceId` and `note` are optional.
+---
 
-**Response:** `201 Created` with the created bookmark object.
+## POST /api/bookmarks
 
-### PATCH /api/bookmarks/:id
-
-Update the note on an existing bookmark.
-
-**Request body:**
-```json
-{ "note": "Updated note text" }
-```
-
-**Response:** `{ "ok": true }`
-
-### DELETE /api/bookmarks/:id
-
-Delete a bookmark by its numeric ID.
-
-**Response:** `{ "ok": true }` or `404` if not found.
-
-### DELETE /api/bookmarks/span/:spanId
-
-Delete the bookmark for a specific span (toggle-off convenience endpoint).
-
-**Response:** `{ "ok": true }`
-
-## CLI Usage
-
-```bash
-# List all bookmarks
-claudesec bookmarks
-
-# Filter by session
-claudesec bookmarks --session TRACE_ID
-
-# Delete a bookmark by ID
-claudesec bookmarks --delete 42
-```
-
-**Example output:**
-```
-● Bookmarked Spans  (3 total)
-
-┌────┬──────────────────────────┬──────────────────┬────────────────────────────┬────────────────────────┐
-│ ID │ Span ID                  │ Session          │ Note                       │ Created                │
-├────┼──────────────────────────┼──────────────────┼────────────────────────────┼────────────────────────┤
-│ 1  │ abc123def456789…         │ trace-xyz-789…   │ Suspicious tool call       │ 4/8/2026, 2:32:01 PM   │
-│ 2  │ 9876fedcba321…           │ trace-abc-123…   │ —                          │ 4/8/2026, 3:01:15 PM   │
-└────┴──────────────────────────┴──────────────────┴────────────────────────────┴────────────────────────┘
-```
-
-## MCP Tools
-
-Two MCP tools expose bookmark functionality to AI agents:
-
-**`bookmark_span`** — Create a bookmark from within an agent:
 ```json
 {
-  "name": "bookmark_span",
-  "arguments": {
-    "spanId": "abc123def456",
-    "traceId": "trace-xyz-789",
-    "note": "Flagged for manual review"
-  }
+  "spanId": "abc123",
+  "traceId": "trace-1",
+  "note": "Optional note"
 }
 ```
 
-**`list_bookmarks`** — Retrieve bookmarks, optionally filtered by session:
+- `spanId` is required
+- Returns `201` with the created bookmark row
+
+---
+
+## PATCH /api/bookmarks/:id
+
+Update only the note:
+
 ```json
-{
-  "name": "list_bookmarks",
-  "arguments": { "traceId": "trace-xyz-789" }
-}
+{ "note": "Updated note" }
 ```
+
+Responses:
+
+- `200` → `{ "status": "ok" }`
+- `400` when `note` is missing
+- `404` when bookmark is not found
+
+---
+
+## DELETE /api/bookmarks/:id
+
+Deletes a bookmark by numeric id.
+
+Response: `{ "status": "ok" }`
+
+---
+
+## DELETE /api/bookmarks/span/:spanId
+
+Deletes bookmarks tied to a span id (toggle-off convenience endpoint).
+
+Response: `{ "status": "ok" }`

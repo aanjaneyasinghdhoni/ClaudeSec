@@ -87,10 +87,10 @@ Both fields are optional and can be updated independently.
 
 **Response:**
 ```json
-{ "ok": true }
+{ "status": "ok" }
 ```
 
-Returns `400` with `{ "error": "Invalid label" }` if an unknown label string is provided.
+Returns `400` when label is invalid and `404` when the session does not exist.
 
 ### GET /api/sessions
 

@@ -4,139 +4,38 @@ description: Query ClaudeSec from AI agents using the Model Context Protocol
 icon: cpu
 ---
 
-ClaudeSec exposes a lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server at `POST /mcp`. This lets MCP-capable agents — including **Claude Code**, **Cursor**, and any other MCP client — introspect their own telemetry while running.
+ClaudeSec exposes an MCP JSON-RPC endpoint at `POST /mcp`.
 
-## Overview
+## Endpoint
 
-The endpoint implements **MCP JSON-RPC 2.0 over HTTP** (stateless request/response, no SSE or stdio required). Any HTTP client can query it.
-
-```
-POST http://localhost:3000/mcp
-Content-Type: application/json
-```
-
-## Initialization handshake
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {},
-    "clientInfo": { "name": "my-agent", "version": "1.0" }
-  }
-}
+```bash
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-Response:
+## Supported MCP methods
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": { "tools": {} },
-    "serverInfo": { "name": "claudesec", "version": "1.0.0" }
-  }
-}
-```
+- `initialize`
+- `tools/list`
+- `tools/call`
 
-## List available tools
+## Current tools (11)
 
-```json
-{ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
-```
-
-Returns:
-
-| Tool | Description |
-|------|-------------|
-| `get_health` | Server uptime, span/session/alert counts, DB size |
-| `get_sessions` | All recorded sessions (last 50, ordered by recency) |
-| `get_spans` | Spans for a given `traceId` (up to 200) |
-| `get_alerts` | Recent security alerts, filterable by severity |
-| `search_spans` | Full-text search across all span names and attributes |
-
-## Calling tools
-
-### get_health
-
-```json
-{
-  "jsonrpc": "2.0", "id": 3,
-  "method": "tools/call",
-  "params": { "name": "get_health", "arguments": {} }
-}
-```
-
-### get_spans
-
-```json
-{
-  "jsonrpc": "2.0", "id": 4,
-  "method": "tools/call",
-  "params": {
-    "name": "get_spans",
-    "arguments": { "traceId": "abc123..." }
-  }
-}
-```
-
-### search_spans
-
-```json
-{
-  "jsonrpc": "2.0", "id": 5,
-  "method": "tools/call",
-  "params": {
-    "name": "search_spans",
-    "arguments": { "query": "bash", "limit": 20 }
-  }
-}
-```
-
-### get_alerts
-
-```json
-{
-  "jsonrpc": "2.0", "id": 6,
-  "method": "tools/call",
-  "params": {
-    "name": "get_alerts",
-    "arguments": { "severity": "high", "limit": 10 }
-  }
-}
-```
-
-## Configuring Claude Code as an MCP client
-
-Add ClaudeSec to your Claude Code MCP config (`~/.claude/mcp_servers.json` or via `claude mcp add`):
-
-```json
-{
-  "claudesec": {
-    "type": "http",
-    "url": "http://localhost:3000/mcp"
-  }
-}
-```
-
-Once configured, Claude can call tools like:
-
-> "Use the ClaudeSec MCP server to check whether any high-severity threats were recorded in my last session."
-
-## Error codes
-
-| Code | Meaning |
-|------|---------|
-| `-32600` | Invalid Request (not JSON-RPC 2.0) |
-| `-32601` | Method or tool not found |
-| `-32602` | Invalid / missing parameters |
-| `-32603` | Internal server error |
+| Tool | Purpose |
+|---|---|
+| `get_health` | Server status and counts |
+| `get_sessions` | List recent sessions (optional label filter) |
+| `get_spans` | List spans for a trace |
+| `get_alerts` | Fetch alerts (limit/severity filters) |
+| `search_spans` | Text search across spans |
+| `tag_span` | Add tag to a span |
+| `suppress_rule` | Create/update a suppression window |
+| `bookmark_span` | Bookmark a span |
+| `get_processes` | List detected local agent processes |
+| `get_incident_summary` | Build incident summary for a trace |
+| `list_bookmarks` | List bookmarks (optional trace filter) |
 
 ## Security note
 
-The MCP endpoint is **local-only** by default (ClaudeSec binds to `0.0.0.0:3000` but is intended for localhost use). Do not expose it to the public internet without adding authentication.
+ClaudeSec binds to `127.0.0.1` by default. Keep it local unless you explicitly set `CLAUDESEC_HOST` and secure network access.

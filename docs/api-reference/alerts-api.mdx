@@ -1,47 +1,84 @@
 ---
 title: "Alerts API"
-description: "Access the immutable threat alert log"
+description: "List, triage, export, and clear threat alerts."
 ---
 
-## List Alerts
+## GET /api/alerts
 
-`GET /api/alerts`
+Returns recent alerts (newest first).
 
-<ParamField query="limit" type="number" default="200">
-  Maximum number of alerts to return (capped at 1000).
-</ParamField>
+### Query parameters
 
-<ParamField query="severity" type="string">
-  Filter by severity: `low`, `medium`, or `high`.
-</ParamField>
+| Parameter | Type | Description |
+|---|---|---|
+| `limit` | number | Max rows (default `200`, max `1000`) |
+| `severity` | string | `low`, `medium`, `high`, or `all` |
+| `showDismissed` | boolean | Include dismissed alerts when `true` |
+| `groupBy` | string | Use `groupBy=rule` to collapse duplicates |
 
-```json Response
+### Response
+
+```json
 {
   "alerts": [
     {
       "id": 42,
-      "ts": "2025-01-01T12:00:00.000Z",
-      "ruleLabel": "Recursive root deletion",
+      "ts": "2026-04-18T00:10:00.000Z",
+      "ruleLabel": "Prompt injection attempt",
       "severity": "high",
-      "spanId": "span123",
-      "traceId": "trace001",
+      "spanId": "abc123",
+      "traceId": "trace-1",
       "harness": "claude-code",
-      "spanName": "bash: rm -rf /tmp",
-      "matchedText": "rm -rf /"
+      "spanName": "tool_call/Bash",
+      "matchedText": "ignore previous instructions",
+      "dismissed": 0,
+      "fp": 0,
+      "count": 3
     }
   ],
   "total": 42
 }
 ```
 
-## Export Alerts
+---
 
-`GET /api/alerts/export`
+## PATCH /api/alerts/:id
 
-Returns all alerts as a downloadable JSON file with `Content-Disposition: attachment`.
+Triage an alert.
 
-## Clear Alerts
+```json
+{ "dismissed": true, "fp": false }
+```
 
-`DELETE /api/alerts`
+You can send either field or both.
 
-Removes all alerts from the database and emits `alerts-update` via Socket.io.
+### Responses
+
+- `200` → `{ "status": "ok" }`
+- `400` when neither `dismissed` nor `fp` is provided
+- `404` when alert is not found
+
+---
+
+## GET /api/alerts/export
+
+Downloads all alerts as JSON attachment:
+
+```json
+{
+  "exportedAt": "2026-04-18T00:10:00.000Z",
+  "alerts": [ ... ]
+}
+```
+
+---
+
+## DELETE /api/alerts
+
+Deletes all alerts.
+
+Response:
+
+```json
+{ "status": "ok" }
+```

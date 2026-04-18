@@ -1,173 +1,76 @@
 ---
 title: "Search API"
-description: "Full-text span search with filters and pagination"
+description: "Filtered span search, exports, and direct FTS queries."
 icon: "magnifying-glass"
----
-
-## Overview
-
-The Search API provides full-text search across all ingested spans using SQLite FTS5 with the `unicode61` tokenizer. Results support filtering by severity, harness, and time range, with cursor-based pagination.
-
 ---
 
 ## GET /api/search
 
-Search spans using full-text matching and optional filters.
-
-```
-GET /api/search
-```
+Primary search endpoint with pagination.
 
 ### Query parameters
 
 | Parameter | Type | Description |
-|-----------|------|-------------|
-| `q` | string | Full-text search query. Matched against span name and all attributes. Omit to return all spans (subject to filters). |
-| `severity` | `high` \| `medium` \| `low` \| `none` | Filter by severity level. Omit to return all severities. |
-| `harness` | string | Filter by harness ID (e.g., `claude-code`, `cursor`). |
-| `from` | ISO 8601 | Return only spans with `startNano` on or after this timestamp. |
-| `to` | ISO 8601 | Return only spans with `startNano` on or before this timestamp. |
-| `page` | integer | Page number, 1-indexed. Default: `1`. |
-| `limit` | integer | Results per page. Range: 1–100. Default: `20`. |
-
-### FTS5 behavior
-
-- Queries are matched against the `spans_fts` virtual table, which indexes `name` and `attributes` for every span.
-- The tokenizer is `unicode61 remove_diacritics 1`, so accented characters match their base form.
-- If the query contains FTS5 syntax that cannot be parsed (e.g., unbalanced quotes), the server falls back to a `LIKE %query%` match on `name` and `attributes`.
-- Phrase queries work as expected: `"rm -rf"` matches the exact phrase.
+|---|---|---|
+| `q` | string | Search text (FTS-backed; optional) |
+| `severity` | string | `high`, `medium`, `low`, `none`, or `all` |
+| `harness` | string | Harness filter |
+| `tag` | string | Filter by span tag |
+| `from` | ISO 8601 | Start time bound |
+| `to` | ISO 8601 | End time bound |
+| `limit` | number | 1..100 (default `20`) |
+| `page` | number | 1-indexed (default `1`) |
 
 ### Response
 
 ```json
 {
-  "spans": [
-    {
-      "spanId":     "abc123def456",
-      "traceId":    "4bf92f3577b34da6a3ce929d0e0e4736",
-      "parentId":   "claude-code",
-      "name":       "tool:Bash",
-      "harness":    "claude-code",
-      "severity":   "high",
-      "protocol":   "HTTPS",
-      "reason":     "Processing step",
-      "attributes": "{\"gen_ai.tool.name\":\"Bash\",\"claudesec.threat.rule\":\"Recursive root deletion\"}",
-      "startNano":  "1700000000000000000",
-      "endNano":    "1700000001500000000"
-    }
-  ],
+  "spans": [ ... ],
   "total": 47,
-  "page":  1,
+  "page": 1,
   "pages": 3,
   "query": "rm -rf"
 }
 ```
 
-### SpanRecord fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `spanId` | string | OpenTelemetry span ID — primary key |
-| `traceId` | string | OpenTelemetry trace ID — groups spans into sessions |
-| `parentId` | string | Parent span ID, or the harness root ID for top-level spans |
-| `name` | string | Span name as reported by the agent |
-| `harness` | string | Detected agent harness ID (e.g., `claude-code`) |
-| `severity` | string | `high`, `medium`, `low`, or `none` |
-| `protocol` | string | Transport protocol from span attributes, default `HTTPS` |
-| `reason` | string | Human-readable reason from span attributes |
-| `attributes` | string | Full span attributes as a JSON-encoded string |
-| `startNano` | string | Start timestamp in Unix nanoseconds (string to preserve precision) |
-| `endNano` | string | End timestamp in Unix nanoseconds |
-
-### Error responses
-
-| Status | Body | Reason |
-|--------|------|--------|
-| `200` | Normal response with empty `spans: []` | Query matched nothing |
-
 ---
 
 ## GET /api/search/export
 
-Download matching spans as a JSON file.
+Exports matching results as JSON attachment (up to 5000 rows).
 
-```
-GET /api/search/export
-```
-
-Accepts the same `q`, `severity`, and `harness` parameters as `GET /api/search`. Returns up to 5,000 matching spans in a single response — no pagination.
-
-The response has `Content-Disposition: attachment` with a timestamped filename.
+Accepts: `q`, `severity`, `harness`, `tag`.
 
 ```json
 {
-  "exportedAt": "2024-01-15T14:35:00.000Z",
-  "query":      "curl",
-  "count":      12,
-  "spans":      [ ... ]
+  "exportedAt": "2026-04-18T00:10:00.000Z",
+  "query": "curl",
+  "count": 12,
+  "spans": [ ... ]
 }
 ```
 
 ---
 
-## Examples
+## GET /api/search/fts
 
-### Basic keyword search
+Direct FTS5 endpoint for prefix-term search.
 
-```bash
-curl "http://localhost:3000/api/search?q=rm+-rf"
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `q` | string | Required (min length 2) |
+| `limit` | number | 1..200 (default `50`) |
+
+### Response
+
+```json
+{
+  "spans": [ ... ],
+  "total": 9,
+  "query": "prompt inject"
+}
 ```
 
-### Filter by severity and harness
-
-```bash
-curl "http://localhost:3000/api/search?severity=high&harness=claude-code"
-```
-
-### Time-bounded search
-
-```bash
-curl "http://localhost:3000/api/search?q=bash&from=2024-01-15T00:00:00Z&to=2024-01-15T23:59:59Z"
-```
-
-### Paginated results
-
-```bash
-# Page 2, 50 results per page
-curl "http://localhost:3000/api/search?q=eval&limit=50&page=2"
-```
-
-### Export all high-severity spans to a file
-
-```bash
-curl -o high-threats.json \
-  "http://localhost:3000/api/search/export?severity=high"
-```
-
-### Extract matched span names with jq
-
-```bash
-curl -s "http://localhost:3000/api/search?q=passwd" | \
-  jq '.spans[].name'
-```
-
-### CLI equivalent
-
-If you have the `claudesec` CLI installed:
-
-```bash
-# Search with severity filter
-claudesec search "rm -rf" --severity high
-
-# Search within a specific session
-claudesec search "eval" --harness cursor
-```
-
----
-
-## Tips
-
-- Use `attributes` field values as query terms. For example, searching `tool:Bash` will match spans where the tool name is `Bash`.
-- The `attributes` field is stored as a JSON string. Searching for a key like `gen_ai.tool.name` will match spans that contain that attribute key in their JSON blob.
-- The `from` / `to` range filters convert ISO 8601 timestamps to nanoseconds internally, so they work correctly regardless of how the agent reports time.
-- For large exports, prefer `GET /api/search/export` over looping through pages — it runs a single optimized query.
+If the generated FTS expression is invalid, this endpoint returns `400`.

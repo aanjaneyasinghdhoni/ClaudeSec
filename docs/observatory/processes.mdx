@@ -1,99 +1,42 @@
 ---
 title: "Process Monitor"
-description: "Real-time detection of running AI agent processes on your local machine"
+description: "Detect and control running AI agent processes on the local machine"
 icon: "monitor"
 ---
 
 ## Overview
 
-The **Process Monitor** scans your OS process table every 5 seconds for known AI agent CLI harnesses and displays them in a live-updating table. It answers the question: _"What agents are actually running on my machine right now?"_ — even before they emit any OTLP telemetry.
+Process Monitor scans local process tables (`ps`) for known agent CLIs and exposes controls to terminate, pause, or resume them.
 
-This is especially useful when you run many agents simultaneously and need a quick overview of resource consumption and activity.
+Supported platforms:
 
-## Supported Platforms
+- macOS
+- Linux
 
-| Platform | Support |
-|----------|---------|
-| macOS    | ✅ Full support (`ps aux`) |
-| Linux    | ✅ Full support (`ps aux`) |
-| Windows  | ❌ Not supported |
+Windows returns no process rows and control endpoints return `501`.
 
-## Detected Harnesses
+---
 
-The process scanner identifies the following agent CLIs by their command-line patterns:
+## API surface
 
-| Harness | Pattern Matched |
-|---------|----------------|
-| Claude Code | `claude` |
-| GitHub Copilot | `copilot-language-server`, `ghcopilot` |
-| OpenHands | `openhands` |
-| Cursor | `cursor` |
-| Aider | `aider` |
-| Cline | `cline` |
-| Goose | `goose` |
-| Continue.dev | `continue-server` |
-| Windsurf | `windsurf` |
-| Codex CLI | `codex` |
-| Amazon Q | `amazon-q`, `q developer` |
-| Gemini CLI | `gemini-cli` |
-| Roo-Code | `roo-cline`, `roocode` |
-| Bolt.new | `bolt` |
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/processes` | List detected agent processes |
+| `DELETE` | `/api/processes/:pid` | Kill one recognized agent process (`SIGTERM`) |
+| `POST` | `/api/processes/kill-all` | Kill all detected agent processes |
+| `POST` | `/api/processes/pause-all` | Pause all detected agent processes (`SIGSTOP`) |
+| `POST` | `/api/processes/resume-all` | Resume all paused agent processes (`SIGCONT`) |
 
-## Dashboard UI
+---
 
-Navigate to the **Processes** tab to see the live process table.
+## `GET /api/processes` response notes
 
-```
-Processes tab → live-updating table (5s poll)
-```
+- `cmd` is username-scrubbed (e.g. `/Users/***`)
+- `user` is always `***` (never exposes OS username)
+- `recentSessions` attaches sessions from the last 2 hours by harness match
 
-Each row shows:
-- **Agent** — harness name with color dot
-- **PID** — OS process ID
-- **User** — the system user running the process
-- **CPU** — color-coded bar (green → orange → red as load increases)
-- **Memory** — RSS in MB
-- **Recent Sessions** — clickable links to sessions from this harness in the last 2 hours
-- **Command** — truncated command line
+Example:
 
-### Summary Cards
-
-Three summary cards at the top show:
-- Total agent processes detected
-- Combined CPU usage across all agents
-- Combined memory footprint
-
-### Auto-refresh
-
-The table polls every 5 seconds by default. Click **Paused** to freeze the view, or **Refresh** to force an immediate scan.
-
-## CLI Usage
-
-```bash
-claudesec processes
-```
-
-Prints a table of detected agent processes with PID, CPU, memory, and command.
-
-**Example output:**
-```
-● Local Agent Processes  (2 detected · 14:32:01)
-
-┌─────────┬──────────────┬────────┬───────┬────────┬─────────────────────────┐
-│ PID     │ Agent        │ User   │ CPU%  │ Mem MB │ Command                 │
-├─────────┼──────────────┼────────┼───────┼────────┼─────────────────────────┤
-│ 12345   │ Claude Code  │ alice  │ 12.3% │ 248    │ /usr/local/bin/claude … │
-│ 67890   │ Aider        │ alice  │ 4.1%  │ 142    │ python -m aider …       │
-└─────────┴──────────────┴────────┴───────┴────────┴─────────────────────────┘
-```
-
-## API Reference
-
-### GET /api/processes
-
-Returns running agent processes with session correlation.
-
-**Response:**
 ```json
 {
   "processes": [
@@ -101,39 +44,16 @@ Returns running agent processes with session correlation.
       "pid": 12345,
       "harness": "claude-code",
       "harnessName": "Claude Code",
-      "cmd": "/usr/local/bin/claude --model claude-sonnet-4-6",
-      "cpuPct": 12.3,
-      "memMb": 248.0,
+      "cmd": "/Users/***/.local/bin/claude ...",
+      "cpuPct": 7.4,
+      "memMb": 182.3,
       "startedAt": null,
-      "user": "alice",
-      "recentSessions": [
-        { "traceId": "abc123", "name": "Claude Code · 2:31:00 PM" }
-      ]
+      "user": "***",
+      "recentSessions": [{ "traceId": "trace-1", "name": "Claude Code · 2:31 PM" }]
     }
   ],
   "total": 1,
-  "scannedAt": "2026-04-08T14:32:01.000Z",
-  "platform": "darwin",
+  "scannedAt": "2026-04-18T00:00:00.000Z",
   "supported": true
 }
 ```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `pid` | number | OS process ID |
-| `harness` | string | Harness identifier (e.g. `claude-code`) |
-| `harnessName` | string | Human-readable harness name |
-| `cmd` | string | Command line (truncated to 200 chars) |
-| `cpuPct` | number | CPU usage percentage |
-| `memMb` | number | Resident set size in MB |
-| `user` | string | OS user running the process |
-| `recentSessions` | array | Sessions from this harness in the last 2 hours |
-| `supported` | boolean | `false` on Windows |
-
-### Session Correlation
-
-Processes are automatically correlated with sessions from the same harness that were active in the **last 2 hours**. Click a session link in the UI to jump directly to that session's graph view.
-
-## Privacy Note
-
-The process scanner only reads publicly available process metadata (`ps aux`) — the same information any user on the system can see. It does **not** read process memory, files, or network connections.

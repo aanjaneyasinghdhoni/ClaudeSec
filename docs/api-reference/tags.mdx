@@ -1,251 +1,55 @@
 ---
 title: "Span Tags API"
-description: "Attach custom labels to spans for triage and investigation workflows"
+description: "Attach lightweight labels to spans."
 icon: "tag"
----
-
-## Overview
-
-Span tags are short, user-defined labels that analysts can attach to any span for triage and investigation purposes. Tags are stored in the `span_tags` table and displayed as colored chips in the Span Details panel when you click a span node in the graph.
-
-Unlike annotations (which are free-form text notes), tags are short structured labels designed for filtering and workflow tracking.
-
----
-
-## Common tag workflow
-
-Tags are typically applied after reviewing a flagged span to record its disposition:
-
-| Tag | Meaning |
-|-----|---------|
-| `reviewed` | An analyst has looked at this span |
-| `false-positive` | The threat detection fired but this is benign |
-| `escalated` | This span has been escalated for further investigation |
-| `needs-investigation` | Flagged for follow-up |
-
-You can define any tag that fits your team's workflow. Tags are not restricted to this list.
-
 ---
 
 ## GET /api/spans/:spanId/tags
 
-List all tags attached to a span.
-
-```
-GET /api/spans/:spanId/tags
-```
-
-### Path parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `spanId` | The span ID to retrieve tags for |
-
-### Response
+Returns tags for a span:
 
 ```json
 {
-  "tags": [
-    {
-      "id":        1,
-      "spanId":    "abc123def456",
-      "tag":       "reviewed",
-      "createdAt": "2024-01-15T14:35:00.000Z"
-    },
-    {
-      "id":        2,
-      "spanId":    "abc123def456",
-      "tag":       "false-positive",
-      "createdAt": "2024-01-15T14:36:12.000Z"
-    }
-  ]
+  "tags": ["reviewed", "needs-investigation"]
 }
 ```
-
-### Tag object fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | integer | Auto-increment primary key |
-| `spanId` | string | The span this tag is attached to |
-| `tag` | string | The tag label (max 32 chars, `[a-zA-Z0-9_-]`) |
-| `createdAt` | string | ISO 8601 timestamp when the tag was created |
 
 ---
 
 ## POST /api/spans/:spanId/tags
 
-Attach a new tag to a span.
-
-```
-POST /api/spans/:spanId/tags
-Content-Type: application/json
-```
-
-### Path parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `spanId` | The span ID to tag |
-
-### Request body
+Create/add a tag.
 
 ```json
 { "tag": "false-positive" }
 ```
 
-| Field | Type | Required | Constraints |
-|-------|------|----------|-------------|
-| `tag` | string | Yes | 1–32 characters. Alphanumeric, hyphens, and underscores only (`[a-zA-Z0-9_-]`). |
+Tag normalization in server:
 
-### Response
+- lowercased
+- invalid chars removed (`[^a-z0-9_:.-]`)
+- truncated to 64 chars
 
-`201 Created` with the created tag object:
+### Responses
+
+- `201` → `{ "tag": "false-positive" }`
+- `400` invalid/empty tag
+- `404`/`409` can occur for missing or duplicate states depending on DB/write outcome
+
+---
+
+## DELETE /api/spans/:spanId/tags/:tag
+
+Deletes a tag by tag value (not numeric id).
+
+Response:
 
 ```json
-{
-  "id":        3,
-  "spanId":    "abc123def456",
-  "tag":       "false-positive",
-  "createdAt": "2024-01-15T14:36:12.000Z"
-}
+{ "status": "ok" }
 ```
 
-### Error responses
+If not found:
 
-| Status | Body | Reason |
-|--------|------|--------|
-| `400` | `{"error": "tag is required"}` | `tag` was missing or blank |
-| `400` | `{"error": "tag must be 32 characters or fewer"}` | Tag too long |
-| `400` | `{"error": "tag may only contain letters, numbers, hyphens, and underscores"}` | Invalid characters |
-| `404` | `{"error": "span not found"}` | No span with that `spanId` |
-| `409` | `{"error": "tag already exists on this span"}` | Duplicate tag |
-
----
-
-## DELETE /api/spans/:spanId/tags/:tagId
-
-Remove a tag from a span.
-
+```json
+{ "error": "tag not found" }
 ```
-DELETE /api/spans/:spanId/tags/:tagId
-```
-
-### Path parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `spanId` | The span ID |
-| `tagId` | The tag ID to delete |
-
-### Response
-
-`204 No Content` on success.
-
-### Error responses
-
-| Status | Body | Reason |
-|--------|------|--------|
-| `404` | `{"error": "tag not found"}` | No tag with that ID on that span |
-
----
-
-## Search integration
-
-Tags are searchable via the Search API using the `tag` query parameter:
-
-```
-GET /api/search?tag=false-positive
-```
-
-This returns all spans that have the `false-positive` tag attached, regardless of severity or harness. You can combine `tag` with other filters:
-
-```bash
-# All high-severity spans tagged as needing investigation
-curl "http://localhost:3000/api/search?tag=needs-investigation&severity=high"
-```
-
----
-
-## Examples
-
-### List all tags on a span
-
-```bash
-curl http://localhost:3000/api/spans/abc123def456/tags
-```
-
-### Tag a span as reviewed
-
-```bash
-curl -X POST http://localhost:3000/api/spans/abc123def456/tags \
-  -H 'Content-Type: application/json' \
-  -d '{"tag": "reviewed"}'
-```
-
-### Tag a span as a false positive
-
-```bash
-curl -X POST http://localhost:3000/api/spans/abc123def456/tags \
-  -H 'Content-Type: application/json' \
-  -d '{"tag": "false-positive"}'
-```
-
-### Tag for escalation
-
-```bash
-curl -X POST http://localhost:3000/api/spans/abc123def456/tags \
-  -H 'Content-Type: application/json' \
-  -d '{"tag": "escalated"}'
-```
-
-### Remove a tag
-
-```bash
-curl -X DELETE http://localhost:3000/api/spans/abc123def456/tags/3
-```
-
-### Find all unreviewed high-severity spans
-
-```bash
-# Get all high spans, then filter out those already tagged "reviewed"
-curl -s "http://localhost:3000/api/search?severity=high" | \
-  jq '.spans[].spanId' | while read -r id; do
-    tags=$(curl -s "http://localhost:3000/api/spans/$id/tags" | jq '.tags[].tag')
-    echo "$tags" | grep -q "reviewed" || echo "Unreviewed: $id"
-  done
-```
-
-### Bulk tag a session's high-severity spans
-
-```bash
-SESSION="4bf92f3577b34da6a3ce929d0e0e4736"
-curl -s "http://localhost:3000/api/search?severity=high&harness=claude-code" | \
-  jq -r '.spans[].spanId' | while read -r spanId; do
-    curl -s -X POST "http://localhost:3000/api/spans/$spanId/tags" \
-      -H 'Content-Type: application/json' \
-      -d '{"tag": "needs-investigation"}' > /dev/null
-  done
-```
-
----
-
-## Dashboard UI
-
-Tags are displayed as colored chips in the **Span Details** panel that appears when you click any node in the ReactFlow graph. Each chip shows the tag label with a small delete button.
-
-To add a tag from the UI:
-1. Click a span node in the graph.
-2. In the Span Details panel, find the **Tags** section.
-3. Type a tag label in the input field and press Enter.
-
-To remove a tag, click the × on any tag chip.
-
----
-
-## Notes
-
-- Tags are case-sensitive. `Reviewed` and `reviewed` are different tags.
-- A span can have multiple tags. There is no enforced limit on the number of tags per span.
-- Deleting a span (via `POST /api/reset`) also deletes all tags for that span.
-- Tags do not affect span severity or trigger alerts — they are purely for analyst workflow organization.

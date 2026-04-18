@@ -1,0 +1,48 @@
+---
+title: "Google Antigravity"
+description: "Connect Google Antigravity to ClaudeSec for real-time observability and security monitoring."
+---
+
+## Overview
+
+[Google Antigravity](https://antigravity.google) is an agent-first IDE from Google Labs. ClaudeSec detects this harness when OTLP resource attributes include `service.name=antigravity` (or otherwise match `/antigravity/i`).
+
+---
+
+## Setup
+
+### 1. Start ClaudeSec
+
+```bash
+cd ClaudeSec
+npm run dev
+```
+
+### 2. Export OTLP environment variables
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_SERVICE_NAME=antigravity
+```
+
+### 3. Launch Antigravity
+
+Start Antigravity in the same shell session. New spans should appear in ClaudeSec immediately.
+
+---
+
+## Key attributes ClaudeSec uses
+
+| Attribute | Purpose |
+|---|---|
+| `service.name` | Harness detection (`antigravity`) |
+| `gen_ai.request.model` | Model usage and cost attribution |
+| `antigravity.agent_kind` | Agent role metadata |
+
+---
+
+## Notes
+
+- If spans show up under **Unknown Agent**, verify `OTEL_SERVICE_NAME=antigravity` is set before launch.
+- All spans are evaluated against ClaudeSec's built-in threat rules (183 rules) plus any custom rules you add.

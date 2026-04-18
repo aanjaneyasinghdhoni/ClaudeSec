@@ -1,122 +1,124 @@
 ---
 title: "Sessions API"
-description: "GET /api/sessions and PATCH /api/sessions/:traceId — manage agent sessions."
+description: "List sessions, update session metadata, compare sessions, and fetch per-session health."
 ---
 
-## What is a session?
+## Overview
 
-A session corresponds to a single OpenTelemetry trace — all spans sharing the same `traceId` belong to the same session. ClaudeSec automatically creates a session record when it sees a `traceId` for the first time.
-
-The auto-generated session name follows the pattern `{HarnessName} · {time}` (e.g., `Claude Code · 2:34:12 PM`). You can rename sessions via the API or the Sessions panel in the dashboard.
+A ClaudeSec session maps to a single OpenTelemetry `traceId`. Session rows are created automatically the first time a trace is ingested.
 
 ---
 
-## List sessions
+## GET /api/sessions
+
+List sessions with aggregate stats and scores.
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `label` | string | Optional filter (`normal`, `incident`, `investigation`, `automated`, `other`) |
+
+### Response fields (per session)
+
+| Field | Type | Description |
+|---|---|---|
+| `traceId` | string | Session trace ID |
+| `name` | string | Display name |
+| `createdAt` | string | ISO timestamp |
+| `pinned` | number | `1` or `0` |
+| `label` | string | Session label |
+| `notes` | string | Analyst notes |
+| `spanCount` | number | Total spans |
+| `threatCount` | number | Spans where severity != `none` |
+| `maxSeverityRank` | number | `0..3` severity rank |
+| `harnesses` | string | Comma-separated harness IDs |
+| `threatHigh` / `threatMedium` / `threatLow` | number | Per-severity threat counts |
+| `alertCount` | number | Alert rows tied to this trace |
+| `riskScore` | number | Risk score `0..100` (higher = riskier) |
+| `healthScore` | number | `100 - riskScore` |
+
+---
+
+## PATCH /api/sessions/:traceId
+
+Update one or more mutable fields for a session.
+
+```json
+{
+  "name": "Incident triage · checkout workflow",
+  "pinned": true,
+  "label": "investigation",
+  "notes": "Suspected prompt injection from copied terminal output."
+}
+```
+
+### Supported fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Must be non-empty after trim |
+| `pinned` | boolean | Max 10 pinned sessions total |
+| `label` | string | One of `normal`, `incident`, `investigation`, `automated`, `other` |
+| `notes` | string | Free-form text |
+
+### Responses
+
+- `200` → `{ "status": "ok" }`
+- `400` invalid field values
+- `404` session not found
+- `409` pin limit reached
+
+---
+
+## GET /api/sessions/:traceId/health
+
+Returns dedicated health breakdown for one session:
+
+```json
+{
+  "score": 64,
+  "grade": "C",
+  "threatHigh": 1,
+  "threatMedium": 1,
+  "threatLow": 1,
+  "alertCount": 2
+}
+```
+
+---
+
+## GET /api/sessions/compare
+
+Compare two sessions side-by-side.
 
 ```
-GET /api/sessions
+GET /api/sessions/compare?a=<traceIdA>&b=<traceIdB>
 ```
-
-Returns all sessions ordered by creation time, newest first, with aggregate statistics.
 
 ### Response
 
 ```json
 {
-  "sessions": [
-    {
-      "traceId":        "4bf92f3577b34da6a3ce929d0e0e4736",
-      "name":           "Claude Code · 2:34:12 PM",
-      "createdAt":      "2024-01-15T14:34:12.000Z",
-      "spanCount":      47,
-      "threatCount":    2,
-      "maxSeverityRank": 3,
-      "harnesses":      "claude-code"
-    }
-  ]
+  "a": {
+    "traceId": "trace-a",
+    "name": "Session A",
+    "spanCount": 31,
+    "alertCount": 4,
+    "threatHigh": 1,
+    "threatMedium": 2,
+    "threatLow": 3,
+    "tokensIn": 12040,
+    "tokensOut": 4780,
+    "avgDurationMs": 184,
+    "topTools": [{ "name": "Bash", "count": 8 }],
+    "topRules": [{ "name": "Prompt injection attempt", "count": 2 }]
+  },
+  "b": { "...": "same shape as a" }
 }
 ```
 
-### Session object fields
+### Errors
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `traceId` | string | OpenTelemetry trace ID — primary key |
-| `name` | string | Human-readable session name (editable) |
-| `createdAt` | string | ISO 8601 timestamp when the session was first seen |
-| `spanCount` | integer | Total number of spans in this session |
-| `threatCount` | integer | Number of spans with severity other than `none` |
-| `maxSeverityRank` | integer | 0=none, 1=low, 2=medium, 3=high — useful for sorting by worst threat |
-| `harnesses` | string | Comma-separated list of distinct harness IDs observed in this session |
-
----
-
-## Rename a session
-
-```
-PATCH /api/sessions/:traceId
-Content-Type: application/json
-```
-
-Update the human-readable name of a session.
-
-### Path parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `traceId` | The trace ID of the session to rename |
-
-### Request body
-
-```json
-{ "name": "My feature branch — Jan 15" }
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | New session name. Must be a non-empty string after trimming whitespace. |
-
-### Response
-
-```json
-{ "status": "ok" }
-```
-
-### Error responses
-
-| Status | Body | Reason |
-|--------|------|--------|
-| `400` | `{"error": "name required"}` | `name` was missing or blank |
-
-After a successful rename, a `sessions-update` Socket.io event is broadcast to all connected clients.
-
----
-
-## Examples
-
-### List all sessions
-
-```bash
-curl http://localhost:3000/api/sessions
-```
-
-### Rename a session
-
-```bash
-curl -X PATCH http://localhost:3000/api/sessions/4bf92f3577b34da6a3ce929d0e0e4736 \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "Refactoring session — auth module"}'
-```
-
-### Find sessions with high-severity threats
-
-```bash
-curl -s http://localhost:3000/api/sessions | \
-  jq '.sessions[] | select(.maxSeverityRank == 3)'
-```
-
-### Count total sessions
-
-```bash
-curl -s http://localhost:3000/api/sessions | jq '.sessions | length'
-```
+- `400` missing/duplicate `a` and `b`
+- `404` one or both sessions not found

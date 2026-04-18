@@ -17,11 +17,11 @@
           "quickstart"
         ]
       },
-      {
-        "group": "Harnesses",
-        "pages": [
-          "harnesses/claude-code",
-          "harnesses/copilot",
+        {
+          "group": "Harnesses",
+          "pages": [
+            "harnesses/claude-code",
+            "harnesses/copilot",
           "harnesses/openhands",
           "harnesses/cursor",
           "harnesses/aider",
@@ -30,12 +30,13 @@
           "harnesses/continue",
           "harnesses/windsurf",
           "harnesses/codex",
-          "harnesses/amazon-q",
-          "harnesses/gemini-cli",
-          "harnesses/roo-code",
-          "harnesses/bolt"
-        ]
-      },
+            "harnesses/amazon-q",
+            "harnesses/gemini-cli",
+            "harnesses/roo-code",
+            "harnesses/antigravity",
+            "harnesses/bolt"
+          ]
+        },
       {
         "group": "Architecture",
         "pages": [
@@ -50,17 +51,14 @@
           "security/suppressions"
         ]
       },
-      {
-        "group": "Observatory",
-        "pages": [
-          "observatory/welcome",
-          "observatory/processes",
-          "observatory/session-labels",
-          "observatory/live-activity",
-          "observatory/command-audit",
-          "observatory/file-access"
-        ]
-      },
+        {
+          "group": "Observatory",
+          "pages": [
+            "observatory/welcome",
+            "observatory/processes",
+            "observatory/session-labels"
+          ]
+        },
       {
         "group": "Integrations",
         "pages": [
@@ -68,29 +66,39 @@
           "collector"
         ]
       },
-      {
-        "group": "API Reference",
-        "pages": [
-          "api-reference/introduction",
-          "api-reference/otlp",
-          "api-reference/graph",
-          "api-reference/sessions",
-          "api-reference/health",
-          "api-reference/spans",
-          "api-reference/tags",
-          "api-reference/rules-api",
-          "api-reference/alerts-api",
-          "api-reference/search",
-          "api-reference/orchestration",
-          "api-reference/bookmarks",
-          "api-reference/export",
-          "api-reference/live-activity",
-          "api-reference/command-audit",
-          "api-reference/file-access",
-          "api-reference/cost-trend",
-          "api-reference/process-control"
-        ]
-      }
+        {
+          "group": "API Reference",
+          "pages": [
+            "api-reference/introduction",
+            "api-reference/otlp",
+            "api-reference/graph",
+            "api-reference/sessions",
+            "api-reference/health",
+            "api-reference/spans",
+            "api-reference/tags",
+            "api-reference/rules-api",
+            "api-reference/alerts-api",
+            "api-reference/search",
+            "api-reference/orchestration",
+            "api-reference/bookmarks",
+            "api-reference/export",
+            "api-reference/webhooks",
+            "api-reference/costs",
+            "api-reference/processes",
+            "api-reference/annotations",
+            "api-reference/graph-export",
+            "api-reference/activity",
+            "api-reference/command-audit",
+            "api-reference/reports",
+            "api-reference/config",
+            "api-reference/db-stats",
+            "api-reference/import",
+            "api-reference/simulate",
+            "api-reference/threshold-rules",
+            "api-reference/suppressions",
+            "api-reference/mcp"
+          ]
+        }
     ]
   },
   "logo": {

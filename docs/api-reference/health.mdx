@@ -1,201 +1,66 @@
 ---
 title: "Session Health API"
-description: "Per-session health scoring and breakdown"
+description: "Session-level scoring and grade breakdown."
 icon: "heart-pulse"
 ---
 
-## Overview
+## Two score surfaces
 
-Every ClaudeSec session (trace) gets a **health score** — a single number from 0 to 100 that summarizes the security posture of that agent run. The score accounts for the number and severity of detected threats and any alerts fired during the session.
+ClaudeSec exposes health in two places:
 
-The score is displayed as a colored badge in the Sessions panel of the dashboard and is available via the REST API for programmatic monitoring.
+1. `GET /api/sessions` includes `riskScore` and `healthScore` for each session.
+2. `GET /api/sessions/:traceId/health` returns the dedicated grade breakdown.
 
----
-
-## Health score formula
-
-```
-score = max(0, 100 − (threatHigh × 15) − (threatMedium × 8) − (threatLow × 3) − min(alertCount × 10, 30))
-```
-
-| Component | Deduction per unit | Cap |
-|-----------|--------------------|-----|
-| High-severity span | 15 points | — |
-| Medium-severity span | 8 points | — |
-| Low-severity span | 3 points | — |
-| Alert fired | 10 points | 30 points total |
-
-The score floor is 0 — it cannot go negative.
-
-### Grade mapping
-
-| Score | Grade |
-|-------|-------|
-| ≥ 90 | **A** |
-| ≥ 75 | **B** |
-| ≥ 60 | **C** |
-| ≥ 40 | **D** |
-| < 40 | **F** |
-
-### Dashboard badge colors
-
-| Score range | Color |
-|-------------|-------|
-| ≥ 80 | Green |
-| 50–79 | Yellow |
-| < 50 | Red |
-
----
-
-## GET /api/sessions
-
-Returns all sessions with a `healthScore` field pre-computed for each.
-
-```
-GET /api/sessions
-```
-
-### Response
-
-```json
-{
-  "sessions": [
-    {
-      "traceId":         "4bf92f3577b34da6a3ce929d0e0e4736",
-      "name":            "Claude Code · 2:34:12 PM",
-      "createdAt":       "2024-01-15T14:34:12.000Z",
-      "pinned":          0,
-      "spanCount":       47,
-      "threatCount":     3,
-      "maxSeverityRank": 3,
-      "harnesses":       "claude-code",
-      "threatHigh":      1,
-      "threatMedium":    1,
-      "threatLow":       1,
-      "alertCount":      2,
-      "healthScore":     64
-    }
-  ]
-}
-```
-
-### Session object fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `traceId` | string | OpenTelemetry trace ID — primary key |
-| `name` | string | Human-readable session name |
-| `createdAt` | string | ISO 8601 timestamp of first span ingested |
-| `pinned` | integer | `1` if pinned to top of list, `0` otherwise |
-| `spanCount` | integer | Total spans in session |
-| `threatCount` | integer | Spans with severity other than `none` |
-| `maxSeverityRank` | integer | `0`=none, `1`=low, `2`=medium, `3`=high |
-| `harnesses` | string | Comma-separated distinct harness IDs |
-| `threatHigh` | integer | Count of high-severity spans |
-| `threatMedium` | integer | Count of medium-severity spans |
-| `threatLow` | integer | Count of low-severity spans |
-| `alertCount` | integer | Count of alert rows for this session |
-| `healthScore` | integer | Computed health score (0–100) |
+These are related but computed by different logic in the current codebase.
 
 ---
 
 ## GET /api/sessions/:traceId/health
 
-Returns the detailed health breakdown for a single session.
+This endpoint computes:
 
 ```
-GET /api/sessions/:traceId/health
+score = max(0, 100 − (high × 15) − (medium × 8) − (low × 3) − min(alertCount × 10, 30))
 ```
 
-### Path parameters
+Grade mapping:
 
-| Parameter | Description |
-|-----------|-------------|
-| `traceId` | The trace ID of the session |
+| Score | Grade |
+|---|---|
+| `>= 90` | `A` |
+| `>= 75` | `B` |
+| `>= 60` | `C` |
+| `>= 40` | `D` |
+| `< 40` | `F` |
 
 ### Response
 
 ```json
 {
-  "score":        64,
-  "grade":        "C",
-  "threatHigh":   1,
+  "score": 64,
+  "grade": "C",
+  "threatHigh": 1,
   "threatMedium": 1,
-  "threatLow":    1,
-  "alertCount":   2
+  "threatLow": 1,
+  "alertCount": 2
 }
 ```
 
-### Response fields
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `score` | integer | Health score 0–100 |
-| `grade` | string | Letter grade: `A`, `B`, `C`, `D`, or `F` |
-| `threatHigh` | integer | High-severity span count |
-| `threatMedium` | integer | Medium-severity span count |
-| `threatLow` | integer | Low-severity span count |
-| `alertCount` | integer | Total alert rows for this session |
+## GET /api/sessions (inline score fields)
 
-### Error responses
+Each session row includes:
 
-| Status | Body | Reason |
-|--------|------|--------|
-| `404` | `{"error": "session not found"}` | No session with that `traceId` |
+- `riskScore` (0..100, higher = riskier)
+- `healthScore` (`100 - riskScore`)
+
+The inline risk model uses weighted severity counts, alert weight, and threat density (`threatCount / spanCount`) to rank sessions.
 
 ---
 
-## Examples
+## Errors
 
-### Get health for a specific session
+`GET /api/sessions/:traceId/health` returns:
 
-```bash
-curl http://localhost:3000/api/sessions/4bf92f3577b34da6a3ce929d0e0e4736/health
-```
-
-### List all sessions sorted by health score
-
-```bash
-curl -s http://localhost:3000/api/sessions | \
-  jq '.sessions | sort_by(.healthScore) | .[] | {name, healthScore, grade: (if .healthScore >= 90 then "A" elif .healthScore >= 75 then "B" elif .healthScore >= 60 then "C" elif .healthScore >= 40 then "D" else "F" end)}'
-```
-
-### Find all sessions with a failing health score
-
-```bash
-curl -s http://localhost:3000/api/sessions | \
-  jq '.sessions[] | select(.healthScore < 40) | {traceId, name, healthScore}'
-```
-
-### Monitor health in a CI/CD pipeline
-
-```bash
-#!/bin/bash
-# Fail the pipeline if any session has health < 60
-FAILING=$(curl -s http://localhost:3000/api/sessions | \
-  jq '[.sessions[] | select(.healthScore < 60)] | length')
-
-if [ "$FAILING" -gt 0 ]; then
-  echo "ERROR: $FAILING session(s) below health threshold"
-  exit 1
-fi
-```
-
-### CLI equivalent
-
-```bash
-# Show sessions ranked by health score
-claudesec top --by health
-
-# List all sessions with health breakdown
-claudesec sessions
-```
-
----
-
-## Notes
-
-- The `healthScore` in `GET /api/sessions` is computed inline by the SQL query — it reflects the current state of the database at the time of the request.
-- The dedicated `GET /api/sessions/:traceId/health` endpoint calls `computeHealthScore()` which runs the same formula but returns the full breakdown object with the grade.
-- Alert count deductions are capped at 30 points (3 alerts maximum contribution) to prevent a flood of minor alerts from zeroing out an otherwise clean session.
-- Behavioral anomaly alerts (token spikes, threat bursts) and threshold rule alerts all count toward `alertCount`.
+- `404` → `{ "error": "session not found" }`

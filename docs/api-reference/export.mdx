@@ -12,8 +12,9 @@ Downloads all recorded spans as a JSON file.
 ```json Response (attachment)
 {
   "exportedAt": "2025-01-01T12:00:00.000Z",
-  "version": "0.4.0",
-  "spans": [ ... ]
+  "version": "1.0.0",
+  "spans": [ ... ],
+  "annotations": [ ... ]
 }
 ```
 
@@ -31,7 +32,7 @@ spanId,traceId,name,harness,severity,protocol,reason,startNano,endNano
 
 `POST /api/reset`
 
-Clears all spans, sessions, and alerts from the database. Emits `graph-update`, `sessions-update`, and `alerts-update` via Socket.io.
+Clears spans, sessions, alerts, annotations, tags, bookmarks, FTS rows, and webhook delivery history. Emits `graph-update`, `sessions-update`, and `alerts-update` via Socket.io.
 
 <Warning>
 This operation is irreversible. All recorded telemetry data will be permanently deleted.

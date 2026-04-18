@@ -1,24 +1,13 @@
 ---
 title: "Config API"
-description: "Read server configuration and generate OTLP collector YAML"
+description: "Runtime config, collector config export, and scrub status."
 icon: "settings"
 ---
 
-## Overview
+## GET /api/config
 
-The Config API exposes the current server configuration (retention limits, rate limiting, webhook status) and can generate an OpenTelemetry Collector YAML configuration file for proxy deployments.
+Returns effective runtime configuration:
 
-## Endpoints
-
-### GET /api/config
-
-Get the current server configuration.
-
-```bash
-curl http://localhost:3000/api/config
-```
-
-**Response:**
 ```json
 {
   "maxSpans": 50000,
@@ -31,52 +20,32 @@ curl http://localhost:3000/api/config
 }
 ```
 
-`webhookUrl` is `"***"` when configured (never reveals the actual URL) or `null` when not set. Rate limiting values come from environment variables or their defaults.
+`webhookUrl` is redacted as `"***"` when configured, otherwise `null`.
 
-### GET /api/collector-config
+---
 
-Download an OpenTelemetry Collector configuration file (YAML) pre-configured to forward traces to this ClaudeSec instance.
+## GET /api/collector-config
+
+Downloads a ready-to-run OpenTelemetry Collector YAML file (`text/yaml`) that forwards traces to this ClaudeSec server.
 
 ```bash
 curl http://localhost:3000/api/collector-config -o otel-collector-config.yaml
 ```
 
-**Response:** YAML file with `Content-Type: text/yaml` and a download disposition header.
+---
 
-```yaml
-# OpenTelemetry Collector configuration for ClaudeSec
-receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
+## GET /api/scrub
 
-processors:
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 256
-    spike_limit_mib: 64
-  batch:
-    timeout: 200ms
-    send_batch_size: 100
-    send_batch_max_size: 500
+Returns data-scrubbing status and honeytoken count.
 
-exporters:
-  otlphttp:
-    endpoint: http://host.docker.internal:3000
-    tls:
-      insecure: true
-  debug:
-    verbosity: basic
-
-service:
-  pipelines:
-    traces:
-      receivers:  [otlp]
-      processors: [memory_limiter, batch]
-      exporters:  [otlphttp, debug]
+```json
+{
+  "enabled": true,
+  "envOverride": false,
+  "honeytokens": 2,
+  "description": "Inline redaction of ... sensitive attribute keys ..."
+}
 ```
 
-The `endpoint` in the exporter automatically uses the server's current `PORT` value.
+- `enabled` is false when `CLAUDESEC_DISABLE_SCRUB=1`
+- `envOverride` indicates that env config is forcing scrub behavior
