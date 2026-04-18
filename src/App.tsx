@@ -704,7 +704,8 @@ export default function App() {
 
   // Initial load
   useEffect(() => {
-    fetch('/api/graph')
+    const graphUrl = activeSession ? `/api/graph?session=${encodeURIComponent(activeSession)}` : '/api/graph';
+    fetch(graphUrl)
       .then(r => r.json())
       .then(({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
         setNodes(applyLayout(n, e, layoutMode));
@@ -713,7 +714,7 @@ export default function App() {
       });
     fetchSessions();
     fetchAlertCount();
-  }, []);
+  }, [activeSession]);
 
   useEffect(() => { prevWorkflows.current = workflows; }, [workflows]);
 
@@ -759,6 +760,17 @@ export default function App() {
   // Socket events
   useEffect(() => {
     const handleGraphUpdate = ({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
+      // When scoped to a session, re-fetch the scoped graph instead of using the broadcast
+      if (activeSession) {
+        fetch(`/api/graph?session=${encodeURIComponent(activeSession)}`)
+          .then(r => r.json())
+          .then(({ nodes: sn, edges: se }: { nodes: Node[]; edges: Edge[] }) => {
+            setNodes(applyLayout(sn, se, layoutMode));
+            setEdges(se);
+            syncWorkflows(sn);
+          });
+        return;
+      }
       setNodes(applyLayout(n, e, layoutMode));
       setEdges(e);
       syncWorkflows(n);
@@ -1772,10 +1784,26 @@ export default function App() {
           {/* Graph view */}
           {activeTab === 'graph' && (
             <main className="flex-1 relative min-h-0" style={{ height: '100%', background: 'var(--cs-bg-primary)' }}>
+              {activeSession && (
+                <div className="absolute top-3 left-3 z-30">
+                  <button
+                    onClick={() => { setActiveTab('sessions'); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg backdrop-blur-md transition-all hover:scale-105"
+                    style={{
+                      background: 'color-mix(in srgb, var(--cs-bg-surface) 85%, transparent)',
+                      border: '1px solid var(--cs-border)',
+                      color: '#00d4aa',
+                    }}
+                  >
+                    <span style={{ fontSize: '14px' }}>&larr;</span> Sessions
+                  </button>
+                </div>
+              )}
               <ReactFlow
                 nodes={displayNodes} edges={edges}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
                 onConnect={onConnect} onNodeClick={onNodeClick}
+                onlyRenderVisibleElements
                 fitView colorMode={theme === 'light' ? 'light' : 'dark'}
                 defaultEdgeOptions={{
                   type: layoutMode === 'radial' ? 'smoothstep' : 'default',
@@ -1815,7 +1843,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setLayoutMode('radial');
-                          fetch('/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
+                          fetch(activeSession ? `/api/graph?session=${encodeURIComponent(activeSession)}` : '/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
                             setNodes(applyLayout(n, e, 'radial'));
                             setEdges(e);
                           });
@@ -1830,7 +1858,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setLayoutMode('dagre');
-                          fetch('/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
+                          fetch(activeSession ? `/api/graph?session=${encodeURIComponent(activeSession)}` : '/api/graph').then(r => r.json()).then(({ nodes: n, edges: e }) => {
                             setNodes(applyLayout(n, e, 'dagre'));
                             setEdges(e);
                           });
