@@ -13,6 +13,8 @@ import {
   ChevronDown, MoreHorizontal,
 } from 'lucide-react';
 import { socket } from './socket';
+import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
+import { ContextSidebar } from './ContextSidebar';
 import { RulesTab } from './RulesTab';
 import { AlertsTab } from './AlertsTab';
 import { OrchestrationTab } from './OrchestrationTab';
@@ -240,6 +242,53 @@ function formatDuration(startNano: string, endNano: string): string {
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
 type Tab        = 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
+
+// Category → Tab mapping for the navigation rail
+const CATEGORY_TABS: Record<Category, { id: Tab; icon: React.ReactNode; label: string; badge?: number }[]> = {
+  observe: [
+    { id: 'timeline',      icon: null, label: 'Timeline' },
+    { id: 'orchestration', icon: null, label: 'Orchestration' },
+    { id: 'heatmap',       icon: null, label: 'Heatmap' },
+    { id: 'processes',     icon: null, label: 'Processes' },
+  ],
+  detect: [
+    { id: 'alerts', icon: null, label: 'Alerts' },
+    { id: 'search', icon: null, label: 'Search' },
+  ],
+  protect: [
+    { id: 'rules', icon: null, label: 'Rules' },
+  ],
+  review: [
+    { id: 'bookmarks', icon: null, label: 'Bookmarks' },
+  ],
+  manage: [
+    { id: 'harnesses', icon: null, label: 'Harnesses' },
+    { id: 'costs',     icon: null, label: 'Costs' },
+    { id: 'settings',  icon: null, label: 'Settings' },
+  ],
+};
+
+const TAB_ICONS: Record<Tab, React.ReactNode> = {
+  timeline:      <Clock className="w-3.5 h-3.5" />,
+  orchestration: <Cpu className="w-3.5 h-3.5" />,
+  heatmap:       <Flame className="w-3.5 h-3.5" />,
+  processes:     <Monitor className="w-3.5 h-3.5" />,
+  alerts:        <AlertTriangle className="w-3.5 h-3.5" />,
+  search:        <Search className="w-3.5 h-3.5" />,
+  rules:         <Shield className="w-3.5 h-3.5" />,
+  bookmarks:     <Bookmark className="w-3.5 h-3.5" />,
+  harnesses:     <Cpu className="w-3.5 h-3.5" />,
+  costs:         <Zap className="w-3.5 h-3.5" />,
+  settings:      <Settings className="w-3.5 h-3.5" />,
+};
+
+// Find which category a tab belongs to
+function categoryForTab(tab: Tab): Category {
+  for (const [cat, tabs] of Object.entries(CATEGORY_TABS)) {
+    if (tabs.some(t => t.id === tab)) return cat as Category;
+  }
+  return 'observe';
+}
 
 interface Workflow {
   id: string;
@@ -522,7 +571,21 @@ export default function App() {
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab]           = useState<Tab>('timeline');
+  const [activeCategory, setActiveCategory] = useState<Category>('observe');
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
+
+  // When category changes, jump to its first tab
+  const handleCategoryChange = (cat: Category) => {
+    setActiveCategory(cat);
+    const firstTab = CATEGORY_TABS[cat][0];
+    if (firstTab) setActiveTab(firstTab.id);
+  };
+
+  // Keep category in sync when tab is set directly
+  const handleTabChange = (tab: Tab) => {
+    setActiveTab(tab);
+    setActiveCategory(categoryForTab(tab));
+  };
   const [layoutMode, setLayoutMode]         = useState<LayoutMode>('radial');
 
   // ── Data state ────────────────────────────────────────────────────────────
@@ -1102,22 +1165,23 @@ export default function App() {
     <div className="w-screen h-screen flex flex-col overflow-hidden" style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-base)' }}>
 
       {/* ── Header ── */}
-      <header className="h-12 flex items-center justify-between px-5 z-10 shrink-0" style={{
+      <header className="h-11 flex items-center justify-between px-4 z-10 shrink-0" style={{
         borderBottom: '1px solid var(--cs-border)',
         background: 'var(--cs-bg-surface)',
       }}>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #00d4aa, #009e7f)' }}>
-              <Shield className="w-4 h-4 text-white" />
+        {/* Left cluster: logo + sparkline */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #00d4aa, #009e7f)' }}>
+              <Shield className="w-3.5 h-3.5 text-white" />
             </div>
-            <span className="font-display font-bold text-sm tracking-tight" style={{ color: 'var(--cs-text-base)' }}>ClaudeSec</span>
+            <span className="font-display font-bold text-[13px] tracking-tight" style={{ color: 'var(--cs-text-base)' }}>ClaudeSec</span>
           </div>
           <div className="hidden lg:flex items-center gap-2 pl-3" style={{ borderLeft: '1px solid var(--cs-border)' }}>
             <ActivitySparkline />
-            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,170,0.1)' }}>
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,170,0.08)' }}>
               <div className="w-1.5 h-1.5 rounded-full status-live" style={{ background: '#00d4aa' }} />
-              <span className="text-[11px] font-mono font-medium" style={{ color: '#00d4aa' }}>LIVE</span>
+              <span className="text-[10px] font-mono font-semibold" style={{ color: '#00d4aa' }}>LIVE</span>
             </div>
           </div>
         </div>
@@ -1129,7 +1193,8 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex items-center gap-1.5">
+        {/* Right cluster: actions, grouped */}
+        <div className="flex items-center gap-0.5">
           {/* Notification toggle */}
           <button
             onClick={requestNotifications}
@@ -1140,23 +1205,22 @@ export default function App() {
             }}
             title={notifyEnabled ? 'Notifications enabled' : 'Enable desktop notifications'}
           >
-            {notifyEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+            {notifyEnabled ? <Bell className="w-3.5 h-3.5" /> : <BellOff className="w-3.5 h-3.5" />}
           </button>
 
-          {/* Export dropdown — consolidates JSON, CSV, Graph, Collector */}
+          {/* Export dropdown */}
           <div ref={exportMenuRef} className="relative">
             <button
               onClick={() => setShowExportMenu(v => !v)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all"
               style={{
                 background: showExportMenu ? 'var(--cs-bg-elevated)' : 'transparent',
                 color: 'var(--cs-text-muted)',
-                border: '1px solid transparent',
               }}
               onMouseEnter={e => { if (!showExportMenu) (e.target as HTMLElement).style.background = 'var(--cs-bg-elevated)'; }}
               onMouseLeave={e => { if (!showExportMenu) (e.target as HTMLElement).style.background = 'transparent'; }}
             >
-              <Download className="w-3.5 h-3.5" /> Export <ChevronDown className="w-3 h-3" />
+              <Download className="w-3 h-3" /> Export <ChevronDown className="w-2.5 h-2.5" />
             </button>
             {showExportMenu && (
               <div className="absolute right-0 top-full mt-1.5 z-50 dropdown-menu py-1 min-w-[180px]">
@@ -1200,6 +1264,8 @@ export default function App() {
             )}
           </div>
 
+          <div className="header-divider" />
+
           {/* Setup guide */}
           <button
             onClick={() => setShowWelcome(v => !v)}
@@ -1210,7 +1276,7 @@ export default function App() {
             }}
             title="Setup Guide"
           >
-            <Shield className="w-4 h-4" />
+            <Shield className="w-3.5 h-3.5" />
           </button>
 
           {/* Live activity */}
@@ -1223,7 +1289,7 @@ export default function App() {
             }}
             title="Live Agent Activity"
           >
-            <Zap className="w-4 h-4" />
+            <Zap className="w-3.5 h-3.5" />
           </button>
 
           {/* Theme toggle */}
@@ -1233,8 +1299,10 @@ export default function App() {
             style={{ color: 'var(--cs-text-faint)' }}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           </button>
+
+          <div className="header-divider" />
 
           {/* Reset */}
           <button
@@ -1243,7 +1311,7 @@ export default function App() {
             style={{ color: 'var(--cs-text-faint)' }}
             title="Reset all data"
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </header>
@@ -1253,13 +1321,21 @@ export default function App() {
 
       <div className="flex-1 flex overflow-hidden min-h-0">
 
-        {/* ── Left Sidebar ── */}
-        <aside className="w-64 flex flex-col overflow-hidden shrink-0" style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
+        {/* ── Category Rail ── */}
+        <CategoryNav active={activeCategory} onChange={handleCategoryChange} alertCount={alertCount} />
+
+        {/* ── Contextual Sidebar ── */}
+        <ContextSidebar
+          category={activeCategory}
+          alertCount={alertCount}
+          activeTab={activeTab}
+          onTabChange={(tab) => handleTabChange(tab as Tab)}
+          observeContent={<>
 
           {/* Sessions */}
-          <div className="p-3 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+          <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[11px] font-bold uppercase tracking-wider font-mono flex items-center gap-1.5" style={{ color: 'var(--cs-text-faint)' }}>
+              <p className="sidebar-section-label">
                 <Layers className="w-3 h-3" /> Sessions
               </p>
               <div className="flex items-center gap-1.5">
@@ -1283,7 +1359,7 @@ export default function App() {
                     <GitCompare className="w-2.5 h-2.5" /> Close
                   </button>
                 ) : null}
-                <span className="text-[11px] text-slate-600 font-mono">{sessions.length}</span>
+                <span className="text-[10px] text-slate-600 font-mono tabular-nums">{sessions.length}</span>
               </div>
             </div>
             {/* Label filter pills */}
@@ -1328,16 +1404,16 @@ export default function App() {
                 return (
                   <React.Fragment key={s.traceId}>
                   <div
-                    className="flex items-center gap-1 px-2 py-1.5 rounded-md text-xs transition-all group"
-                    style={
-                      isActive
-                        ? { background: 'rgba(0,212,170,0.12)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
+                    className="session-row relative flex items-center gap-1.5 px-2 py-2 text-xs group"
+                    style={{
+                      ...(isActive
+                        ? { background: 'rgba(0,212,170,0.1)', color: '#00d4aa', borderLeftColor: '#00d4aa' }
                         : comparePending === s.traceId
-                        ? { background: 'rgba(59,158,255,0.1)', color: '#3b9eff', border: '1px solid rgba(59,158,255,0.3)' }
+                        ? { background: 'rgba(59,158,255,0.08)', color: '#3b9eff', borderLeftColor: '#3b9eff' }
                         : isPinned
-                        ? { background: 'rgba(255,178,36,0.06)', color: 'var(--cs-text-base)', border: '1px solid rgba(255,178,36,0.15)' }
-                        : { background: 'transparent', color: 'var(--cs-text-muted)', border: '1px solid transparent' }
-                    }
+                        ? { background: 'rgba(255,178,36,0.05)', color: 'var(--cs-text-base)', borderLeftColor: '#ffb224' }
+                        : { borderLeftColor: sevCol + '66' }),
+                    }}
                   >
                     {isPinned && !isActive && <Star className="w-2 h-2 text-yellow-400 shrink-0" />}
                     {!isPinned && !isActive && (
@@ -1397,9 +1473,9 @@ export default function App() {
                           }}
                           title="Click to filter · Ctrl+click to compare"
                         >
-                          {s.name}
+                          <span className="text-[12px] font-medium">{s.name}</span>
                         </button>
-                        <span className="shrink-0 text-[11px] opacity-50">{s.spanCount}</span>
+                        <span className="shrink-0 text-[10px] font-mono opacity-40 tabular-nums">{s.spanCount}</span>
                         {/* Pin / unpin */}
                         <button
                           onClick={async e => {
@@ -1544,7 +1620,8 @@ export default function App() {
           </div>
 
           {/* Search + filters */}
-          <div className="p-3 space-y-2 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+          <div className="p-2.5 space-y-2 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+            <p className="sidebar-section-label mb-1.5"><Search className="w-3 h-3" /> Filters</p>
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--cs-text-faint)' }} />
               <input
@@ -1674,7 +1751,8 @@ export default function App() {
               )}
             </AnimatePresence>
           </div>
-        </aside>
+        </>}
+        />
 
         {/* ── Main Area ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -1684,53 +1762,36 @@ export default function App() {
             <WelcomeScreen onDemoLoaded={() => { setHasEverHadData(true); setShowWelcome(false); fetchSessions(); }} />
           )}
 
-          {/* Tab switcher (hidden during welcome) */}
+          {/* Sub-tab strip — filtered by active category */}
           <div className={`flex items-center gap-0.5 px-3 shrink-0 overflow-x-auto ${(showWelcome || (sessions.length === 0 && !hasEverHadData)) ? 'hidden' : ''}`} style={{
             borderBottom: '1px solid var(--cs-border)',
             background: 'var(--cs-bg-surface)',
           }}>
-            {([
-              { id: 'timeline' as Tab, icon: <Clock className="w-3.5 h-3.5" />, label: 'Timeline' },
-              { id: 'orchestration' as Tab, icon: <Cpu className="w-3.5 h-3.5" />, label: 'Orchestration' },
-              { id: 'alerts' as Tab, icon: <AlertTriangle className="w-3.5 h-3.5" />, label: 'Alerts', badge: alertCount },
-              { id: 'rules' as Tab, icon: <Shield className="w-3.5 h-3.5" />, label: 'Rules' },
-              { id: 'costs' as Tab, icon: <Zap className="w-3.5 h-3.5" />, label: 'Costs' },
-              { id: 'harnesses' as Tab, icon: <Cpu className="w-3.5 h-3.5" />, label: 'Harnesses' },
-              { id: 'heatmap' as Tab, icon: <Flame className="w-3.5 h-3.5" />, label: 'Heatmap' },
-              { id: 'search' as Tab, icon: <Search className="w-3.5 h-3.5" />, label: 'Search' },
-              { id: 'processes' as Tab, icon: <Monitor className="w-3.5 h-3.5" />, label: 'Processes' },
-              { id: 'bookmarks' as Tab, icon: <Bookmark className="w-3.5 h-3.5" />, label: 'Bookmarks' },
-            ] as { id: Tab; icon: React.ReactNode; label: string; badge?: number }[]).map(tab => (
+            {/* Category pill */}
+            <span className="text-[10px] font-bold uppercase tracking-wider font-mono mr-1 shrink-0 px-2 py-1 rounded-md" style={{ color: 'var(--cs-text-faint)', background: 'var(--cs-bg-elevated)' }}>
+              {CATEGORIES.find(c => c.id === activeCategory)?.label}
+            </span>
+            <div className="header-divider" />
+            {CATEGORY_TABS[activeCategory].map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`relative px-3 py-2.5 text-[11px] font-medium flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                onClick={() => handleTabChange(tab.id)}
+                className={`sub-tab-btn relative px-3 py-2 text-[11px] font-medium flex items-center gap-1.5 whitespace-nowrap ${
                   activeTab === tab.id ? 'tab-active' : ''
                 }`}
                 style={{
                   color: activeTab === tab.id ? '#00d4aa' : 'var(--cs-text-faint)',
                 }}
               >
-                {tab.icon} {tab.label}
-                {tab.badge !== undefined && tab.badge > 0 && (
+                {TAB_ICONS[tab.id]} {tab.label}
+                {tab.id === 'alerts' && alertCount > 0 && (
                   <span className="min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full flex items-center justify-center leading-none"
                     style={{ background: '#ff3b5c', color: '#fff' }}>
-                    {tab.badge > 99 ? '99+' : tab.badge}
+                    {alertCount > 99 ? '99+' : alertCount}
                   </span>
                 )}
               </button>
             ))}
-            <button
-              onClick={() => setActiveTab('settings')}
-              className={`relative px-3 py-2.5 text-[11px] font-medium flex items-center gap-1.5 transition-all ml-auto whitespace-nowrap ${
-                activeTab === 'settings' ? 'tab-active' : ''
-              }`}
-              style={{
-                color: activeTab === 'settings' ? '#00d4aa' : 'var(--cs-text-faint)',
-              }}
-            >
-              <Settings className="w-3.5 h-3.5" /> Settings
-            </button>
           </div>
 
 

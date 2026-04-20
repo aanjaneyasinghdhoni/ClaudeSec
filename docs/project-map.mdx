@@ -1,0 +1,304 @@
+---
+title: "Project Map"
+description: "A full directory-level map of every file, module, database table, API route, and data flow in ClaudeSec"
+icon: "map"
+---
+
+## Repository layout
+
+```
+ClaudeSec/
+├── server.ts              # Backend — Express + Socket.IO + Vite + security engine
+├── scrub.ts               # PII redactor + honeytoken detector
+├── index.html             # Vite HTML entry point
+├── vite.config.ts         # Vite + React + TailwindCSS v4 build config
+├── tsconfig.json          # TypeScript config (ESM, Node 18+)
+├── package.json           # Scripts: dev · build · lint · init
+├── openapi.yaml           # OpenAPI 3.0 spec for all REST endpoints
+├── spans.db               # SQLite database (auto-created, WAL mode)
+├── rules.json             # Persisted custom security rules (auto-generated)
+├── docker-compose.yml     # Containerised deployment
+├── Dockerfile             # Multi-stage container image
+├── .env.example           # All supported environment variables
+│
+├── src/                   # React 19 frontend
+│   ├── main.tsx           # React root mount
+│   ├── socket.ts          # Socket.IO client singleton
+│   ├── index.css          # Design system — CSS custom properties, dark/light themes
+│   ├── harnesses.ts       # Agent registry (15 harnesses, colors, env vars)
+│   ├── App.tsx            # Main shell — graph, session sidebar, tab routing
+│   │
+│   ├── AlertsTab.tsx          # Alert list with triage (dismiss / false-positive)
+│   ├── RulesTab.tsx           # Custom regex rule manager + threshold rules
+│   ├── OrchestrationTab.tsx   # Multi-agent coordination graph
+│   ├── CostTab.tsx            # Token usage charts + cost estimation
+│   ├── HarnessTab.tsx         # Agent connection wizard
+│   ├── HeatmapTab.tsx         # Per-minute activity heatmap
+│   ├── SearchTab.tsx          # FTS5 full-text span search UI
+│   ├── ProcessesTab.tsx       # Live process scanner (running AI agents)
+│   ├── BookmarksTab.tsx       # Saved span bookmarks with notes
+│   ├── SettingsTab.tsx        # Webhook, honeytokens, retention, scrubber
+│   ├── CommandAuditTab.tsx    # Shell command audit log
+│   │
+│   ├── WelcomeScreen.tsx      # First-run setup wizard
+│   ├── ComparePanel.tsx       # Side-by-side session comparison
+│   ├── SpanAttributes.tsx     # Span detail panel (attrs, annotations, tags)
+│   ├── FileAccessPanel.tsx    # File system access visualisation
+│   ├── LiveActivityPanel.tsx  # Floating live span ticker overlay
+│   ├── GraphReplay.tsx        # Graph replay controls (play / pause / seek)
+│   ├── GraphSearch.tsx        # In-graph node search (Ctrl+F)
+│   ├── Sparkline.tsx          # Mini activity sparkline chart
+│   ├── ThresholdRulesSection.tsx   # Threshold rule editor (inside RulesTab)
+│   └── WebhookDeliverySection.tsx  # Webhook delivery log (inside SettingsTab)
+│
+├── cli/
+│   ├── init.mjs           # ESM wrapper — bootstraps init.ts via tsx
+│   └── init.ts            # Interactive setup wizard (env vars, server start)
+│
+├── exports/               # Auto-export JSON snapshots (hourly, last 24 kept)
+│
+├── docs/                  # Mintlify documentation site
+│   ├── docs.json          # Navigation config
+│   ├── index.mdx          # Landing page
+│   ├── quickstart.mdx     # 5-minute setup guide
+│   ├── architecture.mdx   # System design + data flow
+│   ├── project-map.mdx    # ← this file
+│   ├── mcp.mdx            # MCP tool integration
+│   ├── collector.mdx      # OTLP collector setup
+│   ├── harnesses/         # Per-agent setup guides (15 agents)
+│   ├── api-reference/     # REST API docs (28+ endpoints)
+│   ├── observatory/       # Dashboard feature guides
+│   └── security/         # Threat detection + suppression docs
+│
+└── .github/
+    ├── workflows/ci.yml        # Lint + build check on push/PR
+    ├── workflows/publish.yml   # npm publish on tag
+    ├── workflows/codeql.yml    # CodeQL security analysis
+    └── dependabot.yml          # Weekly npm + Actions dependency updates
+```
+
+---
+
+## Data flow
+
+```
+AI Agent Harness
+  │
+  │  POST /v1/traces  (OTLP JSON over HTTP)
+  ▼
+server.ts — ingest pipeline
+  ├─ Rate limiter (token bucket, 50 RPS / 200 burst per IP)
+  ├─ Circuit breaker (503 at 90% of max-span cap)
+  ├─ scrub.ts         → redact PII, detect honeytoken hits
+  ├─ harnesses.ts     → detect agent type from service.name
+  ├─ detectSeverity() → match built-in + custom regex rules
+  ├─ SQLite write     → spans · sessions · alerts · spans_fts
+  ├─ Behavioral engine → token spikes · threat bursts · off-hours
+  ├─ Threshold rules  → numeric metric checks per session
+  ├─ Socket.IO emit   → graph:update · span:added · alert:new
+  └─ Webhook fire     → Slack / Discord / custom HTTP POST
+           │
+           ▼
+      React UI (App.tsx)
+        ├─ ReactFlow graph   — radial layout (default) or dagre
+        ├─ Session sidebar   — pin · rename · label · compare · notes
+        └─ 11 analysis tabs — see tab list below
+```
+
+---
+
+## Backend — `server.ts`
+
+### SQLite tables
+
+| Table | Purpose |
+|---|---|
+| `spans` | All ingested OTLP spans — primary data store |
+| `sessions` | Trace groupings with name, pinned flag, label, notes |
+| `alerts` | Security alert log with deduplication (15-min fingerprint window) |
+| `span_bookmarks` | Analyst-bookmarked spans with notes |
+| `suppressions` | Time-gated rule snoozes |
+| `span_tags` | Custom analyst labels on individual spans |
+| `threshold_rules` | User-defined numeric trigger conditions |
+| `annotations` | Free-text investigation notes on spans |
+| `spans_fts` | FTS5 virtual table — full-text search across names + attributes |
+| `webhook_deliveries` | Outbound delivery log (last 500 rows) |
+| `config` | Key-value store (webhook URL, retention, honeytokens) |
+
+### REST API surface
+
+#### Ingestion
+| Method | Route | Description |
+|---|---|---|
+| `POST` | `/v1/traces` | OTLP span ingestion |
+
+#### Graph
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/graph` | Nodes + edges (`?session=` scoped) |
+| `GET` | `/api/graph-export` | Export-ready graph JSON |
+
+#### Spans
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/spans` | All spans |
+| `GET/POST` | `/api/spans/:id/annotations` | Read / add annotations |
+| `DELETE` | `/api/spans/:id/annotations/:aid` | Delete annotation |
+| `GET/POST` | `/api/spans/:id/tags` | Read / add tags |
+| `DELETE` | `/api/spans/:id/tags/:tag` | Remove tag |
+
+#### Sessions
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/sessions` | All sessions with health scores |
+| `PATCH` | `/api/sessions/:id` | Rename / pin / label / notes |
+| `DELETE` | `/api/sessions/:id` | Delete session + spans |
+
+#### Alerts & Rules
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/alerts` | Paginated alert log |
+| `POST` | `/api/alerts/:id/dismiss` | Dismiss alert |
+| `POST` | `/api/alerts/:id/fp` | Mark false positive |
+| `GET/POST` | `/api/rules` | List / create custom regex rules |
+| `DELETE` | `/api/rules/:id` | Delete rule |
+| `GET/POST/DELETE` | `/api/threshold-rules` | Threshold rule management |
+| `PATCH` | `/api/threshold-rules/:id/toggle` | Enable / disable |
+| `GET/POST` | `/api/suppressions` | List / create suppressions |
+| `DELETE` | `/api/suppressions/:id` | Delete suppression |
+
+#### Data & Utilities
+| Method | Route | Description |
+|---|---|---|
+| `GET/POST` | `/api/bookmarks` | List / add bookmarks |
+| `DELETE` | `/api/bookmarks/:id` | Remove bookmark |
+| `GET` | `/api/export` | Full JSON export |
+| `POST` | `/api/import` | Import JSON dump |
+| `GET` | `/api/search` | FTS5 full-text search |
+| `GET` | `/api/health` | Server health + stats |
+| `GET` | `/api/db-stats` | DB row counts + file size |
+| `GET/POST` | `/api/config` | Read / write runtime config |
+| `GET` | `/api/activity` | Per-minute activity (heatmap) |
+| `GET` | `/api/costs` | Token usage per session |
+| `GET` | `/api/processes` | Running AI agent processes |
+| `GET` | `/api/orchestration` | Multi-agent graph |
+| `POST` | `/api/simulate` | Inject synthetic test traces |
+| `POST` | `/api/clear` | Wipe all data |
+| `GET` | `/api/reports` | Summary report |
+| `GET/POST` | `/api/webhook-deliveries` | Delivery log |
+| `POST` | `/api/retry-delivery/:id` | Retry failed webhook |
+| `GET/POST` | `/api/mcp` | MCP tool integration |
+
+### Background jobs
+
+| Job | Interval | Description |
+|---|---|---|
+| Process scanner | Every 30s | Detect running AI agents via `ps` / `tasklist` |
+| Auto-export | Every 1h | JSON snapshot to `exports/` (last 24 kept) |
+| Span pruning | On ingest | Age-based (30 days) + count-based (50k cap) |
+| Delivery log pruning | On webhook fire | Trims to 500 rows |
+
+### Security engine layers
+
+| Layer | Description |
+|---|---|
+| **Built-in rules** | ~20 regex patterns for secrets, API keys, PII, shell injection |
+| **Custom rules** | User-defined regex with severity labels (persisted in `rules.json`) |
+| **Threshold rules** | Fire on metrics: `tokens_in`, `tokens_out`, `threat_count`, `span_count`, `high_threat_count` |
+| **Behavioral anomaly** | Token spike (4× avg), threat burst (≥3/10 spans), excessive tool calls (>100), off-hours activity |
+| **Honeytokens** | Operator-planted canary strings — any match triggers a HIGH severity alert |
+| **Alert deduplication** | 15-minute fingerprint window (rule + session + harness) prevents flooding |
+| **Suppression cache** | 2-second TTL cache avoids per-span SQLite round-trips |
+
+---
+
+## Frontend — `src/`
+
+React 19 + TailwindCSS v4 + ReactFlow (`@xyflow/react`) + Socket.IO client + Framer Motion.
+
+### `App.tsx` responsibilities
+
+- **Graph canvas** — ReactFlow with radial layout (threat nodes on outer danger ring) or dagre fallback
+- **Session sidebar** — list, pin, rename, label, compare (Ctrl+click), notes drawer
+- **Tab routing** — 11 tabs via `activeTab` state (no React Router)
+- **Socket.IO** — `graph:update`, `span:added`, `alert:new` events drive live updates
+- **Live ticker** — streaming span feed overlay (fades after 10s of quiet)
+- **Desktop notifications** — browser `Notification` API for HIGH-severity spans
+- **Graph replay** — step-by-step span playback with speed control
+- **Theme** — dark / light toggle with `localStorage` persistence
+
+### Tab index
+
+| Tab ID | Component | What it shows |
+|---|---|---|
+| `timeline` | inline in `App.tsx` | SVG Gantt-style span timeline |
+| `orchestration` | `OrchestrationTab` | Multi-agent coordination graph |
+| `alerts` | `AlertsTab` | Alert log with dismiss / FP / suppression |
+| `rules` | `RulesTab` | Custom regex + threshold rule editors |
+| `costs` | `CostTab` | Token usage charts + cost estimation |
+| `harnesses` | `HarnessTab` | Agent connection wizard |
+| `heatmap` | `HeatmapTab` | Per-minute activity heatmap |
+| `search` | `SearchTab` | Full-text span search |
+| `processes` | `ProcessesTab` | Running AI agent process list |
+| `bookmarks` | `BookmarksTab` | Saved span bookmarks |
+| `settings` | `SettingsTab` | Webhook, honeytokens, retention, scrubber |
+
+---
+
+## `src/harnesses.ts` — Agent registry
+
+15 supported harnesses. Each entry defines: `id`, `name`, `color`, `description`, `envVars[]`, `serviceNamePattern`, `spanAttributes[]`, `docsUrl`.
+
+| Agent | ID | Color |
+|---|---|---|
+| Claude Code | `claude-code` | `#f97316` Orange |
+| GitHub Copilot CLI | `github-copilot` | `#6366f1` Indigo |
+| OpenHands | `openhands` | `#22c55e` Green |
+| Cursor | `cursor` | `#a855f7` Purple |
+| Aider | `aider` | `#ec4899` Pink |
+| Cline | `cline` | `#14b8a6` Teal |
+| Goose | `goose` | `#f59e0b` Amber |
+| Continue.dev | `continue` | `#0ea5e9` Sky |
+| Windsurf | `windsurf` | `#38bdf8` Light blue |
+| Codex CLI | `codex` | `#10b981` Emerald |
+| Amazon Q Developer | `amazon-q` | `#f59e0b` Amber |
+| Gemini CLI | `gemini-cli` | `#4f46e5` Indigo |
+| Roo-Code | `roo-code` | `#8b5cf6` Violet |
+| Bolt.new | `bolt` | `#06b6d4` Cyan |
+| Google Antigravity | `antigravity` | `#ea580c` Orange-red |
+
+---
+
+## `scrub.ts` — PII redaction
+
+Runs on every span's attributes before they are written to the database, broadcast over Socket.IO, or forwarded to a remote OTLP collector.
+
+| What is redacted | How |
+|---|---|
+| Home directory paths | Regex: `/Users/name`, `/home/name`, `C:\Users\name` |
+| Process `$HOME` | Dynamic regex from `os.homedir()` |
+| OS username | Word-boundary regex from `os.userInfo().username` |
+| Email addresses | Local part masked, domain preserved |
+| Sensitive key names | Full value replaced with `***` for keys matching `authorization`, `api-key`, `token`, `secret`, etc. |
+| Honeytoken strings | Detected in original values before scrubbing; fires HIGH alert |
+
+Disable with `CLAUDESEC_DISABLE_SCRUB=1`.
+
+---
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP server port |
+| `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / custom webhook URL |
+| `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to fire webhook |
+| `CLAUDESEC_DISABLE_SCRUB` | `0` | Set to `1` to disable PII scrubbing |
+| `CLAUDESEC_HONEYTOKENS` | — | Comma-separated canary strings |
+| `CLAUDESEC_MAX_SPANS` | `50000` | Maximum spans retained |
+| `CLAUDESEC_RETENTION_DAYS` | `30` | Days before old sessions are pruned |
+| `CLAUDESEC_AUTO_EXPORT_DIR` | `./exports` | Auto-export output directory |
+| `CLAUDESEC_OTLP_FORWARD_URL` | — | Forward raw OTLP to another collector |
+| `CLAUDESEC_RATE_LIMIT_RPS` | `50` | Sustained ingestion rate per IP |
+| `CLAUDESEC_RATE_LIMIT_BURST` | `200` | Burst capacity per IP |
+| `CLAUDESEC_MAX_SPANS_BATCH` | `500` | Max spans accepted per OTLP batch |
