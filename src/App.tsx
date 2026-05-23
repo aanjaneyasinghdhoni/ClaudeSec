@@ -6,7 +6,7 @@ import {
 import dagre from '@dagrejs/dagre';
 import {
   Shield, AlertTriangle, Activity, Terminal, Trash2,
-  Play, CheckCircle, Search, Download, X,
+  CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
   Sun, Moon, Server, GitCompare, Monitor, Bookmark,
@@ -901,80 +901,6 @@ export default function App() {
     fetchSessions();
   };
 
-  const simulateTrace = async (type: 'normal' | 'high' | 'multi' = 'normal') => {
-    const traceId = Math.random().toString(36).substring(2, 18);
-    const now     = Date.now();
-
-    if (type === 'multi') {
-      // Simulate 3 spans from different harnesses
-      const harnesses = ['claude-code', 'openhands', 'aider'] as const;
-      for (let i = 0; i < harnesses.length; i++) {
-        const spanId = Math.random().toString(36).substring(7);
-        await fetch('/v1/traces', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            resourceSpans: [{
-              resource: { attributes: [
-                { key: 'service.name',       value: { stringValue: harnesses[i] } },
-                { key: 'telemetry.sdk.name', value: { stringValue: harnesses[i] } },
-              ]},
-              scopeSpans: [{ scope: {}, spans: [{
-                traceId, spanId,
-                name:  `${HARNESS_NAMES[harnesses[i]]} · task-${i + 1}`,
-                kind: 1,
-                startTimeUnixNano: String((now + i * 80) * 1_000_000),
-                endTimeUnixNano:   String((now + i * 80 + 200) * 1_000_000),
-                attributes: [
-                  { key: 'protocol', value: { stringValue: 'MCP' } },
-                  { key: 'reason',   value: { stringValue: `Orchestrated sub-task from agent ${i + 1}` } },
-                  { key: 'gen_ai.usage.input_tokens',  value: { intValue: 120 + i * 40 } },
-                  { key: 'gen_ai.usage.output_tokens', value: { intValue: 60  + i * 20 } },
-                ],
-                status: { code: 0 },
-              }]}],
-            }],
-          }),
-        });
-      }
-      return;
-    }
-
-    const isHigh  = type === 'high';
-    const payload = isHigh ? 'cat /etc/passwd' : 'GET /api/v1/data';
-    const reason  = isHigh ? 'Attempting unauthorized access' : 'Fetching workspace data';
-
-    await fetch('/v1/traces', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        resourceSpans: [{
-          resource: { attributes: [
-            { key: 'service.name',       value: { stringValue: 'claude-code' } },
-            { key: 'telemetry.sdk.name', value: { stringValue: 'claude-code' } },
-          ]},
-          scopeSpans: [{ scope: {}, spans: [{
-            traceId,
-            spanId: Math.random().toString(36).substring(7),
-            name: isHigh ? 'Malicious Command' : 'Fetch Data',
-            kind: 1,
-            startTimeUnixNano: String(now * 1_000_000),
-            endTimeUnixNano:   String((now + 120) * 1_000_000),
-            attributes: [
-              { key: 'protocol', value: { stringValue: 'HTTPS' } },
-              { key: 'reason',   value: { stringValue: reason } },
-              { key: 'payload',  value: { stringValue: payload } },
-              { key: 'gen_ai.usage.input_tokens',  value: { intValue: 250 } },
-              { key: 'gen_ai.usage.output_tokens', value: { intValue: 80  } },
-              { key: 'gen_ai.tool.name',           value: { stringValue: isHigh ? 'bash' : 'read_file' } },
-            ],
-            status: { code: 0 },
-          }]}],
-        }],
-      }),
-    });
-  };
-
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const activeHarnesses = useMemo(
@@ -1506,40 +1432,6 @@ export default function App() {
                   </React.Fragment>
                 );
               })}
-            </div>
-          </div>
-
-          {/* Simulate */}
-          <div className="p-3 space-y-1.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
-            <p className="text-[11px] font-bold uppercase tracking-wider font-mono mb-1.5" style={{ color: 'var(--cs-text-faint)' }}>Simulate</p>
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => simulateTrace('normal')}
-                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all group"
-                style={{ background: 'rgba(0,212,170,0.08)', border: '1px solid rgba(0,212,170,0.15)' }}
-                title="Normal Trace"
-              >
-                <Play className="w-3 h-3 group-hover:scale-110 transition-transform" style={{ color: '#00d4aa' }} />
-                <span className="text-[11px] font-medium" style={{ color: '#00d4aa' }}>Normal</span>
-              </button>
-              <button
-                onClick={() => simulateTrace('high')}
-                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all group"
-                style={{ background: 'rgba(255,59,92,0.08)', border: '1px solid rgba(255,59,92,0.15)' }}
-                title="Malicious Trace"
-              >
-                <AlertTriangle className="w-3 h-3 group-hover:scale-110 transition-transform" style={{ color: '#ff3b5c' }} />
-                <span className="text-[11px] font-medium" style={{ color: '#ff3b5c' }}>Threat</span>
-              </button>
-              <button
-                onClick={() => simulateTrace('multi')}
-                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all group"
-                style={{ background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.15)' }}
-                title="Multi-Agent"
-              >
-                <Cpu className="w-3 h-3 group-hover:scale-110 transition-transform" style={{ color: '#8b5cf6' }} />
-                <span className="text-[11px] font-medium" style={{ color: '#8b5cf6' }}>Multi</span>
-              </button>
             </div>
           </div>
 
