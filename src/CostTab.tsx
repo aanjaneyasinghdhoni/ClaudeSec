@@ -452,9 +452,12 @@ export function CostTab() {
             <div className="rounded-xl p-4 text-xs leading-relaxed" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
               <p className="font-semibold mb-2" style={{ color: 'var(--cs-text-base)' }}>Agent telemetry support</p>
               <div className="space-y-1.5" style={{ color: 'var(--cs-text-muted)' }}>
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                  <span><strong className="text-slate-300">Claude Code</strong> — emits tool call spans but does not currently include token counts or model name in telemetry</span>
+                <div className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 mt-1.5 shrink-0" />
+                  <div>
+                    <strong className="text-slate-300">Claude Code</strong> — requires <code className="font-mono bg-slate-800 px-1 rounded text-amber-400">CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1</code> to emit model name and token counts.
+                    <span className="text-slate-600"> Run </span><code className="font-mono bg-slate-800 px-1 rounded text-slate-400">npx claudesec init</code><span className="text-slate-600"> to set this up automatically.</span>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />

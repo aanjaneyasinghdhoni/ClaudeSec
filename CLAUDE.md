@@ -44,14 +44,18 @@ AI agent → POST /v1/traces (OTLP JSON) → server.ts
 
 ```bash
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_LOG_TOOL_DETAILS=1
 ```
+
+The `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` flag enables `claude_code.llm_request` spans with model name and token counts. Without it, only opaque `tool_call/unknown` spans are emitted. `OTEL_LOG_TOOL_DETAILS` adds tool names and input arguments.
 
 ### Key features
 
-- **Welcome screen** with demo trace simulator (`POST /api/simulate`) — first-run UX
-- **183 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
+- **Welcome screen** with guided setup wizard (`npx claudesec init`) — first-run UX
+- **189 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
 - **14 harness support** — Claude Code, Copilot, Cursor, Aider, OpenHands, Cline, Goose, etc.
 - **Process scanner** — detects running agent CLIs via `ps aux`, kill switch via `DELETE /api/processes/:pid`
 - **OTLP forwarding** — transparent proxy to upstream collectors (set `OTEL_FORWARD_URL`)

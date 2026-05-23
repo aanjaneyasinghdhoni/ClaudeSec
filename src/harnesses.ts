@@ -32,13 +32,15 @@ export const HARNESSES: HarnessConfig[] = [
     color: '#f97316',
     description: 'Anthropic\'s official CLI agent for software engineering tasks.',
     envVars: [
-      { key: 'CLAUDE_CODE_ENABLE_TELEMETRY', value: '1', description: 'Enable telemetry' },
+      { key: 'CLAUDE_CODE_ENABLE_TELEMETRY', value: '1', description: 'Enable telemetry export' },
+      { key: 'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA', value: '1', description: 'Enable LLM request spans with model name + token counts' },
       { key: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: '{{ENDPOINT}}', description: 'OTLP collector URL' },
       { key: 'OTEL_EXPORTER_OTLP_PROTOCOL', value: 'http/json', description: 'Protocol' },
+      { key: 'OTEL_LOG_TOOL_DETAILS', value: '1', description: 'Include tool names and input arguments in spans' },
     ],
     serviceNamePattern: /claude/i,
-    spanAttributes: ['gen_ai.tool.name', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens'],
-    docsUrl: 'https://docs.anthropic.com/claude/docs/claude-code',
+    spanAttributes: ['gen_ai.tool.name', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens', 'gen_ai.request.model'],
+    docsUrl: 'https://code.claude.com/docs/en/agent-sdk/observability',
   },
   {
     id: 'github-copilot',

@@ -14,8 +14,10 @@ const HARNESS_CARDS: {
     color: '#00d4aa',
     slug: 'claude-code',
     envVars: `export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
+export OTEL_LOG_TOOL_DETAILS=1`,
   },
   {
     name: 'GitHub Copilot',

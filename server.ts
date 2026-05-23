@@ -2462,6 +2462,13 @@ service:
 
   app.get('/api/config/env-reference', (_req, res) => {
     const envVars = [
+      // Agent telemetry — Claude Code
+      { key: 'CLAUDE_CODE_ENABLE_TELEMETRY',         description: 'Enable Claude Code OTLP trace export',                          default: '',   category: 'Agent Setup' },
+      { key: 'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA',  description: 'Enable LLM request spans with model name + token counts',       default: '',   category: 'Agent Setup' },
+      { key: 'OTEL_LOG_TOOL_DETAILS',                description: 'Include tool names and input arguments in spans',               default: '',   category: 'Agent Setup' },
+      { key: 'OTEL_LOG_TOOL_CONTENT',                description: 'Include full tool input/output bodies (up to 60KB)',             default: '',   category: 'Agent Setup' },
+      { key: 'OTEL_LOG_RAW_API_BODIES',              description: 'Include raw Anthropic Messages API request/response JSON',      default: '',   category: 'Agent Setup' },
+      // ClaudeSec server
       { key: 'CLAUDESEC_RATE_LIMIT_RPS',    description: 'Max OTLP requests per second per IP',     default: '50',     category: 'Performance' },
       { key: 'CLAUDESEC_RATE_LIMIT_BURST',   description: 'Token bucket burst capacity',              default: '200',    category: 'Performance' },
       { key: 'CLAUDESEC_MAX_SPANS_BATCH',    description: 'Max spans allowed per OTLP batch',         default: '500',    category: 'Performance' },
