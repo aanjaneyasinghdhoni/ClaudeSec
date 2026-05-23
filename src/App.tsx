@@ -532,6 +532,9 @@ export default function App() {
   const [hasEverHadData, setHasEverHadData] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'live' | 'idle' | 'setup'>('setup');
+  const [timelineIntroShown, setTimelineIntroShown] = useState(
+    () => localStorage.getItem('claudesec-timeline-intro-dismissed') !== 'true'
+  );
 
   // ── Session rename ────────────────────────────────────────────────────────
   const [editingSession, setEditingSession] = useState<string | null>(null);
@@ -1676,11 +1679,40 @@ export default function App() {
 
           {/* Timeline view */}
           {activeTab === 'timeline' && (
+            <>
+            {timelineIntroShown && (
+              <div className="mx-4 mt-3 mb-1 px-4 py-3 rounded-xl text-xs leading-relaxed flex items-start gap-3" style={{
+                background: 'rgba(0,212,170,0.06)',
+                border: '1px solid rgba(0,212,170,0.15)',
+                color: 'var(--cs-text-muted)',
+              }}>
+                <Activity className="w-4 h-4 shrink-0 mt-0.5" style={{ color: '#00d4aa' }} />
+                <div>
+                  <strong style={{ color: 'var(--cs-text-base)' }}>How to read the timeline:</strong>{' '}
+                  Spans are individual operations (LLM calls, tool uses, bash commands).
+                  Sessions group related spans by trace ID.
+                  Severity: <span className="text-green-400">Low</span> = audit trail,{' '}
+                  <span className="text-orange-400">Medium</span> = suspicious pattern,{' '}
+                  <span className="text-red-400">High</span> = active threat.
+                </div>
+                <button
+                  onClick={() => {
+                    setTimelineIntroShown(false);
+                    localStorage.setItem('claudesec-timeline-intro-dismissed', 'true');
+                  }}
+                  className="shrink-0 hover:opacity-70 transition-opacity"
+                  style={{ color: 'var(--cs-text-faint)' }}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             <Timeline
               workflows={activeSession ? visibleWorkflows : workflows}
               onSelect={onTimelineSelect}
               selectedId={timelineSelected ?? undefined}
             />
+            </>
           )}
 
           {/* Orchestration view */}
