@@ -531,6 +531,7 @@ export default function App() {
   const [activeSession, setActiveSession]   = useState<string | null>(null);
   const [hasEverHadData, setHasEverHadData] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'live' | 'idle' | 'setup'>('setup');
 
   // ── Session rename ────────────────────────────────────────────────────────
   const [editingSession, setEditingSession] = useState<string | null>(null);
@@ -1024,6 +1025,25 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  useEffect(() => {
+    if (sessions.length === 0) {
+      setConnectionStatus('setup');
+      return;
+    }
+    setConnectionStatus('idle');
+    let idleTimer: ReturnType<typeof setTimeout>;
+    const resetIdle = () => {
+      setConnectionStatus('live');
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => setConnectionStatus('idle'), 60_000);
+    };
+    socket.on('span-added', resetIdle);
+    return () => {
+      socket.off('span-added', resetIdle);
+      clearTimeout(idleTimer);
+    };
+  }, [sessions.length]);
+
   return (
     <div className="w-screen h-screen flex flex-col overflow-hidden" style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-base)' }}>
 
@@ -1181,6 +1201,33 @@ export default function App() {
 
         {/* ── Left Sidebar ── */}
         <aside className="w-64 flex flex-col overflow-hidden shrink-0" style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
+
+          {/* Connection Status */}
+          <div className="px-3 py-2 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+            <span className={`w-2 h-2 rounded-full shrink-0 ${
+              connectionStatus === 'live' ? 'bg-green-500 status-live' :
+              connectionStatus === 'idle' ? 'bg-amber-500' :
+              'bg-red-500'
+            }`} />
+            <span className="text-[11px] font-mono" style={{
+              color: connectionStatus === 'live' ? '#00d4aa' :
+                     connectionStatus === 'idle' ? '#f59e0b' :
+                     '#ef4444'
+            }}>
+              {connectionStatus === 'live' ? 'Live' :
+               connectionStatus === 'idle' ? 'Idle' :
+               'Setup needed'}
+            </span>
+            {connectionStatus === 'setup' && (
+              <button
+                onClick={() => setShowWelcome(true)}
+                className="ml-auto text-[11px] hover:underline"
+                style={{ color: '#00d4aa' }}
+              >
+                Connect
+              </button>
+            )}
+          </div>
 
           {/* Sessions */}
           <div className="p-3 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
