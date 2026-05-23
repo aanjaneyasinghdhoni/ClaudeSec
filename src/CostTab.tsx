@@ -492,6 +492,11 @@ export function CostTab() {
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
                           <code className="text-slate-200 text-[11px] font-mono">{m.label}</code>
+                          {(m as any).inferred && (
+                            <span title="Model inferred from agent type. Actual model may differ." className="ml-1 px-1 py-0.5 rounded text-[9px] font-mono bg-amber-900/30 text-amber-400 border border-amber-800/30 cursor-help">
+                              inferred
+                            </span>
+                          )}
                           {!m.knownPrice && (
                             <span title="No pricing data for this model" className="text-slate-600 cursor-help">
                               <HelpCircle className="w-3 h-3" />
@@ -560,6 +565,11 @@ export function CostTab() {
                         </td>
                         <td className="px-4 py-2.5">
                           <code className="text-slate-400 text-xs font-mono">{s.modelLabel}</code>
+                          {(s as any).inferred && (
+                            <span title="Model inferred from agent type. Actual model may differ." className="ml-1 px-1 py-0.5 rounded text-[9px] font-mono bg-amber-900/30 text-amber-400 border border-amber-800/30 cursor-help">
+                              inferred
+                            </span>
+                          )}
                           {!s.knownPrice && <span className="ml-1 text-slate-700 text-[11px]">(?)</span>}
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono text-slate-400 text-[11px]">

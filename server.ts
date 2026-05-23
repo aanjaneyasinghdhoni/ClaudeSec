@@ -3341,6 +3341,7 @@ ${alerts.length > 0 ? `
       tokensOut:  number;
       costUsd:    number;
       knownPrice: boolean;
+      inferred:   boolean;
     }
 
     const key = (t: string, m: string) => `${t}::${m}`;
@@ -3358,12 +3359,14 @@ ${alerts.length > 0 ? `
           attrs['llm.request.model']    ?? ''
         ).toLowerCase().trim();
         // Infer model from harness if not provided by telemetry
+        let modelInferred = false;
         if (!model || model === '') {
           const harness = span.harness?.toLowerCase() ?? '';
           if (harness.includes('claude') || harness === 'claude-code') model = 'claude-sonnet-4-6';
           else if (harness.includes('copilot')) model = 'gpt-4o';
           else if (harness.includes('cursor')) model = 'claude-sonnet-4-6';
           else if (harness.includes('codex')) model = 'gpt-4o';
+          if (model) modelInferred = true;
         }
         const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);
         const to = Number(attrs['gen_ai.usage.output_tokens'] ?? attrs['llm.usage.output_tokens'] ?? 0);
@@ -3380,6 +3383,7 @@ ${alerts.length > 0 ? `
             modelLabel: pricing?.label ?? (model || 'Unknown Model'),
             tokensIn:   0, tokensOut: 0, costUsd: 0,
             knownPrice: !!pricing,
+            inferred:   modelInferred,
           });
         }
         const row = rowMap.get(k)!;
@@ -3401,15 +3405,16 @@ ${alerts.length > 0 ? `
     rows.forEach(r => { totalCostUsd += r.costUsd; });
 
     // Per-model summary (across all sessions)
-    const modelSummary = new Map<string, { label: string; tokensIn: number; tokensOut: number; costUsd: number; knownPrice: boolean }>();
+    const modelSummary = new Map<string, { label: string; tokensIn: number; tokensOut: number; costUsd: number; knownPrice: boolean; inferred: boolean }>();
     for (const row of rows) {
       if (!modelSummary.has(row.model)) {
-        modelSummary.set(row.model, { label: row.modelLabel, tokensIn: 0, tokensOut: 0, costUsd: 0, knownPrice: row.knownPrice });
+        modelSummary.set(row.model, { label: row.modelLabel, tokensIn: 0, tokensOut: 0, costUsd: 0, knownPrice: row.knownPrice, inferred: row.inferred });
       }
       const ms = modelSummary.get(row.model)!;
       ms.tokensIn  += row.tokensIn;
       ms.tokensOut += row.tokensOut;
       ms.costUsd   += row.costUsd;
+      if (row.inferred) ms.inferred = true; // if ANY session was inferred, mark model as inferred
     }
 
     res.json({
