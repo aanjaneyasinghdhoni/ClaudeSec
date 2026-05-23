@@ -438,15 +438,39 @@ export function CostTab() {
       </div>
 
       {!hasData ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-700 p-8">
-          <DollarSign className="w-10 h-10" />
-          <p className="text-sm text-slate-500 font-medium">No token data yet</p>
-          <p className="text-xs text-slate-600 text-center max-w-xs leading-relaxed">
-            Costs appear when spans include{' '}
-            <code className="font-mono bg-slate-800 px-1 rounded text-slate-400">gen_ai.usage.input_tokens</code>{' '}
-            and{' '}
-            <code className="font-mono bg-slate-800 px-1 rounded text-slate-400">gen_ai.request.model</code>.
-          </p>
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
+          <DollarSign className="w-10 h-10 text-slate-700" />
+          <p className="text-sm text-slate-400 font-medium">No token usage data available</p>
+          <div className="max-w-md space-y-3">
+            <div className="rounded-xl p-4 text-xs leading-relaxed" style={{ background: 'rgba(0,212,170,0.06)', border: '1px solid rgba(0,212,170,0.15)' }}>
+              <p className="font-semibold mb-2" style={{ color: 'var(--cs-text-base)' }}>Why am I seeing this?</p>
+              <p style={{ color: 'var(--cs-text-muted)' }}>
+                Cost tracking requires agents to include <code className="font-mono bg-slate-800 px-1 rounded text-slate-400">gen_ai.usage.input_tokens</code> and{' '}
+                <code className="font-mono bg-slate-800 px-1 rounded text-slate-400">gen_ai.usage.output_tokens</code> in their OpenTelemetry spans.
+              </p>
+            </div>
+            <div className="rounded-xl p-4 text-xs leading-relaxed" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+              <p className="font-semibold mb-2" style={{ color: 'var(--cs-text-base)' }}>Agent telemetry support</p>
+              <div className="space-y-1.5" style={{ color: 'var(--cs-text-muted)' }}>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                  <span><strong className="text-slate-300">Claude Code</strong> — emits tool call spans but does not currently include token counts or model name in telemetry</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                  <span><strong className="text-slate-300">Aider, OpenHands, LangChain-based</strong> — typically include full token usage via OpenAI/Anthropic SDK instrumentation</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                  <span><strong className="text-slate-300">Cursor, Copilot, Windsurf</strong> — varies by version; may not expose OTLP telemetry</span>
+                </div>
+              </div>
+            </div>
+            <p className="text-[11px] text-center" style={{ color: 'var(--cs-text-faint)' }}>
+              ClaudeSec monitors all agent activity regardless of cost data availability.
+              Security detection, timeline, and alerts work independently of token tracking.
+            </p>
+          </div>
         </div>
       ) : (
         <div className="flex-1 flex flex-col p-5 gap-4 min-h-0 overflow-auto">
