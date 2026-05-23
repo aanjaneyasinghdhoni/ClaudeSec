@@ -39,6 +39,48 @@ function printExports(harness: HarnessConfig) {
   }
 }
 
+const MARKER_START = '# >>> ClaudeSec >>>';
+const MARKER_END   = '# <<< ClaudeSec <<<';
+
+function getShellProfile(): string | null {
+  const shell = process.env.SHELL ?? '';
+  const home  = process.env.HOME ?? '';
+  if (!home) return null;
+  if (shell.includes('zsh'))  return `${home}/.zshrc`;
+  if (shell.includes('bash')) {
+    const bashrc = `${home}/.bashrc`;
+    const profile = `${home}/.bash_profile`;
+    return fs.existsSync(bashrc) ? bashrc : profile;
+  }
+  if (shell.includes('fish')) return `${home}/.config/fish/config.fish`;
+  return null;
+}
+
+function writeToShellProfile(harness: HarnessConfig): boolean {
+  const profilePath = getShellProfile();
+  if (!profilePath) return false;
+
+  const endpoint = `${BASE_URL}/v1/traces`;
+  const lines = harness.envVars.map(env => {
+    const val = env.value.replace('{{ENDPOINT}}', endpoint);
+    return `export ${env.key}="${val}"`;
+  });
+  const block = `${MARKER_START}\n${lines.join('\n')}\n${MARKER_END}`;
+
+  let content = '';
+  try { content = fs.readFileSync(profilePath, 'utf-8'); } catch {}
+
+  if (content.includes(MARKER_START)) {
+    const re = new RegExp(`${MARKER_START}[\\s\\S]*?${MARKER_END}`, 'g');
+    content = content.replace(re, block);
+  } else {
+    content = content.trimEnd() + '\n\n' + block + '\n';
+  }
+
+  fs.writeFileSync(profilePath, content);
+  return true;
+}
+
 async function apiFetch(path: string, opts?: { method?: string; body?: unknown }): Promise<any> {
   const url = `${BASE_URL}${path}`;
   const init: RequestInit = {
@@ -76,11 +118,36 @@ async function cmdInit() {
     for (const h of choices) printExports(h);
   } else if (idx >= 0 && idx < choices.length) {
     printExports(choices[idx]);
+
+    const profilePath = getShellProfile();
+    if (profilePath) {
+      const answer = await prompt(rl, `\x1b[1mWrite these to ${profilePath}? (y/N): \x1b[0m`);
+      if (answer.trim().toLowerCase() === 'y') {
+        if (writeToShellProfile(choices[idx])) {
+          console.log(`\x1b[32m✓ Environment variables written to ${profilePath}\x1b[0m`);
+          console.log(`\x1b[90mRestart your terminal or run: source ${profilePath}\x1b[0m\n`);
+        } else {
+          console.log(`\x1b[31m✗ Could not write to shell profile\x1b[0m\n`);
+        }
+      }
+    }
   } else {
     console.error('\x1b[31mInvalid selection.\x1b[0m');
     rl.close();
     process.exit(1);
   }
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/health`);
+    if (res.ok) {
+      console.log(`\x1b[32m✓ ClaudeSec server is running at ${BASE_URL}\x1b[0m\n`);
+    } else {
+      console.log(`\x1b[33m⚠ ClaudeSec server returned ${res.status}. Make sure it's running.\x1b[0m\n`);
+    }
+  } catch {
+    console.log(`\x1b[33m⚠ Could not reach ClaudeSec at ${BASE_URL}. Start the server with: npm run dev\x1b[0m\n`);
+  }
+
   rl.close();
 }
 
