@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing, History } from 'lucide-react';
+import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing, History, Copy, Terminal } from 'lucide-react';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
 import { WebhookDeliverySection } from './WebhookDeliverySection';
 
@@ -457,6 +457,82 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
 }
 
 // ---------------------------------------------------------------------------
+// 5. Env Reference section
+// ---------------------------------------------------------------------------
+
+function EnvCopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      className="p-1 rounded hover:bg-slate-700 transition-colors"
+      title="Copy"
+    >
+      {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-slate-500" />}
+    </button>
+  );
+}
+
+interface EnvVar {
+  key: string;
+  description: string;
+  default: string;
+  category: string;
+  sensitive?: boolean;
+  currentValue: string;
+  isSet: boolean;
+}
+
+function EnvReferenceSection() {
+  const [vars, setVars] = useState<EnvVar[]>([]);
+
+  useEffect(() => {
+    fetch('/api/config/env-reference')
+      .then(r => r.json())
+      .then(d => setVars(d.envVars ?? []))
+      .catch(() => {});
+  }, []);
+
+  const categories = [...new Set(vars.map(v => v.category))];
+
+  return (
+    <div className="space-y-4 mt-3">
+      {/* Quick setup command */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 rounded-lg">
+        <Terminal className="w-3.5 h-3.5" style={{ color: '#00d4aa' }} />
+        <code className="text-xs text-slate-300 font-mono flex-1">npx claudesec init</code>
+        <EnvCopyButton text="npx claudesec init" />
+      </div>
+
+      {categories.map(cat => (
+        <div key={cat}>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">{cat}</p>
+          <div className="space-y-1">
+            {vars.filter(v => v.category === cat).map(v => (
+              <div key={v.key} className="flex items-start gap-2 px-3 py-2 bg-slate-800/50 rounded-lg group">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <code className="text-[11px] font-mono text-slate-200">{v.key}</code>
+                    {v.isSet && (
+                      <span className="px-1 py-0.5 rounded text-[9px] font-mono bg-green-900/30 text-green-400 border border-green-800/30">SET</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5">{v.description}</p>
+                  {v.default && (
+                    <p className="text-[11px] text-slate-600 mt-0.5">Default: <code className="font-mono">{v.default}</code></p>
+                  )}
+                </div>
+                <EnvCopyButton text={v.key} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
 
@@ -473,6 +549,14 @@ export function SettingsTab(): React.ReactElement {
 
         <Section icon={<Database className="w-4 h-4" />} title="Retention">
           <RetentionSection />
+        </Section>
+
+        <Section icon={<Terminal className="w-4 h-4" />} title="Environment Variables" defaultOpen={false}>
+          <p className="text-xs text-slate-500 mb-1 leading-relaxed">
+            All configuration options available via environment variables.
+            Set these before starting the server. Sensitive values are masked.
+          </p>
+          <EnvReferenceSection />
         </Section>
 
         <Section icon={<Monitor className="w-4 h-4" />} title="Rate Limiting">

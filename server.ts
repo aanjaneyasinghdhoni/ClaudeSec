@@ -2460,6 +2460,33 @@ service:
     });
   });
 
+  app.get('/api/config/env-reference', (_req, res) => {
+    const envVars = [
+      { key: 'CLAUDESEC_RATE_LIMIT_RPS',    description: 'Max OTLP requests per second per IP',     default: '50',     category: 'Performance' },
+      { key: 'CLAUDESEC_RATE_LIMIT_BURST',   description: 'Token bucket burst capacity',              default: '200',    category: 'Performance' },
+      { key: 'CLAUDESEC_MAX_SPANS_BATCH',    description: 'Max spans allowed per OTLP batch',         default: '500',    category: 'Performance' },
+      { key: 'CLAUDESEC_MAX_SPANS',          description: 'Total span capacity before pruning',       default: '50000',  category: 'Retention' },
+      { key: 'CLAUDESEC_RETENTION_DAYS',     description: 'Days to keep data before age-based prune', default: '30',     category: 'Retention' },
+      { key: 'CLAUDESEC_WEBHOOK_URL',        description: 'Webhook endpoint for alert delivery',      default: '',       category: 'Alerts',   sensitive: true },
+      { key: 'CLAUDESEC_WEBHOOK_THRESHOLD',  description: 'Minimum severity to trigger webhook',      default: 'high',   category: 'Alerts' },
+      { key: 'CLAUDESEC_CORS_ORIGINS',       description: 'Comma-separated allowed CORS origins',     default: 'localhost', category: 'Security' },
+      { key: 'CLAUDESEC_TRUST_PROXY',        description: 'Trust X-Forwarded-For headers (set to 1)', default: '',       category: 'Security' },
+      { key: 'CLAUDESEC_HONEYTOKENS',        description: 'Comma-separated canary strings for exfiltration detection', default: '', category: 'Security', sensitive: true },
+      { key: 'CLAUDESEC_AUTO_EXPORT_DIR',    description: 'Directory for hourly auto-export JSON snapshots',           default: './exports', category: 'Export' },
+      { key: 'OTEL_FORWARD_URL',             description: 'Forward OTLP traces to upstream collector', default: '',      category: 'Integration' },
+    ];
+
+    const enriched = envVars.map(v => ({
+      ...v,
+      currentValue: (v as any).sensitive
+        ? (process.env[v.key] ? '***' : '')
+        : (process.env[v.key] ?? ''),
+      isSet: !!process.env[v.key],
+    }));
+
+    res.json({ envVars: enriched });
+  });
+
   // ── Annotations ──────────────────────────────────────────────────────────
   app.get('/api/spans/:spanId/annotations', (req, res) => {
     const rows = getAnnotationsBySpan.all(req.params.spanId);
