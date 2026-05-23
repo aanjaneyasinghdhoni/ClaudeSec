@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield, Eye, Zap, Terminal, Copy, Check, Play,
-  Monitor, AlertTriangle, Activity, ChevronRight,
+  Shield, Eye, Zap, Terminal, Copy, Check,
+  Monitor, AlertTriangle, ChevronRight,
   ArrowRight,
 } from 'lucide-react';
 
@@ -117,11 +117,53 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function ConnectionStatus() {
+  const [status, setStatus] = useState<'waiting' | 'connected'>('waiting');
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const res = await fetch('/api/sessions');
+        const data = await res.json();
+        if (!cancelled && data.sessions && data.sessions.length > 0) {
+          setStatus('connected');
+        }
+      } catch {}
+    };
+    check();
+    if (status === 'waiting') {
+      const interval = setInterval(check, 3000);
+      return () => { cancelled = true; clearInterval(interval); };
+    }
+    return () => { cancelled = true; };
+  }, [status]);
+
+  return (
+    <div className="rounded-xl p-4 mb-10 border text-center" style={{
+      background: status === 'connected' ? 'rgba(0,212,170,0.06)' : 'var(--cs-bg-surface)',
+      borderColor: status === 'connected' ? 'rgba(0,212,170,0.2)' : 'var(--cs-border)',
+    }}>
+      <div className="flex items-center justify-center gap-2">
+        {status === 'connected' ? (
+          <>
+            <span className="w-2 h-2 rounded-full bg-green-500 status-live" />
+            <span className="text-sm font-medium" style={{ color: '#00d4aa' }}>Connected — traces are flowing in</span>
+          </>
+        ) : (
+          <>
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            <span className="text-sm" style={{ color: 'var(--cs-text-muted)' }}>Waiting for first span...</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
-  const [loading, setLoading]       = useState(false);
   const [expanded, setExpanded]     = useState<string | null>(null);
   const [processes, setProcesses]   = useState<{ harnessName: string; pid: number }[]>([]);
-  const [demoResult, setDemoResult] = useState<string | null>(null);
   const [scanning, setScanning]     = useState(true);
 
   useEffect(() => {
@@ -130,20 +172,6 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
       .then(d => { setProcesses(d.processes ?? []); setScanning(false); })
       .catch(() => setScanning(false));
   }, []);
-
-  const runDemo = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/simulate', { method: 'POST' });
-      const data = await res.json();
-      setDemoResult(`${data.spans} spans, ${data.alerts} alerts across ${data.sessions} sessions`);
-      setTimeout(onDemoLoaded, 800);
-    } catch {
-      setDemoResult('Failed to generate demo traces');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="flex-1 overflow-auto bg-grain" style={{ background: 'var(--cs-bg-primary)' }}>
@@ -171,44 +199,34 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
             <span className="text-shimmer">Observatory</span>
           </h1>
           <p className="text-base leading-relaxed max-w-lg mx-auto" style={{ color: 'var(--cs-text-muted)' }}>
-            Monitor every AI agent on your machine. Detect threats in real-time.
-            Visualize tool calls, LLM requests, and suspicious activity as a live graph.
+            Real-time security monitoring for AI coding agents.
+            Detect threats, track costs, and audit every tool call across 14+ agent harnesses.
           </p>
         </div>
 
-        {/* Quick-start CTA */}
+        {/* Quick Setup */}
         <div className="rounded-2xl p-6 mb-10 text-center border glow-teal" style={{
           background: 'linear-gradient(135deg, rgba(0,212,170,0.06), rgba(59,158,255,0.04))',
           borderColor: 'rgba(0,212,170,0.15)',
         }}>
           <h2 className="font-display text-lg font-semibold mb-2" style={{ color: 'var(--cs-text-base)' }}>
-            See it in action
+            Connect your agent in 60 seconds
           </h2>
           <p className="text-sm mb-5 max-w-md mx-auto" style={{ color: 'var(--cs-text-muted)' }}>
-            Generate 3 realistic demo sessions with threats, costs, and alerts to explore every feature.
+            Run the setup wizard to auto-configure your AI agent for monitoring.
           </p>
-          <button
-            onClick={runDemo}
-            disabled={loading || !!demoResult}
-            className="inline-flex items-center gap-2.5 px-7 py-3.5 rounded-xl text-sm font-semibold transition-all"
-            style={{
-              background: demoResult ? '#059669'
-                : loading ? '#0e7c64'
-                : 'linear-gradient(135deg, #00d4aa, #009e7f)',
-              color: '#fff',
-              boxShadow: demoResult ? 'none' : '0 4px 24px rgba(0,212,170,0.3)',
-              transform: loading ? 'none' : undefined,
-            }}
-          >
-            {demoResult ? (
-              <><Check className="w-4 h-4" /> {demoResult}</>
-            ) : loading ? (
-              <><Activity className="w-4 h-4 animate-spin" /> Generating traces...</>
-            ) : (
-              <><Play className="w-4 h-4" /> Launch demo traces <ArrowRight className="w-4 h-4" /></>
-            )}
-          </button>
+          <div className="inline-flex items-center gap-3 px-5 py-3 rounded-xl text-sm font-mono" style={{
+            background: 'var(--cs-bg-primary)',
+            border: '1px solid var(--cs-border)',
+            color: 'var(--cs-text-base)',
+          }}>
+            <Terminal className="w-4 h-4" style={{ color: '#00d4aa' }} />
+            <code>npx claudesec init</code>
+            <CopyButton text="npx claudesec init" />
+          </div>
         </div>
+
+        <ConnectionStatus />
 
         {/* Value cards — 3 column */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
@@ -222,7 +240,7 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
             {
               icon: <AlertTriangle className="w-5 h-5" />,
               color: '#ff3b5c',
-              title: '153 Threat Rules',
+              title: '189 Threat Rules',
               desc: 'Prompt injection, credential leaks, reverse shells, supply-chain attacks, data exfiltration.',
             },
             {
@@ -353,7 +371,7 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
             {[
               { n: '1', label: 'Agent emits OTLP traces', color: '#3b9eff' },
               { n: '2', label: 'ClaudeSec ingests & scans', color: '#00d4aa' },
-              { n: '3', label: '153 rules detect threats', color: '#ffb224' },
+              { n: '3', label: '189 rules detect threats', color: '#ffb224' },
               { n: '4', label: 'Live graph + alerts', color: '#00d4aa' },
             ].map((step, i) => (
               <React.Fragment key={i}>
