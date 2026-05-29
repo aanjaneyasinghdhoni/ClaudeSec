@@ -1,102 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
   Shield, Eye, Zap, Terminal, Copy, Check,
-  Monitor, AlertTriangle, ChevronRight,
+  Monitor, AlertTriangle,
   ArrowRight,
 } from 'lucide-react';
 
-const HARNESS_CARDS: {
-  name: string; color: string; slug: string;
-  envVars: string;
-}[] = [
-  {
-    name: 'Claude Code',
-    color: '#00d4aa',
-    slug: 'claude-code',
-    envVars: `export CLAUDE_CODE_ENABLE_TELEMETRY=1
+const CLAUDE_CODE_ENV_VARS = `export CLAUDE_CODE_ENABLE_TELEMETRY=1
 export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
 export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"
-export OTEL_LOG_TOOL_DETAILS=1`,
-  },
-  {
-    name: 'GitHub Copilot',
-    color: '#6366f1',
-    slug: 'github-copilot',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Cursor',
-    color: '#a855f7',
-    slug: 'cursor',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Aider',
-    color: '#ec4899',
-    slug: 'aider',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'OpenHands',
-    color: '#22c55e',
-    slug: 'openhands',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Cline',
-    color: '#14b8a6',
-    slug: 'cline',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Goose',
-    color: '#f59e0b',
-    slug: 'goose',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Windsurf',
-    color: '#38bdf8',
-    slug: 'windsurf',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Codex CLI',
-    color: '#10b981',
-    slug: 'codex',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_SERVICE_NAME="codex"`,
-  },
-  {
-    name: 'Continue.dev',
-    color: '#0ea5e9',
-    slug: 'continue',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`,
-  },
-  {
-    name: 'Amazon Q',
-    color: '#f59e0b',
-    slug: 'amazon-q',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_SERVICE_NAME="amazon-q"`,
-  },
-  {
-    name: 'Roo-Code',
-    color: '#8b5cf6',
-    slug: 'roo-code',
-    envVars: `export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:3000/v1/traces"
-export OTEL_SERVICE_NAME="roo-code"`,
-  },
-];
+export OTEL_LOG_TOOL_DETAILS=1`;
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -164,7 +77,6 @@ function ConnectionStatus() {
 }
 
 export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
-  const [expanded, setExpanded]     = useState<string | null>(null);
   const [processes, setProcesses]   = useState<{ harnessName: string; pid: number }[]>([]);
   const [scanning, setScanning]     = useState(true);
 
@@ -201,8 +113,8 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
             <span className="text-shimmer">Observatory</span>
           </h1>
           <p className="text-base leading-relaxed max-w-lg mx-auto" style={{ color: 'var(--cs-text-muted)' }}>
-            Real-time security monitoring for AI coding agents.
-            Detect threats, track costs, and audit every tool call across 14+ agent harnesses.
+            Real-time security monitoring for Claude Code.
+            Detect threats, track costs, and audit every tool call.
           </p>
         </div>
 
@@ -315,49 +227,32 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
           )}
         </div>
 
-        {/* Connect agents */}
+        {/* Manual setup */}
         <div className="mb-12">
           <h2 className="font-display text-lg font-semibold mb-1" style={{ color: 'var(--cs-text-base)' }}>
-            Connect your agents
+            Manual setup
           </h2>
           <p className="text-sm mb-5" style={{ color: 'var(--cs-text-faint)' }}>
-            Paste these env vars in your terminal, restart the agent. Traces flow in automatically.
+            Or paste these env vars in your terminal, restart Claude Code. Traces flow in automatically.
           </p>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
-            {HARNESS_CARDS.map(h => (
-              <div
-                key={h.slug}
-                className="rounded-lg overflow-hidden border transition-all cursor-pointer card-hover"
-                style={{
-                  background: expanded === h.slug ? 'var(--cs-bg-elevated)' : 'var(--cs-bg-surface)',
-                  borderColor: expanded === h.slug ? h.color + '40' : 'var(--cs-border)',
-                }}
-                onClick={() => setExpanded(expanded === h.slug ? null : h.slug)}
-              >
-                <div className="p-3 flex items-center gap-2.5">
-                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: h.color }} />
-                  <span className="text-sm font-medium truncate" style={{ color: 'var(--cs-text-base)' }}>{h.name}</span>
-                  <ChevronRight className="w-3 h-3 ml-auto shrink-0 transition-transform"
-                    style={{
-                      color: 'var(--cs-text-faint)',
-                      transform: expanded === h.slug ? 'rotate(90deg)' : 'none',
-                    }} />
-                </div>
-
-                {expanded === h.slug && (
-                  <div className="px-3 pb-3" style={{ borderTop: `1px solid var(--cs-border)` }}>
-                    <pre className="text-xs font-mono rounded-lg p-3 mt-2 overflow-x-auto whitespace-pre leading-relaxed"
-                      style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-muted)' }}>
-                      {h.envVars}
-                    </pre>
-                    <div className="mt-2">
-                      <CopyButton text={h.envVars} />
-                    </div>
-                  </div>
-                )}
+          <div className="rounded-xl overflow-hidden border" style={{
+            background: 'var(--cs-bg-surface)',
+            borderColor: 'var(--cs-border)',
+          }}>
+            <div className="p-3 flex items-center gap-2.5 border-b" style={{ borderColor: 'var(--cs-border)' }}>
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: '#f97316' }} />
+              <span className="text-sm font-medium" style={{ color: 'var(--cs-text-base)' }}>Claude Code</span>
+            </div>
+            <div className="px-4 py-3">
+              <pre className="text-xs font-mono rounded-lg p-3 overflow-x-auto whitespace-pre leading-relaxed"
+                style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-muted)' }}>
+                {CLAUDE_CODE_ENV_VARS}
+              </pre>
+              <div className="mt-2">
+                <CopyButton text={CLAUDE_CODE_ENV_VARS} />
               </div>
-            ))}
+            </div>
           </div>
         </div>
 
@@ -392,7 +287,7 @@ export function WelcomeScreen({ onDemoLoaded }: { onDemoLoaded: () => void }) {
 
         {/* Footer */}
         <p className="text-center text-xs font-mono" style={{ color: 'var(--cs-text-faint)' }}>
-          ClaudeSec v1.0 · Supports 14+ agent harnesses · MIT License
+          ClaudeSec v1.0 · Claude Code Security Observatory · MIT License
         </p>
       </div>
     </div>

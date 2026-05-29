@@ -292,39 +292,13 @@ interface TickerSpan {
 // ---------------------------------------------------------------------------
 
 const HARNESS_COLORS: Record<string, string> = {
-  'claude-code':    '#f97316',
-  'github-copilot': '#6366f1',
-  'openhands':      '#22c55e',
-  'cursor':         '#a855f7',
-  'aider':          '#ec4899',
-  'cline':          '#14b8a6',
-  'goose':          '#f59e0b',
-  'continue':       '#0ea5e9',
-  'windsurf':       '#38bdf8',
-  'codex':          '#10b981',
-  'amazon-q':       '#f59e0b',
-  'gemini-cli':     '#4f46e5',
-  'roo-code':       '#8b5cf6',
-  'bolt':           '#06b6d4',
-  'unknown':        '#64748b',
+  'claude-code': '#f97316',
+  'unknown':     '#64748b',
 };
 
 const HARNESS_NAMES: Record<string, string> = {
-  'claude-code':    'Claude Code',
-  'github-copilot': 'GitHub Copilot',
-  'openhands':      'OpenHands',
-  'cursor':         'Cursor',
-  'aider':          'Aider',
-  'cline':          'Cline',
-  'goose':          'Goose',
-  'continue':       'Continue.dev',
-  'windsurf':       'Windsurf',
-  'codex':          'Codex CLI',
-  'amazon-q':       'Amazon Q Dev',
-  'gemini-cli':     'Gemini CLI',
-  'roo-code':       'Roo-Code',
-  'bolt':           'Bolt.new',
-  'unknown':        'Unknown Agent',
+  'claude-code': 'Claude Code',
+  'unknown':     'Unknown Agent',
 };
 
 const SEVERITY_LABEL: Record<Severity, string> = {
@@ -339,6 +313,13 @@ const SEVERITY_COLORS: Record<Severity, { row: string; badge: string; text: stri
 };
 
 const SEV_RANK: Record<number, Severity> = { 3: 'high', 2: 'medium', 1: 'low', 0: 'none' };
+
+function formatSpanName(raw: string): string {
+  if (raw === 'tool_call/unknown') return 'Tool Call';
+  if (raw.startsWith('tool_call/')) return raw.slice('tool_call/'.length);
+  if (raw.startsWith('process/')) return raw;
+  return raw;
+}
 
 // ---------------------------------------------------------------------------
 // Timeline component
@@ -477,7 +458,7 @@ function Timeline({
                 fill={isSelected ? 'var(--cs-svg-label)' : 'var(--cs-svg-text)'}
                 fontSize="10" fontFamily="monospace" textAnchor="end"
               >
-                {wf.label.length > 17 ? wf.label.slice(0, 17) + '…' : wf.label}
+                {(() => { const n = formatSpanName(wf.label); return n.length > 17 ? n.slice(0, 17) + '…' : n; })()}
               </text>
               {/* Track background */}
               <rect x={LABEL_W} y={y + 6} width={AVAIL_W} height={ROW_H - 12}
@@ -933,7 +914,7 @@ export default function App() {
           return String(wf.attributes[key] ?? '').toLowerCase().includes(val);
         }
         return (
-          wf.label.toLowerCase().includes(term)     ||
+          formatSpanName(wf.label).toLowerCase().includes(term) ||
           wf.reason.toLowerCase().includes(term)    ||
           wf.protocol.toLowerCase().includes(term)  ||
           wf.harness.toLowerCase().includes(term)   ||
@@ -1600,7 +1581,7 @@ export default function App() {
                             style={{ background: HARNESS_COLORS[wf.harness] ?? '#64748b' }}
                             title={HARNESS_NAMES[wf.harness]}
                           />
-                          <span className={`text-[11px] font-semibold truncate ${c.text}`}>{wf.label}</span>
+                          <span className={`text-[11px] font-semibold truncate ${c.text}`}>{formatSpanName(wf.label)}</span>
                           <span className="ml-auto text-[11px] font-mono text-slate-500 shrink-0">{wf.timestamp}</span>
                         </div>
                         <div className="flex items-center gap-1.5 pl-4">
@@ -1707,6 +1688,29 @@ export default function App() {
                 </button>
               </div>
             )}
+            {(() => {
+              const displayWfs = activeSession ? visibleWorkflows : workflows;
+              const toolSpans = displayWfs.filter(wf => wf.label.startsWith('tool_call/'));
+              const allUnknown = toolSpans.length > 0 && toolSpans.every(wf => wf.label === 'tool_call/unknown');
+              return allUnknown ? (
+                <div className="mx-4 mt-2 mb-1 px-4 py-3 rounded-xl text-xs leading-relaxed flex items-start gap-3" style={{
+                  background: 'rgba(249,115,22,0.06)',
+                  border: '1px solid rgba(249,115,22,0.15)',
+                  color: 'var(--cs-text-muted)',
+                }}>
+                  <Zap className="w-4 h-4 shrink-0 mt-0.5" style={{ color: '#f97316' }} />
+                  <div>
+                    <strong style={{ color: 'var(--cs-text-base)' }}>Limited telemetry:</strong>{' '}
+                    Claude Code is sending spans but tool names are not included.
+                    This is a known limitation of the current Claude Code telemetry —{' '}
+                    <code className="font-mono bg-slate-800 px-1 rounded text-[10px]">OTEL_LOG_TOOL_DETAILS=1</code>{' '}
+                    is set but the emitter does not populate tool names yet.
+                    Spans are tracked as <span className="font-semibold text-orange-300">Tool Call</span> until
+                    a future Claude Code update enriches the data.
+                  </div>
+                </div>
+              ) : null;
+            })()}
             <Timeline
               workflows={activeSession ? visibleWorkflows : workflows}
               onSelect={onTimelineSelect}
@@ -1780,6 +1784,12 @@ export default function App() {
             color: 'var(--cs-text-muted)',
             background: 'var(--cs-bg-elevated)',
           }}>{sessions.length} sessions</span>
+          {workflows.length > 0 && workflows.filter(wf => wf.label.startsWith('tool_call/')).every(wf => wf.label === 'tool_call/unknown') && (
+            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{
+              color: '#f97316',
+              background: 'rgba(249,115,22,0.1)',
+            }} title="Claude Code telemetry does not include tool names in this version">tool_call/unknown</span>
+          )}
         </div>
 
         {/* Live span ticker */}
@@ -1799,7 +1809,7 @@ export default function App() {
                         sp.severity === 'medium' ? '#f97316' :
                         sp.severity === 'low' ? '#ffb224' : 'var(--cs-text-muted)'
                     }}>
-                      {sp.name.length > 24 ? sp.name.slice(0, 24) + '...' : sp.name}
+                      {(() => { const n = formatSpanName(sp.name); return n.length > 24 ? n.slice(0, 24) + '...' : n; })()}
                     </span>
                     {i < Math.min(tickerSpans.length, 3) - 1 && <span style={{ color: 'var(--cs-text-faint)' }}>·</span>}
                   </span>

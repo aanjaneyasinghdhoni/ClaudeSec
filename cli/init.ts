@@ -3,8 +3,8 @@
  * ClaudeSec CLI
  *
  * Usage:
- *   claudesec              — interactive setup wizard (alias for `init`)
- *   claudesec init         — interactive setup wizard
+ *   claudesec              — auto-configure Claude Code telemetry (alias for `init`)
+ *   claudesec init         — auto-configure Claude Code telemetry
  *   claudesec status       — show server health, span/session counts, uptime
  *   claudesec export [file]— download all spans as JSON (default: claudesec-export-<ts>.json)
  *   claudesec reset        — confirm + wipe all spans, sessions, and alerts
@@ -101,40 +101,23 @@ async function apiFetch(path: string, opts?: { method?: string; body?: unknown }
 // ---------------------------------------------------------------------------
 
 async function cmdInit() {
-  console.log('\n\x1b[1m\x1b[35mClaudeSec — Agent Setup Wizard\x1b[0m');
-  console.log('\x1b[90mConnects any AI agent harness to the local observatory.\x1b[0m\n');
+  console.log('\n\x1b[1m\x1b[35mClaudeSec — Claude Code Setup\x1b[0m');
+  console.log('\x1b[90mAuto-configuring environment variables for Claude Code telemetry.\x1b[0m\n');
 
-  const rl      = createInterface({ input: process.stdin, output: process.stdout });
-  const choices = HARNESSES.filter(h => h.id !== 'unknown');
-  choices.forEach((h, i) => {
-    console.log(`  \x1b[33m${i + 1}.\x1b[0m ${h.name.padEnd(20)} \x1b[90m${h.description}\x1b[0m`);
-  });
-  console.log(`  \x1b[33m${choices.length + 1}.\x1b[0m Show all (generic OTLP)\n`);
+  const claudeCode = HARNESSES.find(h => h.id === 'claude-code')!;
 
-  const raw = await prompt(rl, '\x1b[1mSelect your harness (number): \x1b[0m');
-  const idx = parseInt(raw.trim(), 10) - 1;
+  printExports(claudeCode);
 
-  if (idx === choices.length) {
-    for (const h of choices) printExports(h);
-  } else if (idx >= 0 && idx < choices.length) {
-    printExports(choices[idx]);
-
-    const profilePath = getShellProfile();
-    if (profilePath) {
-      const answer = await prompt(rl, `\x1b[1mWrite these to ${profilePath}? (y/N): \x1b[0m`);
-      if (answer.trim().toLowerCase() === 'y') {
-        if (writeToShellProfile(choices[idx])) {
-          console.log(`\x1b[32m✓ Environment variables written to ${profilePath}\x1b[0m`);
-          console.log(`\x1b[90mRestart your terminal or run: source ${profilePath}\x1b[0m\n`);
-        } else {
-          console.log(`\x1b[31m✗ Could not write to shell profile\x1b[0m\n`);
-        }
-      }
+  const profilePath = getShellProfile();
+  if (profilePath) {
+    if (writeToShellProfile(claudeCode)) {
+      console.log(`\x1b[32m✓ Environment variables written to ${profilePath}\x1b[0m`);
+      console.log(`\x1b[90mRestart your terminal or run: source ${profilePath}\x1b[0m\n`);
+    } else {
+      console.log(`\x1b[31m✗ Could not write to shell profile\x1b[0m\n`);
     }
   } else {
-    console.error('\x1b[31mInvalid selection.\x1b[0m');
-    rl.close();
-    process.exit(1);
+    console.log(`\x1b[33m⚠ Could not detect shell profile. Copy the exports above manually.\x1b[0m\n`);
   }
 
   try {
@@ -148,7 +131,10 @@ async function cmdInit() {
     console.log(`\x1b[33m⚠ Could not reach ClaudeSec at ${BASE_URL}. Start the server with: npm run dev\x1b[0m\n`);
   }
 
-  rl.close();
+  console.log(`\x1b[1m\x1b[36mNext steps:\x1b[0m`);
+  console.log(`  1. Start the server:  \x1b[33mnpm run dev\x1b[0m`);
+  console.log(`  2. Restart Claude Code from this terminal`);
+  console.log(`  3. Open \x1b[36m${BASE_URL}\x1b[0m to see traces flow in\n`);
 }
 
 async function cmdStatus() {
@@ -614,7 +600,7 @@ function printHelp() {
 \x1b[1m\x1b[35mClaudeSec CLI\x1b[0m
 
 \x1b[1mSetup & Monitoring:\x1b[0m
-  \x1b[33mclaudesec\x1b[0m / \x1b[33minit\x1b[0m               Interactive harness setup wizard
+  \x1b[33mclaudesec\x1b[0m / \x1b[33minit\x1b[0m               Auto-configure Claude Code telemetry
   \x1b[33mclaudesec status\x1b[0m                  Show server health and span counts
   \x1b[33mclaudesec open\x1b[0m                    Open the dashboard in default browser
   \x1b[33mclaudesec tail\x1b[0m [--harness X] [--severity Y]   Stream live spans

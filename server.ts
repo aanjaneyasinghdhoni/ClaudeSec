@@ -1365,28 +1365,7 @@ interface AgentProcess {
 const ELECTRON_HELPER_RE = /Helper\s*\(|helper\s*\(|chrome_crashpad_handler|--type=(gpu|renderer|utility|zygote)|shell-snapshots\/|chrome-native-host|mcp-server\.(cjs|js|mjs)|worker-service\.(cjs|js)|uvx\s+--python/i;
 
 const PROCESS_PATTERNS: { pattern: RegExp; harness: string }[] = [
-  { pattern: /\bclaude\b(?!.*goose)/i,              harness: 'claude-code'    },
-  { pattern: /\bcopilot[-_]language[-_]server\b/i,  harness: 'github-copilot' },
-  { pattern: /\bghcopilot\b/i,                      harness: 'github-copilot' },
-  { pattern: /\/@github\/copilot\b/i,               harness: 'github-copilot' },
-  { pattern: /\bcopilot-darwin-/i,                   harness: 'github-copilot' },
-  { pattern: /\bcopilot-linux-/i,                    harness: 'github-copilot' },
-  { pattern: /\bbin\/copilot\b/i,                    harness: 'github-copilot' },
-  { pattern: /\bopenhands\b/i,                      harness: 'openhands'      },
-  { pattern: /\bcursor\b/i,                         harness: 'cursor'         },
-  { pattern: /\baider\b/i,                          harness: 'aider'          },
-  { pattern: /\bcline\b/i,                          harness: 'cline'          },
-  { pattern: /\bgoose\b/i,                          harness: 'goose'          },
-  { pattern: /\bcontinue[-_]server\b/i,             harness: 'continue'       },
-  { pattern: /\bwindsurf\b/i,                       harness: 'windsurf'       },
-  { pattern: /\bcodex\b/i,                          harness: 'codex'          },
-  { pattern: /\bamazon[-_]q\b|q\s+developer\b/i,   harness: 'amazon-q'       },
-  { pattern: /\bgemini[-_]cli\b/i,                  harness: 'gemini-cli'     },
-  { pattern: /\broo[-_]cline\b|roocode\b/i,         harness: 'roo-code'       },
-  { pattern: /\bbolt\b/i,                           harness: 'bolt'           },
-  { pattern: /\bopeninterpreter\b/i,                harness: 'unknown'        },
-  { pattern: /\bdevin\b/i,                          harness: 'unknown'        },
-  { pattern: /\bswe[-_]agent\b/i,                   harness: 'unknown'        },
+  { pattern: /\bclaude\b/i, harness: 'claude-code' },
 ];
 
 function scanAgentProcesses(): AgentProcess[] {
@@ -3397,9 +3376,6 @@ ${alerts.length > 0 ? `
         if (!model || model === '') {
           const harness = span.harness?.toLowerCase() ?? '';
           if (harness.includes('claude') || harness === 'claude-code') model = 'claude-sonnet-4-6';
-          else if (harness.includes('copilot')) model = 'gpt-4o';
-          else if (harness.includes('cursor')) model = 'claude-sonnet-4-6';
-          else if (harness.includes('codex')) model = 'gpt-4o';
           if (model) modelInferred = true;
         }
         const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);

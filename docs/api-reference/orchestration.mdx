@@ -41,16 +41,7 @@ Returns all data needed to render the orchestration view: agent stats, inter-age
       "sessionName": "Claude Code · 12:00:01 PM",
       "spanCount": 30,
       "threatCount": 0,
-      "children": [
-        {
-          "traceId": "trace002",
-          "harness": "openhands",
-          "sessionName": "OpenHands · 12:00:05 PM",
-          "spanCount": 12,
-          "threatCount": 1,
-          "children": []
-        }
-      ]
+      "children": []
     }
   ]
 }
@@ -66,3 +57,30 @@ Each node has:
 - `sessionName` — human-readable session label
 - `spanCount` / `threatCount` — aggregated stats for this trace
 - `children` — recursively nested sub-agents
+
+---
+
+## Harness summary endpoint
+
+### GET /api/harnesses
+
+Returns per-harness aggregate usage and threat stats.
+
+```json
+{
+  "harnesses": [
+    {
+      "harness": "claude-code",
+      "spanCount": 420,
+      "sessionCount": 17,
+      "threatHigh": 3,
+      "threatMedium": 6,
+      "threatLow": 10,
+      "tokensIn": 152000,
+      "tokensOut": 48900,
+      "firstSeen": "2026-04-10T09:00:00.000Z",
+      "lastSeen": "2026-04-18T00:58:00.000Z"
+    }
+  ]
+}
+```

@@ -31,21 +31,8 @@ interface SearchResult {
 // ---------------------------------------------------------------------------
 
 const HARNESS_COLORS: Record<string, string> = {
-  'claude-code':    '#f97316',
-  'github-copilot': '#6366f1',
-  'openhands':      '#22c55e',
-  'cursor':         '#a855f7',
-  'aider':          '#ec4899',
-  'cline':          '#14b8a6',
-  'goose':          '#f59e0b',
-  'continue':       '#0ea5e9',
-  'windsurf':       '#38bdf8',
-  'codex':          '#10b981',
-  'amazon-q':       '#f59e0b',
-  'gemini-cli':     '#4f46e5',
-  'roo-code':       '#8b5cf6',
-  'bolt':           '#06b6d4',
-  'unknown':        '#64748b',
+  'claude-code': '#f97316',
+  'unknown':     '#64748b',
 };
 
 const SEVERITY_OPTIONS = ['', 'high', 'medium', 'low', 'none'] as const;

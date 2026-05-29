@@ -22,39 +22,13 @@ interface AlertRow {
 }
 
 const HARNESS_COLORS: Record<string, string> = {
-  'claude-code':    '#f97316',
-  'github-copilot': '#6366f1',
-  'openhands':      '#22c55e',
-  'cursor':         '#a855f7',
-  'aider':          '#ec4899',
-  'cline':          '#14b8a6',
-  'goose':          '#f59e0b',
-  'continue':       '#0ea5e9',
-  'windsurf':       '#38bdf8',
-  'codex':          '#10b981',
-  'amazon-q':       '#f59e0b',
-  'gemini-cli':     '#4f46e5',
-  'roo-code':       '#8b5cf6',
-  'bolt':           '#06b6d4',
-  'unknown':        '#64748b',
+  'claude-code': '#f97316',
+  'unknown':     '#64748b',
 };
 
 const HARNESS_NAMES: Record<string, string> = {
-  'claude-code':    'Claude Code',
-  'github-copilot': 'GitHub Copilot',
-  'openhands':      'OpenHands',
-  'cursor':         'Cursor',
-  'aider':          'Aider',
-  'cline':          'Cline',
-  'goose':          'Goose',
-  'continue':       'Continue.dev',
-  'windsurf':       'Windsurf',
-  'codex':          'Codex CLI',
-  'amazon-q':       'Amazon Q',
-  'gemini-cli':     'Gemini CLI',
-  'roo-code':       'Roo-Code',
-  'bolt':           'Bolt.new',
-  'unknown':        'Unknown',
+  'claude-code': 'Claude Code',
+  'unknown':     'Unknown',
 };
 
 const SEV_BADGE: Record<string, string> = {

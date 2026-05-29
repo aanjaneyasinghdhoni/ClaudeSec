@@ -45,29 +45,13 @@ interface OrchData {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const HARNESS_COLORS: Record<string, string> = {
-  'claude-code':    '#f97316',
-  'github-copilot': '#6366f1',
-  'openhands':      '#22c55e',
-  'cursor':         '#a855f7',
-  'aider':          '#ec4899',
-  'cline':          '#14b8a6',
-  'goose':          '#f59e0b',
-  'continue':       '#0ea5e9',
-  'windsurf':       '#38bdf8',
-  'unknown':        '#64748b',
+  'claude-code': '#f97316',
+  'unknown':     '#64748b',
 };
 
 const HARNESS_NAMES: Record<string, string> = {
-  'claude-code':    'Claude Code',
-  'github-copilot': 'Copilot',
-  'openhands':      'OpenHands',
-  'cursor':         'Cursor',
-  'aider':          'Aider',
-  'cline':          'Cline',
-  'goose':          'Goose',
-  'continue':       'Continue',
-  'windsurf':       'Windsurf',
-  'unknown':        'Unknown',
+  'claude-code': 'Claude Code',
+  'unknown':     'Unknown',
 };
 
 const SUSPICIOUS_TOOLS = new Set(['bash', 'eval', 'exec', 'curl', 'wget', 'rm', 'sh', 'python', 'node']);

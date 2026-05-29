@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Monitor, RefreshCw, AlertTriangle, Activity, Cpu, MemoryStick, Skull, XCircle, Pause, Play, X } from 'lucide-react';
+import { Monitor, RefreshCw, AlertTriangle, Activity, Cpu, MemoryStick, Skull, XCircle, Pause, Play, X, Terminal, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { HARNESSES, type HarnessConfig } from './harnesses';
 
 interface AgentProcess {
   pid:            number;
@@ -23,22 +24,63 @@ interface ProcessesResponse {
 }
 
 const HARNESS_COLORS: Record<string, string> = {
-  'claude-code':    '#f97316',
-  'github-copilot': '#6366f1',
-  'openhands':      '#22c55e',
-  'cursor':         '#a855f7',
-  'aider':          '#ec4899',
-  'cline':          '#14b8a6',
-  'goose':          '#f59e0b',
-  'continue':       '#0ea5e9',
-  'windsurf':       '#38bdf8',
-  'codex':          '#10b981',
-  'amazon-q':       '#f59e0b',
-  'gemini-cli':     '#4f46e5',
-  'roo-code':       '#8b5cf6',
-  'bolt':           '#06b6d4',
-  'unknown':        '#64748b',
+  'claude-code': '#f97316',
+  'unknown':     '#64748b',
 };
+
+/** Lookup harness config to show env-var setup instructions */
+function getHarnessConfig(harnessId: string): HarnessConfig | undefined {
+  return HARNESSES.find(h => h.id === harnessId);
+}
+
+/** Inline connect hint shown when a detected process has no trace sessions */
+function ConnectHint({ harness }: { harness: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const config = getHarnessConfig(harness);
+  if (!config || config.id === 'unknown') return null;
+
+  const envLines = config.envVars.map(v =>
+    `export ${v.key}=${v.value.replace('{{ENDPOINT}}', 'http://localhost:3000/v1/traces')}`
+  ).join('\n');
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(envLines);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className="flex items-center gap-1 text-[11px] text-amber-400/80 hover:text-amber-300 transition-colors"
+      >
+        <Terminal className="w-3 h-3" />
+        <span>Not sending traces — connect to ClaudeSec</span>
+      </button>
+      {expanded && (
+        <div className="mt-1.5 p-2 bg-slate-800/80 border border-slate-700/60 rounded-lg">
+          <div className="flex items-start justify-between gap-2">
+            <pre className="text-[10px] font-mono text-slate-300 whitespace-pre leading-relaxed select-all">
+              {envLines}
+            </pre>
+            <button
+              onClick={handleCopy}
+              className="shrink-0 p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+              title="Copy to clipboard"
+            >
+              {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1.5">
+            Set these in the terminal where {config.name} runs, then restart it.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CpuBar({ pct }: { pct: number }) {
   const clamped = Math.min(100, pct);
@@ -238,8 +280,8 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
             <Monitor className="w-8 h-8 text-slate-700" />
             <p className="text-sm font-medium text-slate-500">No agent processes detected</p>
             <p className="text-xs text-slate-600 max-w-sm text-center leading-relaxed">
-              ClaudeSec scans for Claude, Aider, Goose, Copilot, OpenHands, Cursor, Cline, Continue, Windsurf, Codex, and more.
-              Start an agent to see it appear here.
+              ClaudeSec scans for running Claude Code processes.
+              Start Claude Code to see it appear here.
             </p>
           </div>
         )}
@@ -329,7 +371,10 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
                             )}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-700">No recent sessions</span>
+                          <div>
+                            <span className="text-xs text-slate-700">No recent sessions</span>
+                            <ConnectHint harness={proc.harness} />
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-3">

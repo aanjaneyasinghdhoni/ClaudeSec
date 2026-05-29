@@ -54,10 +54,10 @@ The `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` flag enables `claude_code.llm_request`
 
 ### Key features
 
-- **Welcome screen** with guided setup wizard (`npx claudesec init`) — first-run UX
+- **Welcome screen** with auto-setup (`npx claudesec init`) — first-run UX
 - **189 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
-- **14 harness support** — Claude Code, Copilot, Cursor, Aider, OpenHands, Cline, Goose, etc.
-- **Process scanner** — detects running agent CLIs via `ps aux`, kill switch via `DELETE /api/processes/:pid`
+- **Claude Code focused** — purpose-built for Claude Code telemetry and security monitoring
+- **Process scanner** — detects running Claude Code processes via `ps aux`, kill switch via `DELETE /api/processes/:pid`
 - **OTLP forwarding** — transparent proxy to upstream collectors (set `OTEL_FORWARD_URL`)
 - **Auto-export** — hourly JSON snapshots to `exports/` (last 24 kept)
 - **MCP server** — 11 tools for AI-to-AI interaction (`POST /mcp`)
