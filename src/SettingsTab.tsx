@@ -56,7 +56,7 @@ interface SectionProps {
   defaultOpen?: boolean;
 }
 
-function Section({ icon, title, children, defaultOpen = true }: SectionProps) {
+export function Section({ icon, title, children, defaultOpen = true }: SectionProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -133,7 +133,7 @@ function SaveButton({ onClick, disabled, label = 'Save' }: SaveButtonProps) {
 // 1. Retention section
 // ---------------------------------------------------------------------------
 
-function RetentionSection() {
+export function RetentionSection() {
   const [maxSpans,       setMaxSpans]       = useState<number>(50_000);
   const [retentionDays,  setRetentionDays]  = useState<number>(30);
   const [stats,          setStats]          = useState<DbStats | null>(null);
@@ -214,7 +214,7 @@ function RetentionSection() {
 // 2. Rate limiting section
 // ---------------------------------------------------------------------------
 
-function RateLimitSection() {
+export function RateLimitSection() {
   const [info, setInfo] = useState<RateLimitInfo>({ rps: 50, burst: 200, maxSpansBatch: 500 });
 
   useEffect(() => {
@@ -257,7 +257,7 @@ function RateLimitSection() {
 // 3. Webhook section
 // ---------------------------------------------------------------------------
 
-function WebhookSection() {
+export function WebhookSection() {
   const [url,         setUrl]         = useState('');
   const [threshold,   setThreshold]   = useState<'low' | 'medium' | 'high'>('high');
   const [configured,  setConfigured]  = useState(false);
@@ -394,7 +394,7 @@ function WebhookSection() {
 // 4. Display preferences section
 // ---------------------------------------------------------------------------
 
-function DisplaySection() {
+export function DisplaySection() {
   const [hideNone,    setHideNone]    = useState(() => localStorage.getItem('claudesec.hideNone')    === 'true');
   const [autoLayout,  setAutoLayout]  = useState(() => localStorage.getItem('claudesec.autoLayout')  !== 'false');
 

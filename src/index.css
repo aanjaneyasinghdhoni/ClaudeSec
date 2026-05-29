@@ -513,3 +513,68 @@ select option {
   border: 1px solid var(--cs-border) !important;
   overflow: hidden !important;
 }
+
+/* ── Category rail button ────────────────────────────────────────────── */
+.category-btn {
+  transition: all 0.15s ease;
+}
+.category-btn:hover {
+  background: var(--cs-bg-elevated);
+  color: var(--cs-text-muted);
+}
+
+/* ── Sub-tab button hover ────────────────────────────────────────────── */
+.sub-tab-btn {
+  transition: all 0.15s ease;
+  border-radius: 6px;
+}
+.sub-tab-btn:hover:not(.tab-active) {
+  background: var(--cs-bg-elevated);
+  color: var(--cs-text-muted);
+}
+
+/* ── Sidebar section header ──────────────────────────────────────────── */
+.sidebar-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--font-mono);
+  color: var(--cs-text-faint);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Session row with severity border ────────────────────────────────── */
+.session-row {
+  transition: all 0.15s ease;
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+}
+.session-row:hover {
+  background: var(--cs-bg-elevated);
+}
+
+/* ── Context menu (session overflow) ─────────────────────────────────── */
+.session-context-menu {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.session-row:hover .session-context-menu,
+.session-context-menu.is-open {
+  opacity: 1;
+}
+
+/* ── Header action divider ───────────────────────────────────────────── */
+.header-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--cs-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
