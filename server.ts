@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -778,8 +779,12 @@ async function fireWebhook(alert: {
   const threshold = getWebhookThreshold();
   if (SEV_RANK_MAP[alert.severity] < SEV_RANK_MAP[threshold]) return;
 
-  const isSlack   = url.includes('hooks.slack.com');
-  const isDiscord = url.includes('discord.com/api/webhooks');
+  // Parse the host instead of substring-matching the URL: a check like
+  // url.includes('hooks.slack.com') would also accept https://evil.com/hooks.slack.com.
+  let webhookHost = '';
+  try { webhookHost = new URL(url).hostname.toLowerCase(); } catch { /* invalid URL → neither */ }
+  const isSlack   = webhookHost === 'hooks.slack.com';
+  const isDiscord = webhookHost === 'discord.com' || webhookHost === 'discordapp.com';
 
   const sevEmoji = alert.severity === 'high' ? '🔴' : alert.severity === 'medium' ? '🟠' : '🟡';
 
@@ -1165,6 +1170,9 @@ function detectSeverity(text: string): DetectHit {
   for (const rule of customRules) {
     const key = `custom:${rule.id}`;
     if (suppressed.has(key)) continue;
+    // Skip patterns that exceed the ReDoS-mitigation cap (e.g. rules persisted
+    // before the limit was enforced at creation time).
+    if (rule.pattern.length > MAX_RULE_PATTERN_LEN) continue;
     try {
       const re = new RegExp(rule.pattern, rule.flags);
       const m = re.exec(text);
@@ -1311,6 +1319,7 @@ function pushToSse(spanRecord: SpanRecord) {
 // Rate limiting — token bucket per IP for /v1/traces
 // ---------------------------------------------------------------------------
 
+const MAX_RULE_PATTERN_LEN = 1000; // cap user regex length to mitigate ReDoS
 const RATE_LIMIT_RPS     = Number(process.env.CLAUDESEC_RATE_LIMIT_RPS ?? 50);
 const RATE_LIMIT_BURST   = Number(process.env.CLAUDESEC_RATE_LIMIT_BURST ?? 200);
 const MAX_SPANS_PER_BATCH = Number(process.env.CLAUDESEC_MAX_SPANS_BATCH ?? 500);
@@ -1486,13 +1495,42 @@ async function startServer() {
 
   const io = new Server(httpServer, { cors: { origin: corsOrigins } });
 
-  // Security headers.  CSP is disabled because the dashboard uses inline
-  // event handlers and dynamic Tailwind classes; the dashboard is intended
-  // for localhost use, where CSP adds little.  All other helmet defaults
-  // (X-Content-Type-Options, Referrer-Policy, frame-ancestors, etc.) apply.
-  app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+  // Security headers.  The dashboard uses inline event handlers, dynamic
+  // Tailwind classes, and a live Socket.io websocket, so the CSP is configured
+  // permissively (it allows inline/eval and ws/wss) rather than disabled — this
+  // keeps a baseline policy in place while not breaking the UI.  All other
+  // helmet defaults (X-Content-Type-Options, Referrer-Policy, frame-ancestors,
+  // etc.) apply.
+  app.use(helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        'default-src': ["'self'"],
+        'script-src':  ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        'style-src':   ["'self'", "'unsafe-inline'"],
+        'img-src':     ["'self'", 'data:', 'blob:'],
+        'connect-src': ["'self'", 'ws:', 'wss:'],
+        'font-src':    ["'self'", 'data:'],
+        // The dashboard is served over plain HTTP on localhost; do not force
+        // sub-resource requests to upgrade to HTTPS (would break asset loads).
+        'upgrade-insecure-requests': null,
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }));
   app.use(cors({ origin: corsOrigins }));
   app.use(bodyParser.json({ limit: '10mb' }));
+
+  // Global rate limiter — caps abusive request volume on every API/UI route to
+  // mitigate denial-of-service.  The high-volume OTLP ingest endpoint is skipped
+  // here because it has its own dedicated token-bucket limiter (allowRequest).
+  app.use(rateLimit({
+    windowMs: 60_000,
+    max: 1000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.path === '/v1/traces',
+  }));
 
   // ── Graph-broadcast throttle ────────────────────────────────────────────
   // Coalesce full-graph broadcasts to at most one every 250ms.  High-volume
@@ -2537,6 +2575,11 @@ service:
     const validSeverities: Severity[] = ['low', 'medium', 'high'];
     if (!validSeverities.includes(severity as Severity)) {
       return res.status(400).json({ error: 'severity must be low, medium, or high' }) as any;
+    }
+    // Bound user-supplied regex length to mitigate catastrophic-backtracking
+    // (ReDoS) before it is ever compiled and run against ingested spans.
+    if (pattern.length > MAX_RULE_PATTERN_LEN) {
+      return res.status(400).json({ error: `pattern must be at most ${MAX_RULE_PATTERN_LEN} characters` }) as any;
     }
     try { new RegExp(pattern); } catch {
       return res.status(400).json({ error: 'invalid regex pattern' }) as any;
@@ -3900,7 +3943,7 @@ ${alerts.length > 0 ? `
 
     for (const r of records) {
       const nodeId = `"${r.spanId}"`;
-      const label  = r.name.replace(/"/g, '\\"').slice(0, 60);
+      const label  = r.name.replace(/\\/g, '\\\\').replace(/"/g, '\\"').slice(0, 60);
       const bg     = colorMap[r.severity as Severity] ?? colorMap.none;
       const border = borderMap[r.severity as Severity] ?? borderMap.none;
       if (!seen.has(r.spanId)) {
