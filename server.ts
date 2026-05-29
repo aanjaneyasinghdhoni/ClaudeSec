@@ -5,6 +5,10 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+// User-supplied custom-rule patterns are compiled with RE2 (Google's
+// linear-time regex engine) rather than the native RegExp, so an operator
+// cannot inject a catastrophic-backtracking pattern (ReDoS / regex injection).
+import RE2 from 're2';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -1174,7 +1178,7 @@ function detectSeverity(text: string): DetectHit {
     // before the limit was enforced at creation time).
     if (rule.pattern.length > MAX_RULE_PATTERN_LEN) continue;
     try {
-      const re = new RegExp(rule.pattern, rule.flags);
+      const re = new RE2(rule.pattern, rule.flags);
       const m = re.exec(text);
       if (m) {
         return {
@@ -2581,7 +2585,7 @@ service:
     if (pattern.length > MAX_RULE_PATTERN_LEN) {
       return res.status(400).json({ error: `pattern must be at most ${MAX_RULE_PATTERN_LEN} characters` }) as any;
     }
-    try { new RegExp(pattern); } catch {
+    try { new RE2(pattern); } catch {
       return res.status(400).json({ error: 'invalid regex pattern' }) as any;
     }
     const rule: CustomRule = {
