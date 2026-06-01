@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 coverage/
+*.tgz
 .DS_Store
 *.log
 .env*

@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,7 +27,7 @@ export function servicePaths(): ServicePaths {
   return {
     pkgRoot,
     serverEntry: path.join(pkgRoot, 'server.ts'),
-    tsxCli: path.join(pkgRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+    tsxCli: createRequire(import.meta.url).resolve('tsx/cli'),
     nodeBin: process.execPath,
     dataDir,
     logFile: path.join(dataDir, 'service.log'),
