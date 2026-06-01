@@ -43,6 +43,32 @@ export const HARNESSES: HarnessConfig[] = [
     docsUrl: 'https://code.claude.com/docs/en/agent-sdk/observability',
   },
   {
+    id: 'copilot',
+    name: 'GitHub Copilot CLI',
+    color: '#22c55e',
+    description: 'GitHub\'s AI pair-programmer CLI.',
+    envVars: [
+      { key: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: '{{ENDPOINT}}', description: 'OTLP collector URL' },
+      { key: 'OTEL_EXPORTER_OTLP_PROTOCOL', value: 'http/json', description: 'Protocol' },
+    ],
+    serviceNamePattern: /copilot/i,
+    spanAttributes: ['gen_ai.tool.name', 'gen_ai.request.model', 'gen_ai.usage.output_tokens'],
+    docsUrl: 'https://docs.github.com/en/copilot',
+  },
+  {
+    id: 'codex',
+    name: 'Codex',
+    color: '#a855f7',
+    description: 'OpenAI\'s Codex CLI coding agent.',
+    envVars: [
+      { key: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: '{{ENDPOINT}}', description: 'OTLP collector URL' },
+      { key: 'OTEL_EXPORTER_OTLP_PROTOCOL', value: 'http/json', description: 'Protocol' },
+    ],
+    serviceNamePattern: /codex/i,
+    spanAttributes: ['gen_ai.tool.name', 'gen_ai.request.model', 'gen_ai.usage.output_tokens'],
+    docsUrl: 'https://developers.openai.com/codex/cli',
+  },
+  {
     id: 'unknown',
     name: 'Unknown Agent',
     color: '#64748b',

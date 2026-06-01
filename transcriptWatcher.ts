@@ -264,29 +264,31 @@ function mapCopilotRecord(record: any, harness: HarnessKind, emit: (event: Watch
     });
   } else if (type === 'tool.execution_complete' && data && data.toolCallId) {
     emit({ kind: 'end', spanId: String(data.toolCallId), endNano: startNano });
-  } else if (type === 'assistant.message' && data && data.model) {
-    const model = String(data.model);
+  } else if (type === 'assistant.message' && data) {
     const outputTokens = Number(data.outputTokens ?? 0);
-    emit({
-      kind: 'span',
-      span: {
-        spanId: `${String(record.id)}:llm`,
-        traceId,
-        parentId: '',
-        name: 'llm_request',
-        rawAttrs: {
-          'gen_ai.request.model': model,
-          'llm.model': model,
-          'gen_ai.usage.input_tokens': 0,
-          'gen_ai.usage.output_tokens': outputTokens,
+    if (outputTokens > 0 || data.model) {
+      const model = typeof data.model === 'string' && data.model ? data.model : 'gpt-4o';
+      emit({
+        kind: 'span',
+        span: {
+          spanId: `${String(record.id)}:llm`,
+          traceId,
+          parentId: '',
+          name: 'llm_request',
+          rawAttrs: {
+            'gen_ai.request.model': model,
+            'llm.model': model,
+            'gen_ai.usage.input_tokens': 0,
+            'gen_ai.usage.output_tokens': outputTokens,
+          },
+          harnessId: harness.id,
+          harnessName: harness.name,
+          startNano,
+          endNano: startNano,
         },
-        harnessId: harness.id,
-        harnessName: harness.name,
-        startNano,
-        endNano: startNano,
-      },
-    });
-    emit({ kind: 'usage', tokensIn: 0, tokensOut: outputTokens });
+      });
+      emit({ kind: 'usage', tokensIn: 0, tokensOut: outputTokens });
+    }
   }
 }
 

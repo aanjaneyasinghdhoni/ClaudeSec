@@ -44,6 +44,8 @@ interface WebhookStatus {
 
 const HARNESS_COLORS: Record<string, string> = {
   'claude-code': '#f97316',
+  'copilot':     '#22c55e',
+  'codex':       '#a855f7',
   'unknown':     '#64748b',
 };
 
