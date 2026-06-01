@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { Terminal, AlertTriangle, Shield, Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Terminal, AlertTriangle, Shield } from 'lucide-react';
+import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
 
 interface CommandEntry {
   spanId:    string;
@@ -29,21 +30,45 @@ function RiskBar({ score }: { score: number }) {
   );
 }
 
+function riskBucket(score: number): string {
+  return score >= 50 ? 'high' : score >= 20 ? 'medium' : 'low';
+}
+
 export function CommandAuditTab() {
   const [commands, setCommands] = useState<CommandEntry[]>([]);
-  const [total, setTotal]       = useState(0);
-  const [filter, setFilter]     = useState('');
+  const [totalCount, setTotalCount] = useState(0);
 
   useEffect(() => {
     fetch('/api/command-audit?limit=200')
       .then(r => r.json())
-      .then(d => { setCommands(d.commands ?? []); setTotal(d.total ?? 0); })
+      .then(d => { setCommands(d.commands ?? []); setTotalCount(d.total ?? 0); })
       .catch(() => {});
   }, []);
 
-  const filtered = filter
-    ? commands.filter(c => c.command.toLowerCase().includes(filter.toLowerCase()) || c.harness.includes(filter.toLowerCase()))
-    : commands;
+  const facets = useMemo<FacetConfig<CommandEntry>[]>(() => {
+    const harnesses = [...new Set(commands.map(c => c.harness))].sort();
+    return [
+      {
+        key: 'harness',
+        label: 'Agents',
+        accessor: c => c.harness,
+        options: harnesses.map(h => ({ value: h, label: h })),
+      },
+      {
+        key: 'risk',
+        label: 'Risk',
+        accessor: c => riskBucket(c.riskScore),
+        options: [
+          { value: 'high',   label: 'High (≥50)' },
+          { value: 'medium', label: 'Medium (20–49)' },
+          { value: 'low',    label: 'Low (<20)' },
+        ],
+      },
+    ];
+  }, [commands]);
+
+  const { query, setQuery, facetValues, setFacet, visible, total, shown, showMore, showAll } =
+    useListControls(commands, { searchText: c => c.command, facets });
 
   const highRisk = commands.filter(c => c.riskScore >= 50).length;
 
@@ -54,30 +79,30 @@ export function CommandAuditTab() {
         <div className="flex items-center gap-2">
           <Terminal className="w-4 h-4" style={{ color: 'var(--cs-accent)' }} />
           <span className="text-xs font-bold text-slate-200">Command Audit</span>
-          <span className="text-xs font-mono text-slate-500">{total} commands</span>
+          <span className="text-xs font-mono text-slate-500">{totalCount} commands</span>
         </div>
         {highRisk > 0 && (
           <span className="flex items-center gap-1 px-2 py-0.5 bg-red-900/30 border border-red-700/30 rounded-lg text-xs text-red-400 font-medium">
             <AlertTriangle className="w-3 h-3" /> {highRisk} high-risk
           </span>
         )}
-        <div className="ml-auto relative">
-          <Search className="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            type="text"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
+        <div className="ml-auto">
+          <FilterBar
+            query={query}
+            setQuery={setQuery}
+            facetValues={facetValues}
+            setFacet={setFacet}
+            facets={facets}
             placeholder="Filter commands..."
-            className="pl-7 pr-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500 w-48"
           />
         </div>
       </div>
 
       {/* Table */}
-      {filtered.length === 0 ? (
+      {total === 0 ? (
         <div className="flex flex-col items-center justify-center h-32 gap-2">
           <Shield className="w-6 h-6 text-slate-700" />
-          <p className="text-xs text-slate-500">{filter ? 'No matching commands' : 'No shell commands recorded'}</p>
+          <p className="text-xs text-slate-500">{commands.length > 0 ? 'No matching commands' : 'No shell commands recorded'}</p>
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -91,7 +116,7 @@ export function CommandAuditTab() {
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 50).map(cmd => (
+              {visible.map(cmd => (
                 <tr key={cmd.spanId} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                   <td className="px-3 py-2.5">
                     <RiskBar score={cmd.riskScore} />
@@ -121,9 +146,7 @@ export function CommandAuditTab() {
               ))}
             </tbody>
           </table>
-          {filtered.length > 50 && (
-            <p className="text-xs text-slate-600 text-center py-2">Showing 50 of {filtered.length} commands</p>
-          )}
+          <ListFooter shown={shown} total={total} showMore={showMore} showAll={showAll} noun="commands" />
         </div>
       )}
     </div>
