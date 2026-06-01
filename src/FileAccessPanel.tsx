@@ -39,7 +39,7 @@ export function FileAccessPanel() {
       {/* Summary */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2">
-          <FileText className="w-4 h-4" style={{ color: '#00d4aa' }} />
+          <FileText className="w-4 h-4" style={{ color: 'var(--cs-accent)' }} />
           <span className="text-xs font-bold text-slate-200">File Access</span>
           <span className="text-xs font-mono text-slate-500">{total} files accessed</span>
         </div>

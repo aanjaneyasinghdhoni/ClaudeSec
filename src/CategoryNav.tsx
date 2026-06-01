@@ -1,21 +1,19 @@
-/**
- * CategoryNav — Slim vertical icon rail for category-based navigation.
- * Sits to the left of the existing session sidebar.
- */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  Eye, AlertTriangle, Shield, Bookmark, Settings,
+  Eye, AlertTriangle, Shield, Bookmark, Settings, PanelLeftClose, PanelLeftOpen, BookOpen,
 } from 'lucide-react';
 
 export type Category = 'observe' | 'detect' | 'protect' | 'review' | 'manage';
 
 export const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
-  { id: 'observe', label: 'Observe',  icon: <Eye className="w-4 h-4" /> },
-  { id: 'detect',  label: 'Detect',   icon: <AlertTriangle className="w-4 h-4" /> },
-  { id: 'protect', label: 'Protect',  icon: <Shield className="w-4 h-4" /> },
-  { id: 'review',  label: 'Review',   icon: <Bookmark className="w-4 h-4" /> },
-  { id: 'manage',  label: 'Manage',   icon: <Settings className="w-4 h-4" /> },
+  { id: 'observe', label: 'Observe',  icon: <Eye className="w-4 h-4 shrink-0" /> },
+  { id: 'detect',  label: 'Detect',   icon: <AlertTriangle className="w-4 h-4 shrink-0" /> },
+  { id: 'protect', label: 'Protect',  icon: <Shield className="w-4 h-4 shrink-0" /> },
+  { id: 'review',  label: 'Review',   icon: <Bookmark className="w-4 h-4 shrink-0" /> },
+  { id: 'manage',  label: 'Manage',   icon: <Settings className="w-4 h-4 shrink-0" /> },
 ];
+
+const STORAGE_KEY = 'claudesec.railCollapsed';
 
 interface Props {
   active: Category;
@@ -24,14 +22,34 @@ interface Props {
 }
 
 export function CategoryNav({ active, onChange, alertCount = 0 }: Props) {
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => localStorage.getItem(STORAGE_KEY) === 'true'
+  );
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, String(collapsed)); } catch { /* ignore */ }
+  }, [collapsed]);
+
   return (
     <div
-      className="w-[56px] shrink-0 flex flex-col items-center py-3 gap-1"
+      className={`shrink-0 flex flex-col py-3 px-2 gap-1 transition-[width] duration-200 ease-out overflow-hidden ${collapsed ? 'w-[56px] items-center' : 'w-[180px]'}`}
       style={{
         borderRight: '1px solid var(--cs-border)',
         background: 'var(--cs-bg-surface)',
       }}
     >
+      <button
+        onClick={() => setCollapsed(v => !v)}
+        title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+        className={`category-btn h-10 rounded-xl flex items-center mb-1 ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
+        style={{ color: 'var(--cs-text-faint)' }}
+      >
+        {collapsed ? <PanelLeftOpen className="w-4 h-4 shrink-0" /> : <PanelLeftClose className="w-4 h-4 shrink-0" />}
+        {!collapsed && (
+          <span className="text-xs font-medium tracking-wide whitespace-nowrap">Collapse</span>
+        )}
+      </button>
+
       {CATEGORIES.map(cat => {
         const isActive = active === cat.id;
         return (
@@ -39,29 +57,50 @@ export function CategoryNav({ active, onChange, alertCount = 0 }: Props) {
             key={cat.id}
             onClick={() => onChange(cat.id)}
             title={cat.label}
-            className="category-btn relative w-10 h-10 rounded-xl flex flex-col items-center justify-center gap-0.5"
+            className={`category-btn relative h-10 rounded-xl flex items-center ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
             style={{
-              background: isActive ? 'rgba(0,212,170,0.1)' : 'transparent',
-              color: isActive ? '#00d4aa' : 'var(--cs-text-faint)',
+              background: isActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
+              color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
             }}
           >
             {cat.icon}
-            <span className="text-[8px] font-medium leading-none tracking-wide">{cat.label}</span>
+            {!collapsed && (
+              <span className="text-xs font-medium tracking-wide whitespace-nowrap">{cat.label}</span>
+            )}
 
-            {/* Alert badge on Detect */}
             {cat.id === 'detect' && alertCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 text-[8px] font-bold rounded-full flex items-center justify-center leading-none bg-rose-500 text-white">
+              <span
+                className={`min-w-[16px] h-[16px] px-1 text-[9px] font-bold rounded-full flex items-center justify-center leading-none bg-rose-500 text-white ${
+                  collapsed ? 'absolute -top-0.5 -right-0.5' : 'ml-auto'
+                }`}
+              >
                 {alertCount > 99 ? '99+' : alertCount}
               </span>
             )}
 
-            {/* Active indicator */}
             {isActive && (
-              <div className="absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full" style={{ background: '#00d4aa' }} />
+              <div className="absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full" style={{ background: 'var(--cs-accent)' }} />
             )}
           </button>
         );
       })}
+
+      <div
+        className={`mt-auto mb-1 ${collapsed ? 'w-6' : 'w-full'}`}
+        style={{ height: '1px', background: 'var(--cs-border)' }}
+      />
+
+      <button
+        onClick={() => window.open('https://github.com/aanjaneyasinghdhoni/ClaudeSec#readme', '_blank', 'noopener')}
+        title="Documentation"
+        className={`category-btn h-10 rounded-xl flex items-center ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
+        style={{ color: 'var(--cs-text-faint)' }}
+      >
+        <BookOpen className="w-4 h-4 shrink-0" />
+        {!collapsed && (
+          <span className="text-xs font-medium tracking-wide whitespace-nowrap">Docs</span>
+        )}
+      </button>
     </div>
   );
 }

@@ -52,7 +52,7 @@ export function CommandAuditTab() {
       {/* Summary */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2">
-          <Terminal className="w-4 h-4" style={{ color: '#00d4aa' }} />
+          <Terminal className="w-4 h-4" style={{ color: 'var(--cs-accent)' }} />
           <span className="text-xs font-bold text-slate-200">Command Audit</span>
           <span className="text-xs font-mono text-slate-500">{total} commands</span>
         </div>

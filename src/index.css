@@ -15,6 +15,7 @@
   --cs-text-faint:   #4a4e60;
   --cs-accent:       #00d4aa;
   --cs-accent-dim:   #00d4aa33;
+  --cs-accent-rgb:   0,212,170;
   --cs-danger:       #ff3b5c;
   --cs-warn:         #ffb224;
   --cs-info:         #3b9eff;
@@ -45,6 +46,7 @@ html.light {
   --cs-text-faint:   #8b90a0;
   --cs-accent:       #00a884;
   --cs-accent-dim:   #00a88422;
+  --cs-accent-rgb:   0,168,132;
   --cs-danger:       #dc2640;
   --cs-warn:         #d49400;
   --cs-info:         #2563eb;
@@ -578,3 +580,60 @@ select option {
   margin: 0 4px;
   flex-shrink: 0;
 }
+
+.theme-option:hover { background: var(--cs-bg-subtle); }
+
+:root[data-theme="carbon"] {
+  --cs-bg-primary:   #0b0b0c;
+  --cs-bg-surface:   #141416;
+  --cs-bg-elevated:  #1c1c1f;
+  --cs-bg-subtle:    #232327;
+  --cs-border:       #232327;
+  --cs-border-soft:  #34343a;
+  --cs-text-base:    #ededed;
+  --cs-text-muted:   #9a9aa2;
+  --cs-text-faint:   #56565e;
+  --cs-accent:       #f5a623;
+  --cs-accent-dim:   #f5a62333;
+  --cs-accent-rgb:   245,166,35;
+  --cs-svg-grid:     #232327;
+  --cs-svg-axis:     #34343a;
+  --cs-svg-track:    #141416;
+  --cs-svg-selected: #232327;
+}
+html[data-theme="carbon"] .bg-slate-950        { background-color: #0b0b0c !important; }
+html[data-theme="carbon"] .bg-slate-900        { background-color: #141416 !important; }
+html[data-theme="carbon"] .bg-slate-800        { background-color: #1c1c1f !important; }
+html[data-theme="carbon"] .bg-slate-700        { background-color: #232327 !important; }
+html[data-theme="carbon"] .bg-slate-900\/50    { background-color: rgba(20,20,22,0.85) !important; }
+html[data-theme="carbon"] .bg-slate-900\/80    { background-color: rgba(20,20,22,0.92) !important; }
+html[data-theme="carbon"] .bg-slate-900\/30    { background-color: rgba(20,20,22,0.6) !important; }
+html[data-theme="carbon"] .bg-slate-800\/50    { background-color: rgba(28,28,31,0.7) !important; }
+html[data-theme="carbon"] .bg-slate-800\/40    { background-color: rgba(28,28,31,0.6) !important; }
+html[data-theme="carbon"] .border-slate-800    { border-color: #232327 !important; }
+html[data-theme="carbon"] .border-slate-700    { border-color: #34343a !important; }
+
+html[data-theme="paper"] {
+  --cs-bg-primary:   #faf7f2;
+  --cs-bg-surface:   #fffdf9;
+  --cs-bg-elevated:  #f3efe7;
+  --cs-bg-subtle:    #ece7dc;
+  --cs-border:       #e6dfd2;
+  --cs-border-soft:  #d8cfbf;
+  --cs-accent:       #6366f1;
+  --cs-accent-dim:   #6366f122;
+  --cs-accent-rgb:   99,102,241;
+  --cs-svg-grid:     #e6dfd2;
+  --cs-svg-axis:     #d8cfbf;
+  --cs-svg-track:    #f3efe7;
+  --cs-svg-selected: #ece7dc;
+}
+html[data-theme="paper"].light .bg-slate-950   { background-color: #faf7f2 !important; }
+html[data-theme="paper"].light .bg-slate-900   { background-color: #fffdf9 !important; }
+html[data-theme="paper"].light .bg-slate-800   { background-color: #f3efe7 !important; }
+html[data-theme="paper"].light .bg-slate-700   { background-color: #ece7dc !important; }
+html[data-theme="paper"].light .bg-slate-900\/50 { background-color: rgba(255,253,249,0.85) !important; }
+html[data-theme="paper"].light .bg-slate-900\/80 { background-color: rgba(255,253,249,0.92) !important; }
+html[data-theme="paper"].light .bg-slate-950\/50 { background-color: rgba(250,247,242,0.85) !important; }
+html[data-theme="paper"].light .border-slate-800 { border-color: #e6dfd2 !important; }
+html[data-theme="paper"].light .border-slate-700 { border-color: #d8cfbf !important; }

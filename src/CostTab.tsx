@@ -47,6 +47,31 @@ const HARNESS_COLORS: Record<string, string> = {
   'unknown':     '#64748b',
 };
 
+type PlanId = 'api' | 'pro' | 'max5x' | 'max20x';
+
+interface PlanOption {
+  id:    PlanId;
+  label: string;
+  price: number | null;
+}
+
+const PLAN_OPTIONS: PlanOption[] = [
+  { id: 'api',    label: 'API (pay-per-token)', price: null },
+  { id: 'pro',    label: 'Pro — $20/mo',        price: 20   },
+  { id: 'max5x',  label: 'Max 5× — $100/mo',    price: 100  },
+  { id: 'max20x', label: 'Max 20× — $200/mo',   price: 200  },
+];
+
+const PLAN_STORAGE_KEY = 'claudesec.plan';
+
+function loadPlan(): PlanId {
+  try {
+    const v = localStorage.getItem(PLAN_STORAGE_KEY);
+    if (v && PLAN_OPTIONS.some(p => p.id === v)) return v as PlanId;
+  } catch {}
+  return 'api';
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatTokens(n: number): string {
@@ -159,7 +184,7 @@ function WebhookPanel() {
                 onClick={test}
                 disabled={testing}
                 className="px-2 py-1 text-xs rounded border border-blue-800 transition-colors disabled:opacity-50"
-                style={{ background: 'rgba(0,212,170,0.12)', color: '#00d4aa' }}
+                style={{ background: 'rgba(var(--cs-accent-rgb),0.12)', color: 'var(--cs-accent)' }}
               >
                 {testing ? 'Sending…' : 'Test'}
               </button>
@@ -184,8 +209,8 @@ function WebhookPanel() {
             onChange={e => setNewUrl(e.target.value)}
             placeholder="https://hooks.slack.com/… or Discord webhook URL"
             className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded text-[11px] text-slate-200 placeholder-slate-600 focus:outline-none font-mono"
-            style={{ '--tw-ring-color': '#00d4aa' } as React.CSSProperties}
-            onFocus={e => e.currentTarget.style.borderColor = '#00d4aa'}
+            style={{ '--tw-ring-color': 'var(--cs-accent)' } as React.CSSProperties}
+            onFocus={e => e.currentTarget.style.borderColor = 'var(--cs-accent)'}
             onBlur={e => e.currentTarget.style.borderColor = ''}
           />
           <div className="flex items-center gap-2">
@@ -202,7 +227,7 @@ function WebhookPanel() {
               onClick={save}
               disabled={saving || !newUrl.trim()}
               className="px-6 py-1.5 text-white text-xs font-medium rounded transition-colors disabled:opacity-50"
-              style={{ background: '#00d4aa' }}
+              style={{ background: 'var(--cs-accent)' }}
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
@@ -284,7 +309,7 @@ function DBHealthPanel() {
 
       <div className="grid grid-cols-3 gap-2 mb-3 text-center">
         {([
-          { val: stats.spansTotal.toLocaleString(),    label: 'Spans',    color: '', inlineColor: '#00d4aa' },
+          { val: stats.spansTotal.toLocaleString(),    label: 'Spans',    color: '', inlineColor: 'var(--cs-accent)' },
           { val: stats.sessionsTotal.toLocaleString(),  label: 'Sessions', color: 'text-purple-400' },
           { val: stats.dbSizeHuman,                    label: 'DB Size',  color: 'text-orange-400' },
         ] as Array<{ val: string; label: string; color: string; inlineColor?: string }>).map(c => (
@@ -312,7 +337,7 @@ function DBHealthPanel() {
       {!editing ? (
         <div className="flex items-center justify-between text-xs text-slate-500 mb-3">
           <span>Retention: {stats.retentionConfig.retentionDays}d · max {stats.retentionConfig.maxSpans.toLocaleString()} spans</span>
-          <button onClick={() => setEditing(true)} className="transition-colors hover:opacity-80" style={{ color: '#00d4aa' }}>Edit</button>
+          <button onClick={() => setEditing(true)} className="transition-colors hover:opacity-80" style={{ color: 'var(--cs-accent)' }}>Edit</button>
         </div>
       ) : (
         <div className="mb-3 space-y-1.5">
@@ -329,7 +354,7 @@ function DBHealthPanel() {
           <div className="flex gap-2">
             <button onClick={saveRetention}
               className="flex-1 py-1 text-white text-xs rounded transition-colors"
-              style={{ background: '#00d4aa' }}>
+              style={{ background: 'var(--cs-accent)' }}>
               Save
             </button>
             <button onClick={() => setEditing(false)}
@@ -362,6 +387,7 @@ function DBHealthPanel() {
 export function CostTab() {
   const [data, setData]   = useState<CostData | null>(null);
   const [view, setView]   = useState<'sessions' | 'models'>('models');
+  const [plan, setPlan]   = useState<PlanId>(loadPlan);
 
   const load = () =>
     fetch('/api/costs').then(r => r.json()).then(setData).catch(() => {});
@@ -373,6 +399,12 @@ export function CostTab() {
     return () => { socket.off('graph-update', load); socket.off('span-added', load); };
   }, []);
 
+  useEffect(() => {
+    try { localStorage.setItem(PLAN_STORAGE_KEY, plan); } catch {}
+  }, [plan]);
+
+  const selectedPlan = PLAN_OPTIONS.find(p => p.id === plan) ?? PLAN_OPTIONS[0];
+
   const hasData = data && (data.totalTokensIn + data.totalTokensOut) > 0;
   const maxSessionCost = data ? Math.max(0.000001, ...data.sessions.map(s => s.costUsd)) : 0;
   const maxModelCost   = data ? Math.max(0.000001, ...data.models.map(m => m.costUsd))   : 0;
@@ -382,15 +414,28 @@ export function CostTab() {
 
       {/* ── Summary cards ── */}
       <div className="shrink-0 p-4" style={{ borderBottom: '1px solid var(--cs-border)' }}>
-        <div className="flex items-center gap-1.5 mb-3">
+        <div className="flex items-center gap-1.5 mb-1">
           <DollarSign className="w-3.5 h-3.5 text-slate-500" />
           <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Token Cost Estimator</span>
-          <span className="ml-auto text-[11px] text-slate-700">approximate — based on public pricing</span>
+          <select
+            value={plan}
+            onChange={e => setPlan(e.target.value as PlanId)}
+            className="ml-auto px-2 py-1 rounded text-[11px] focus:outline-none"
+            style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)', color: 'var(--cs-text-muted)' }}
+            title="Your Claude Code plan"
+          >
+            {PLAN_OPTIONS.map(p => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
         </div>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--cs-text-faint)' }}>
+          What this usage would cost on the pay-per-token API — estimate, not a bill.
+        </p>
         <div className="grid grid-cols-4 gap-3">
           {([
             {
-              label: 'Total Cost',
+              label: 'API-Equivalent Cost',
               value: formatCost(data?.totalCostUsd ?? 0),
               icon: <DollarSign className="w-3.5 h-3.5" />,
               color: 'text-green-400',
@@ -402,8 +447,8 @@ export function CostTab() {
               icon: <TrendingUp className="w-3.5 h-3.5" />,
               color: '',
               bg:    '',
-              inlineColor: '#00d4aa',
-              inlineBg: 'rgba(0,212,170,0.1)',
+              inlineColor: 'var(--cs-accent)',
+              inlineBg: 'rgba(var(--cs-accent-rgb),0.1)',
             },
             {
               label: 'Output Tokens',
@@ -434,7 +479,7 @@ export function CostTab() {
           <DollarSign className="w-10 h-10 text-slate-700" />
           <p className="text-sm text-slate-400 font-medium">No token usage data available</p>
           <div className="max-w-md space-y-3">
-            <div className="rounded-xl p-4 text-xs leading-relaxed" style={{ background: 'rgba(0,212,170,0.06)', border: '1px solid rgba(0,212,170,0.15)' }}>
+            <div className="rounded-xl p-4 text-xs leading-relaxed" style={{ background: 'rgba(var(--cs-accent-rgb),0.06)', border: '1px solid rgba(var(--cs-accent-rgb),0.15)' }}>
               <p className="font-semibold mb-2" style={{ color: 'var(--cs-text-base)' }}>Why am I seeing this?</p>
               <p style={{ color: 'var(--cs-text-muted)' }}>
                 Cost tracking requires agents to include <code className="font-mono bg-slate-800 px-1 rounded text-slate-400">gen_ai.usage.input_tokens</code> and{' '}
@@ -469,6 +514,54 @@ export function CostTab() {
         </div>
       ) : (
         <div className="flex-1 flex flex-col p-5 gap-4 min-h-0 overflow-auto">
+
+          {/* Plan context */}
+          {selectedPlan.price != null && (() => {
+            const apiTotal = data.totalCostUsd;
+            const monthly  = selectedPlan.price;
+            const ratio    = monthly > 0 ? apiTotal / monthly : 0;
+            const ratioGood = ratio >= 1;
+            return (
+              <div
+                className="rounded-xl p-4"
+                style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--cs-text-muted)' }}>
+                    Your plan
+                  </span>
+                  <span className="text-[11px]" style={{ color: 'var(--cs-text-faint)' }}>
+                    {selectedPlan.label}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mb-3">
+                  <div className="rounded-lg p-3" style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}>
+                    <div className="text-lg font-bold font-mono" style={{ color: 'var(--cs-text-base)' }}>${monthly}</div>
+                    <div className="text-[11px] uppercase tracking-wider mt-0.5" style={{ color: 'var(--cs-text-faint)' }}>Flat / month</div>
+                  </div>
+                  <div className="rounded-lg p-3" style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}>
+                    <div className="text-lg font-bold font-mono" style={{ color: 'var(--cs-text-base)' }}>{formatCost(apiTotal)}</div>
+                    <div className="text-[11px] uppercase tracking-wider mt-0.5" style={{ color: 'var(--cs-text-faint)' }}>API-equivalent</div>
+                  </div>
+                  <div className="rounded-lg p-3" style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}>
+                    <div className="text-lg font-bold font-mono" style={{ color: ratioGood ? 'var(--cs-accent)' : 'var(--cs-text-muted)' }}>
+                      {ratio.toFixed(1)}×
+                    </div>
+                    <div className="text-[11px] uppercase tracking-wider mt-0.5" style={{ color: 'var(--cs-text-faint)' }}>Value vs plan</div>
+                  </div>
+                </div>
+                <p className="text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
+                  You'd pay {formatCost(apiTotal)} on the pay-per-token API; on {selectedPlan.label.split(' — ')[0]} you pay ${monthly} flat per month.
+                  {' '}
+                  <span style={{ color: 'var(--cs-text-faint)' }}>
+                    {ratioGood
+                      ? `That's ${ratio.toFixed(1)}× your plan price in API-equivalent value.`
+                      : `Your usage so far is ${ratio.toFixed(1)}× the flat price — the subscription covers it.`}
+                  </span>
+                </p>
+              </div>
+            );
+          })()}
 
           {/* View toggle */}
           <div className="flex items-center gap-2">

@@ -6,15 +6,68 @@
  * Review: Bookmark info
  * Manage: Settings nav links
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle, Shield, Search, Bookmark, Settings,
   Cpu, Zap, Database, Bell, ChevronRight,
 } from 'lucide-react';
 import type { Category } from './CategoryNav';
+import { socket } from './socket';
+
+interface AlertLike {
+  ruleLabel: string;
+  severity: string;
+}
+
+const PROTECT_CATEGORIES = [
+  { label: 'File Operations',   color: '#3b82f6', match: /file|read|write|path|fs|directory|dir/i },
+  { label: 'Network Access',    color: '#f97316', match: /network|http|curl|wget|dns|fetch|request|url|socket/i },
+  { label: 'Command Execution', color: '#ef4444', match: /exec|command|bash|shell|spawn|subprocess|reverse[- ]?shell|sudo/i },
+  { label: 'Code Injection',    color: '#a855f7', match: /inject|eval|payload|deserial|template|sql|xss/i },
+  { label: 'Data Exfiltration', color: '#eab308', match: /exfil|leak|upload|credential|secret|token|key|password|env/i },
+  { label: 'Prompt Injection',  color: '#ec4899', match: /prompt|jailbreak|ignore previous|system prompt|instruction/i },
+] as const;
+
+function categorizeRule(ruleLabel: string): number {
+  for (let i = 0; i < PROTECT_CATEGORIES.length; i++) {
+    if (PROTECT_CATEGORIES[i].match.test(ruleLabel)) return i;
+  }
+  return 2;
+}
+
+function useAlertCounts() {
+  const [counts, setCounts] = useState<number[]>(() => PROTECT_CATEGORIES.map(() => 0));
+  const [highTotal, setHighTotal] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      fetch('/api/alerts?limit=1000')
+        .then(r => r.json())
+        .then(({ alerts }: { alerts: AlertLike[] }) => {
+          if (cancelled) return;
+          const next = PROTECT_CATEGORIES.map(() => 0);
+          let high = 0;
+          for (const a of alerts ?? []) {
+            next[categorizeRule(a.ruleLabel ?? '')] += 1;
+            if (a.severity === 'high') high += 1;
+          }
+          setCounts(next);
+          setHighTotal(high);
+        })
+        .catch(() => {});
+    };
+    load();
+    socket.on('alerts-update', load);
+    return () => { cancelled = true; socket.off('alerts-update', load); };
+  }, []);
+
+  return { counts, highTotal };
+}
 
 // ── Detect Sidebar ─────────────────────────────────────────────────────────
 function DetectSidebar({ alertCount }: { alertCount: number }) {
+  const { highTotal } = useAlertCounts();
   return (
     <div className="flex flex-col h-full">
       <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
@@ -27,7 +80,7 @@ function DetectSidebar({ alertCount }: { alertCount: number }) {
             <p className="text-[9px] uppercase tracking-wider font-mono" style={{ color: 'var(--cs-text-faint)' }}>Total</p>
           </div>
           <div className="p-2 rounded-lg text-center" style={{ background: 'rgba(255,59,92,0.06)', border: '1px solid rgba(255,59,92,0.15)' }}>
-            <p className="text-lg font-bold font-mono" style={{ color: '#ff3b5c' }}>—</p>
+            <p className="text-lg font-bold font-mono" style={{ color: '#ff3b5c' }}>{highTotal ?? '…'}</p>
             <p className="text-[9px] uppercase tracking-wider font-mono" style={{ color: '#ff3b5c' }}>High</p>
           </div>
         </div>
@@ -61,14 +114,7 @@ function DetectSidebar({ alertCount }: { alertCount: number }) {
 
 // ── Protect Sidebar ────────────────────────────────────────────────────────
 function ProtectSidebar() {
-  const categories = [
-    { label: 'File Operations', color: '#3b82f6' },
-    { label: 'Network Access', color: '#f97316' },
-    { label: 'Command Execution', color: '#ef4444' },
-    { label: 'Code Injection', color: '#a855f7' },
-    { label: 'Data Exfiltration', color: '#eab308' },
-    { label: 'Prompt Injection', color: '#ec4899' },
-  ];
+  const { counts } = useAlertCounts();
   return (
     <div className="flex flex-col h-full">
       <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
@@ -76,10 +122,11 @@ function ProtectSidebar() {
           <Shield className="w-3 h-3" /> Rule Categories
         </p>
         <div className="space-y-1">
-          {categories.map(c => (
+          {PROTECT_CATEGORIES.map((c, i) => (
             <div key={c.label} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs" style={{ color: 'var(--cs-text-muted)' }}>
               <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color }} />
-              {c.label}
+              <span className="flex-1 truncate">{c.label}</span>
+              <span className="font-mono tabular-nums shrink-0" style={{ color: 'var(--cs-text-faint)' }}>{counts[i]}</span>
             </div>
           ))}
         </div>
@@ -144,8 +191,8 @@ function ManageSidebar({ activeTab, onTabChange }: ManageSidebarProps) {
               onClick={() => onTabChange(item.id)}
               className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-all text-left"
               style={{
-                background: isActive ? 'rgba(0,212,170,0.1)' : 'transparent',
-                color: isActive ? '#00d4aa' : 'var(--cs-text-muted)',
+                background: isActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
+                color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-muted)',
               }}
             >
               {item.icon}

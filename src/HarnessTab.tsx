@@ -87,7 +87,7 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
           : 'hover:border-slate-700'
       }`}
       style={isActive
-        ? { background: 'var(--cs-bg-surface)', border: '1px solid rgba(0,212,170,0.4)', boxShadow: '0 0 0 2px rgba(0,212,170,0.2)' }
+        ? { background: 'var(--cs-bg-surface)', border: '1px solid rgba(var(--cs-accent-rgb),0.4)', boxShadow: '0 0 0 2px rgba(var(--cs-accent-rgb),0.2)' }
         : { background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }
       }
     >
@@ -107,8 +107,8 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
               : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-300'
           }`}
           style={isActive
-            ? { background: 'rgba(0,212,170,0.15)', borderColor: 'rgba(0,212,170,0.4)', color: 'rgba(0,212,170,0.85)' }
-            : { background: 'rgba(0,212,170,0.1)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
+            ? { background: 'rgba(var(--cs-accent-rgb),0.15)', borderColor: 'rgba(var(--cs-accent-rgb),0.4)', color: 'rgba(var(--cs-accent-rgb),0.85)' }
+            : { background: 'rgba(var(--cs-accent-rgb),0.1)', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)' }
           }
         >
           {isActive ? 'Filtered' : 'Filter'}
@@ -198,7 +198,7 @@ export function HarnessTab({ onFilterHarness, activeFilter }: Props): React.Reac
 
         {/* Header */}
         <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5" style={{ color: '#00d4aa' }} />
+          <Activity className="w-5 h-5" style={{ color: 'var(--cs-accent)' }} />
           <h2 className="text-sm font-bold text-slate-200">Agent Harnesses</h2>
           <span className="ml-auto text-xs font-mono text-slate-500">
             {harnesses.length} harness{harnesses.length !== 1 ? 'es' : ''} detected
@@ -208,7 +208,7 @@ export function HarnessTab({ onFilterHarness, activeFilter }: Props): React.Reac
               type="button"
               onClick={() => onFilterHarness(null)}
               className="text-xs px-2 py-0.5 rounded-md border transition-colors"
-              style={{ background: 'rgba(0,212,170,0.12)', borderColor: 'rgba(0,212,170,0.3)', color: 'rgba(0,212,170,0.85)' }}
+              style={{ background: 'rgba(var(--cs-accent-rgb),0.12)', borderColor: 'rgba(var(--cs-accent-rgb),0.3)', color: 'rgba(var(--cs-accent-rgb),0.85)' }}
             >
               Clear filter
             </button>

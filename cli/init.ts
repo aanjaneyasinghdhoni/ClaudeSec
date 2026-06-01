@@ -3,8 +3,9 @@
  * ClaudeSec CLI
  *
  * Usage:
- *   claudesec              — auto-configure Claude Code telemetry (alias for `init`)
- *   claudesec init         — auto-configure Claude Code telemetry
+ *   claudesec              — install + start the background watcher, open the dashboard
+ *   claudesec start        — same as above
+ *   claudesec stop         — stop and remove the background service
  *   claudesec status       — show server health, span/session counts, uptime
  *   claudesec export [file]— download all spans as JSON (default: claudesec-export-<ts>.json)
  *   claudesec reset        — confirm + wipe all spans, sessions, and alerts
@@ -13,7 +14,7 @@
 import { createInterface } from 'readline';
 import { execSync }        from 'child_process';
 import * as fs             from 'fs';
-import { HARNESSES, type HarnessConfig } from '../src/harnesses.js';
+import { installService, uninstallService, cleanupLegacyOtelEnv, platformSupport, servicePaths } from './service.js';
 
 const PORT     = process.env.CLAUDESEC_PORT ?? '3000';
 const BASE_URL = `http://localhost:${PORT}`;
@@ -24,61 +25,6 @@ const BASE_URL = `http://localhost:${PORT}`;
 
 function prompt(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
   return new Promise(resolve => rl.question(question, resolve));
-}
-
-function printExports(harness: HarnessConfig) {
-  const endpoint = `${BASE_URL}/v1/traces`;
-  console.log(`\n\x1b[1m\x1b[36m# ${harness.name} — copy and paste into your terminal:\x1b[0m\n`);
-  for (const env of harness.envVars) {
-    const val = env.value.replace('{{ENDPOINT}}', endpoint);
-    console.log(`\x1b[32mexport ${env.key}="${val}"\x1b[0m   # ${env.description}`);
-  }
-  console.log(`\n\x1b[90mThen restart ${harness.name} and open ${BASE_URL}\x1b[0m\n`);
-  if (harness.docsUrl) {
-    console.log(`\x1b[90mDocs: ${harness.docsUrl}\x1b[0m\n`);
-  }
-}
-
-const MARKER_START = '# >>> ClaudeSec >>>';
-const MARKER_END   = '# <<< ClaudeSec <<<';
-
-function getShellProfile(): string | null {
-  const shell = process.env.SHELL ?? '';
-  const home  = process.env.HOME ?? '';
-  if (!home) return null;
-  if (shell.includes('zsh'))  return `${home}/.zshrc`;
-  if (shell.includes('bash')) {
-    const bashrc = `${home}/.bashrc`;
-    const profile = `${home}/.bash_profile`;
-    return fs.existsSync(bashrc) ? bashrc : profile;
-  }
-  if (shell.includes('fish')) return `${home}/.config/fish/config.fish`;
-  return null;
-}
-
-function writeToShellProfile(harness: HarnessConfig): boolean {
-  const profilePath = getShellProfile();
-  if (!profilePath) return false;
-
-  const endpoint = `${BASE_URL}/v1/traces`;
-  const lines = harness.envVars.map(env => {
-    const val = env.value.replace('{{ENDPOINT}}', endpoint);
-    return `export ${env.key}="${val}"`;
-  });
-  const block = `${MARKER_START}\n${lines.join('\n')}\n${MARKER_END}`;
-
-  let content = '';
-  try { content = fs.readFileSync(profilePath, 'utf-8'); } catch {}
-
-  if (content.includes(MARKER_START)) {
-    const re = new RegExp(`${MARKER_START}[\\s\\S]*?${MARKER_END}`, 'g');
-    content = content.replace(re, block);
-  } else {
-    content = content.trimEnd() + '\n\n' + block + '\n';
-  }
-
-  fs.writeFileSync(profilePath, content);
-  return true;
 }
 
 async function apiFetch(path: string, opts?: { method?: string; body?: unknown }): Promise<any> {
@@ -100,41 +46,68 @@ async function apiFetch(path: string, opts?: { method?: string; body?: unknown }
 // Commands
 // ---------------------------------------------------------------------------
 
-async function cmdInit() {
-  console.log('\n\x1b[1m\x1b[35mClaudeSec — Claude Code Setup\x1b[0m');
-  console.log('\x1b[90mAuto-configuring environment variables for Claude Code telemetry.\x1b[0m\n');
+async function waitForHealth(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/health`);
+      if (res.ok) return true;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 500));
+    process.stdout.write('.');
+  }
+  return false;
+}
 
-  const claudeCode = HARNESSES.find(h => h.id === 'claude-code')!;
+async function cmdStart() {
+  console.log('\n\x1b[1m\x1b[35mClaudeSec\x1b[0m  \x1b[90mzero-config local observatory for your AI agents\x1b[0m\n');
 
-  printExports(claudeCode);
+  const support = platformSupport();
+  if (support === 'unsupported') {
+    console.error(`\x1b[31m✗ Unsupported platform: ${process.platform}\x1b[0m\n`);
+    process.exit(1);
+  }
+  if (support === 'experimental') {
+    console.log(`\x1b[33m⚠ The ${process.platform} background service is experimental — verified on macOS.\x1b[0m`);
+  }
 
-  const profilePath = getShellProfile();
-  if (profilePath) {
-    if (writeToShellProfile(claudeCode)) {
-      console.log(`\x1b[32m✓ Environment variables written to ${profilePath}\x1b[0m`);
-      console.log(`\x1b[90mRestart your terminal or run: source ${profilePath}\x1b[0m\n`);
-    } else {
-      console.log(`\x1b[31m✗ Could not write to shell profile\x1b[0m\n`);
-    }
-  } else {
-    console.log(`\x1b[33m⚠ Could not detect shell profile. Copy the exports above manually.\x1b[0m\n`);
+  const cleaned = cleanupLegacyOtelEnv();
+  if (cleaned.length > 0) {
+    console.log(`\x1b[90m✓ Removed legacy ClaudeSec OTEL env config from ${cleaned.length} file(s) — the watcher needs no env vars.\x1b[0m`);
   }
 
   try {
-    const res = await fetch(`${BASE_URL}/api/health`);
-    if (res.ok) {
-      console.log(`\x1b[32m✓ ClaudeSec server is running at ${BASE_URL}\x1b[0m\n`);
-    } else {
-      console.log(`\x1b[33m⚠ ClaudeSec server returned ${res.status}. Make sure it's running.\x1b[0m\n`);
-    }
-  } catch {
-    console.log(`\x1b[33m⚠ Could not reach ClaudeSec at ${BASE_URL}. Start the server with: npm run dev\x1b[0m\n`);
+    installService();
+    console.log(`\x1b[32m✓ Background service installed and started.\x1b[0m`);
+  } catch (err: any) {
+    console.error(`\x1b[31m✗ Could not install the background service: ${err.message}\x1b[0m\n`);
+    process.exit(1);
   }
 
-  console.log(`\x1b[1m\x1b[36mNext steps:\x1b[0m`);
-  console.log(`  1. Start the server:  \x1b[33mnpm run dev\x1b[0m`);
-  console.log(`  2. Restart Claude Code from this terminal`);
-  console.log(`  3. Open \x1b[36m${BASE_URL}\x1b[0m to see traces flow in\n`);
+  process.stdout.write('\x1b[90mWaiting for the dashboard');
+  const healthy = await waitForHealth(20_000);
+  console.log('');
+
+  if (healthy) {
+    console.log(`\x1b[32m✓ ClaudeSec is live at ${BASE_URL}\x1b[0m\n`);
+    cmdOpen();
+    console.log(`\x1b[90mIt is now watching every Claude Code & Codex session on this machine.`);
+    console.log(`Everything stays local — nothing leaves your computer.`);
+    console.log(`Stop anytime with \x1b[33mclaudesec stop\x1b[90m.\x1b[0m\n`);
+  } else {
+    console.log(`\x1b[33m⚠ Service started but the dashboard is not reachable yet.\x1b[0m`);
+    console.log(`\x1b[90mCheck the log: ${servicePaths().logFile}\x1b[0m\n`);
+  }
+}
+
+async function cmdStop() {
+  try {
+    uninstallService();
+    console.log('\n\x1b[32m✓ ClaudeSec background service stopped and removed.\x1b[0m\n');
+  } catch (err: any) {
+    console.error(`\n\x1b[31m✗ Could not stop the service: ${err.message}\x1b[0m\n`);
+    process.exit(1);
+  }
 }
 
 async function cmdStatus() {
@@ -600,7 +573,8 @@ function printHelp() {
 \x1b[1m\x1b[35mClaudeSec CLI\x1b[0m
 
 \x1b[1mSetup & Monitoring:\x1b[0m
-  \x1b[33mclaudesec\x1b[0m / \x1b[33minit\x1b[0m               Auto-configure Claude Code telemetry
+  \x1b[33mclaudesec\x1b[0m / \x1b[33mstart\x1b[0m              Install + start the background watcher, open the dashboard
+  \x1b[33mclaudesec stop\x1b[0m                    Stop and remove the background service
   \x1b[33mclaudesec status\x1b[0m                  Show server health and span counts
   \x1b[33mclaudesec open\x1b[0m                    Open the dashboard in default browser
   \x1b[33mclaudesec tail\x1b[0m [--harness X] [--severity Y]   Stream live spans
@@ -630,7 +604,10 @@ async function main() {
   const [, , cmd, ...rest] = process.argv;
   switch (cmd) {
     case undefined:
-    case 'init':     await cmdInit();                break;
+    case 'start':
+    case 'init':     await cmdStart();               break;
+    case 'stop':
+    case 'uninstall': await cmdStop();               break;
     case 'status':   await cmdStatus();              break;
     case 'export':   await cmdExport(rest[0]);       break;
     case 'reset':    await cmdReset();               break;

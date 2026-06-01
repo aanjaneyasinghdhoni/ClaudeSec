@@ -156,7 +156,7 @@ export function RulesTab() {
 
         {/* Header */}
         <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5" style={{ color: '#00d4aa' }} />
+          <Shield className="w-5 h-5" style={{ color: 'var(--cs-accent)' }} />
           <h2 className="text-sm font-bold text-slate-200">Threat Detection Rules</h2>
           <span className="ml-auto text-xs font-mono text-slate-500">
             {rules.builtIn.length} built-in · {rules.custom.length} custom
@@ -247,7 +247,7 @@ export function RulesTab() {
               type="submit"
               disabled={submitting}
               className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors hover:brightness-110"
-              style={{ background: '#00d4aa', color: '#fff' }}
+              style={{ background: 'var(--cs-accent)', color: '#fff' }}
             >
               <Plus className="w-3.5 h-3.5" /> Add Rule
             </button>
@@ -297,7 +297,7 @@ export function RulesTab() {
                       </span>
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">
-                      <span className={`text-xs whitespace-nowrap ${rule.type === 'built-in' ? 'text-slate-500' : ''}`} style={rule.type === 'custom' ? { color: '#00d4aa' } : undefined}>
+                      <span className={`text-xs whitespace-nowrap ${rule.type === 'built-in' ? 'text-slate-500' : ''}`} style={rule.type === 'custom' ? { color: 'var(--cs-accent)' } : undefined}>
                         {rule.type}
                       </span>
                     </td>

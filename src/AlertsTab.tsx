@@ -132,7 +132,7 @@ export function AlertsTab() {
                   ? ''
                   : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
               }`}
-              style={severityFilter === btn.value ? { background: '#00d4aa', color: '#fff' } : undefined}
+              style={severityFilter === btn.value ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
             >
               {btn.label}
             </button>
@@ -148,7 +148,7 @@ export function AlertsTab() {
                 ? ''
                 : 'bg-slate-800 border border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
             }`}
-            style={groupByRule ? { background: 'rgba(0,212,170,0.1)', border: '1px solid rgba(0,212,170,0.2)', color: '#00d4aa' } : undefined}
+            style={groupByRule ? { background: 'rgba(var(--cs-accent-rgb),0.1)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)', color: 'var(--cs-accent)' } : undefined}
             title={groupByRule ? 'Showing grouped view' : 'Group duplicate alerts by rule'}
           >
             <Layers className="w-3.5 h-3.5" />

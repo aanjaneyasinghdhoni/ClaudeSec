@@ -344,7 +344,7 @@ export function SearchTab() {
           type="button"
           onClick={() => window.open(buildExportUrl())}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors flex-shrink-0"
-          style={{ background: 'transparent', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.3)' }}
+          style={{ background: 'transparent', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.3)' }}
         >
           <Download className="w-3.5 h-3.5" />
           Export

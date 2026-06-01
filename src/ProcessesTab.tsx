@@ -195,7 +195,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-900/40 shrink-0 flex-wrap">
         <div className="flex items-center gap-2">
-          <Monitor className="w-4 h-4" style={{ color: '#00d4aa' }} />
+          <Monitor className="w-4 h-4" style={{ color: 'var(--cs-accent)' }} />
           <span className="text-sm font-bold text-slate-200">Agent Processes</span>
           {data && (
             <span className="text-[11px] font-mono text-slate-500">
@@ -239,7 +239,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
             onClick={() => setAutoRefresh(v => !v)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors"
             style={autoRefresh
-              ? { background: 'rgba(0,212,170,0.1)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
+              ? { background: 'rgba(var(--cs-accent-rgb),0.1)', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)' }
               : { background: '#1e293b', color: '#64748b', border: '1px solid #334155' }
             }
           >
@@ -292,7 +292,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
             {/* Summary cards */}
             <div className="grid grid-cols-3 gap-3 mb-5">
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
-                <div className="text-2xl font-bold font-mono" style={{ color: '#00d4aa' }}>{procs.length}</div>
+                <div className="text-2xl font-bold font-mono" style={{ color: 'var(--cs-accent)' }}>{procs.length}</div>
                 <div className="text-xs text-slate-500 uppercase tracking-wider mt-1">Processes</div>
               </div>
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">

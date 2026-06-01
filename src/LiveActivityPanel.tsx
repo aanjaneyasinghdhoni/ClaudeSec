@@ -60,7 +60,7 @@ export function LiveActivityPanel({ open, onClose }: { open: boolean; onClose: (
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-800">
-          <Zap className="w-4 h-4" style={{ color: '#00d4aa' }} />
+          <Zap className="w-4 h-4" style={{ color: 'var(--cs-accent)' }} />
           <span className="text-xs font-bold text-slate-200 flex-1">Live Agent Activity</span>
           <span className="text-xs font-mono text-slate-500">{agents.filter(a => a.active).length} active</span>
           <button onClick={onClose} className="p-1 hover:bg-slate-800 rounded-lg text-slate-500 hover:text-slate-300 transition-colors">

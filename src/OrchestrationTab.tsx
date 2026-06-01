@@ -122,7 +122,7 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
             </span>
           )}
           {node.children.length > 0 && (
-            <span className="text-xs font-mono bg-emerald-950/40 px-1.5 py-0.5 rounded" style={{ color: '#00d4aa' }}>
+            <span className="text-xs font-mono bg-emerald-950/40 px-1.5 py-0.5 rounded" style={{ color: 'var(--cs-accent)' }}>
               {node.children.length} sub-agent{node.children.length !== 1 ? 's' : ''}
             </span>
           )}
@@ -371,7 +371,7 @@ export function OrchestrationTab() {
             <div className="ml-auto flex items-center bg-slate-800 rounded-lg p-0.5">
               <button
                 className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'table' ? 'text-slate-400 hover:text-slate-200' : ''}`}
-                style={toolView === 'table' ? { background: '#00d4aa', color: '#fff' } : undefined}
+                style={toolView === 'table' ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
                 onClick={() => setToolView('table')}
                 title="Table view"
               >
@@ -379,7 +379,7 @@ export function OrchestrationTab() {
               </button>
               <button
                 className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'heatmap' ? 'text-slate-400 hover:text-slate-200' : ''}`}
-                style={toolView === 'heatmap' ? { background: '#00d4aa', color: '#fff' } : undefined}
+                style={toolView === 'heatmap' ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
                 onClick={() => setToolView('heatmap')}
                 title="Heatmap view"
               >

@@ -114,7 +114,7 @@ export function BookmarksTab({
                 {/* Content */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <code className="text-[11px] font-mono break-all" style={{ color: '#00d4aa' }}>
+                    <code className="text-[11px] font-mono break-all" style={{ color: 'var(--cs-accent)' }}>
                       {bm.spanId}
                     </code>
                     {bm.traceId && (

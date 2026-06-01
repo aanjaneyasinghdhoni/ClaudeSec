@@ -6,6 +6,7 @@ import {
   Trash2,
   RefreshCw,
   Loader2,
+  Clock,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -17,7 +18,7 @@ interface DeliveryRow {
   ruleLabel: string;
   severity: string;
   urlPreview: string;
-  status: 'success' | 'failed' | 'retrying';
+  status: 'success' | 'failed' | 'retrying' | 'pending';
   httpCode: number | null;
   latencyMs: number | null;
   error: string | null;
@@ -67,6 +68,9 @@ function StatusIcon({ status }: { status: DeliveryRow['status'] }) {
   }
   if (status === 'failed') {
     return <XCircle className="w-4 h-4 text-red-400" />;
+  }
+  if (status === 'pending') {
+    return <Clock className="w-4 h-4" style={{ color: 'var(--cs-text-faint)' }} />;
   }
   // retrying
   return <RotateCw className="w-4 h-4 text-yellow-400 animate-spin" />;

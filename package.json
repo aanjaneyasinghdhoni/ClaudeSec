@@ -43,6 +43,7 @@
     "openapi.yaml",
     "server.ts",
     "scrub.ts",
+    "transcriptWatcher.ts",
     "cli/init.ts",
     "cli/init.mjs",
     "src/harnesses.ts",

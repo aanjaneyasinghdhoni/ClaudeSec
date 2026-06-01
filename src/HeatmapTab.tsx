@@ -12,6 +12,7 @@ interface HeatmapData {
   maxThreats: number;
   maxSpans: number;
   totalSpans: number;
+  days?: string[];
 }
 
 const DAYS  = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -48,13 +49,26 @@ export function HeatmapTab() {
   const [loading, setLoading] = useState(true);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [mode, setMode]       = useState<'threat-ratio' | 'threat-abs' | 'spans'>('threat-ratio');
+  const [view, setView]       = useState<'weekday' | 'calendar'>('weekday');
 
   const fetchHeatmap = useCallback(() => {
-    fetch('/api/heatmap')
+    const url = view === 'calendar' ? '/api/heatmap?mode=calendar' : '/api/heatmap';
+    fetch(url)
       .then(r => r.json())
-      .then((d: HeatmapData) => { setData(d); setLoading(false); })
+      .then((d: HeatmapData) => {
+        const flat = (d.grid ?? []).flat();
+        const normalized: HeatmapData = {
+          ...d,
+          grid: d.grid ?? [],
+          maxSpans: d.maxSpans ?? Math.max(1, ...flat.map(c => c.spans)),
+          maxThreats: d.maxThreats ?? Math.max(1, ...flat.map(c => c.threats)),
+          totalSpans: d.totalSpans ?? flat.reduce((s, c) => s + c.spans, 0),
+        };
+        setData(normalized);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     fetchHeatmap();
@@ -82,13 +96,16 @@ export function HeatmapTab() {
     );
   }
 
+  const rowLabels = data.days ?? DAYS;
+  const labelWidth = view === 'calendar' ? 76 : 40;
+
   const cellColor = (dow: number, hour: number): string => {
     const cell = data.grid[dow][hour];
     if (mode === 'spans') {
       const ratio = cell.spans / data.maxSpans;
       return ratio === 0
         ? 'rgba(30,41,59,0.8)'
-        : `rgba(0,212,170,${0.15 + ratio * 0.85})`;
+        : `rgba(var(--cs-accent-rgb),${0.15 + ratio * 0.85})`;
     }
     if (mode === 'threat-abs') {
       const ratio = cell.threats / data.maxThreats;
@@ -108,10 +125,29 @@ export function HeatmapTab() {
             <Flame className="w-4 h-4 text-orange-400" /> Threat Heatmap
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Activity density by day of week × hour — {data.totalSpans.toLocaleString()} spans total
+            {view === 'calendar'
+              ? `Activity density by day × hour (last 14 days) — ${data.totalSpans.toLocaleString()} spans total`
+              : `Activity density by day of week × hour — ${data.totalSpans.toLocaleString()} spans total`}
           </p>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5">
+            {(['weekday', 'calendar'] as const).map(v => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                  view === v
+                    ? ''
+                    : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
+                }`}
+                style={view === v ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
+              >
+                {v === 'weekday' ? 'Weekday' : 'Last 14 days'}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-1.5">
           {(['threat-ratio', 'threat-abs', 'spans'] as const).map(m => (
             <button
               key={m}
@@ -121,11 +157,12 @@ export function HeatmapTab() {
                   ? ''
                   : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
               }`}
-              style={mode === m ? { background: '#00d4aa', color: '#fff' } : undefined}
+              style={mode === m ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
             >
               {m === 'threat-ratio' ? 'Threat %' : m === 'threat-abs' ? 'Threat Count' : 'Span Count'}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -137,7 +174,7 @@ export function HeatmapTab() {
           <div
             key={r}
             className="w-5 h-5 rounded"
-            style={{ background: mode === 'spans' ? `rgba(0,212,170,${0.15 + r * 0.85})` : threatColor(r) }}
+            style={{ background: mode === 'spans' ? `rgba(var(--cs-accent-rgb),${0.15 + r * 0.85})` : threatColor(r) }}
           />
         ))}
         <span className="text-xs text-slate-600 uppercase font-bold">More</span>
@@ -147,7 +184,7 @@ export function HeatmapTab() {
       <div className="rounded-xl overflow-x-auto p-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
         <div className="inline-block min-w-0">
           {/* Hour axis */}
-          <div className="flex" style={{ marginLeft: 40 }}>
+          <div className="flex" style={{ marginLeft: labelWidth }}>
             {HOURS.map((h, i) => (
               <div
                 key={i}
@@ -160,11 +197,14 @@ export function HeatmapTab() {
           </div>
 
           {/* Rows */}
-          {DAYS.map((day, dow) => (
+          {rowLabels.map((label, dow) => (
             <div key={dow} className="flex items-center mb-0.5">
               {/* Day label */}
-              <div className="text-xs text-slate-500 font-medium w-10 shrink-0 text-right pr-2">
-                {day}
+              <div
+                className="text-xs text-slate-500 font-medium shrink-0 text-right pr-2 tabular-nums"
+                style={{ width: labelWidth }}
+              >
+                {label}
               </div>
               {/* Cells */}
               {data.grid[dow].map((cell, hour) => {
@@ -197,7 +237,7 @@ export function HeatmapTab() {
           // Find busiest hour
           let busiestSpans = 0, busiestDow = 0, busiestHour = 0;
           let mostThreats = 0, threatDow = 0, threatHour = 0;
-          for (let d = 0; d < 7; d++) {
+          for (let d = 0; d < data.grid.length; d++) {
             for (let h = 0; h < 24; h++) {
               const c = data.grid[d][h];
               if (c.spans > busiestSpans) { busiestSpans = c.spans; busiestDow = d; busiestHour = h; }
@@ -210,12 +250,12 @@ export function HeatmapTab() {
             <>
               <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
                 <p className="text-xs text-slate-500 uppercase font-bold mb-1">Busiest Hour</p>
-                <p className="text-sm font-bold text-blue-400">{DAYS[busiestDow]} {HOURS[busiestHour]}</p>
+                <p className="text-sm font-bold text-blue-400">{rowLabels[busiestDow]} {HOURS[busiestHour]}</p>
                 <p className="text-xs text-slate-600">{busiestSpans} spans</p>
               </div>
               <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
                 <p className="text-xs text-slate-500 uppercase font-bold mb-1">Peak Threats</p>
-                <p className="text-sm font-bold text-red-400">{DAYS[threatDow]} {HOURS[threatHour]}</p>
+                <p className="text-sm font-bold text-red-400">{rowLabels[threatDow]} {HOURS[threatHour]}</p>
                 <p className="text-xs text-slate-600">{mostThreats} threats</p>
               </div>
               <div className="p-3 rounded-xl" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
@@ -240,7 +280,7 @@ export function HeatmapTab() {
           className="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg p-2.5 shadow-xl pointer-events-none text-xs"
           style={{ left: tooltip.x + 30, top: tooltip.y - 10 }}
         >
-          <p className="font-bold text-slate-200 mb-1">{DAYS[tooltip.day]} · {HOURS[tooltip.hour]}</p>
+          <p className="font-bold text-slate-200 mb-1">{rowLabels[tooltip.day]} · {HOURS[tooltip.hour]}</p>
           <p className="text-slate-400">{tooltip.cell.spans} span{tooltip.cell.spans !== 1 ? 's' : ''}</p>
           <p className="text-red-400">{tooltip.cell.threats} threat{tooltip.cell.threats !== 1 ? 's' : ''}</p>
           {tooltip.cell.spans > 0 && (

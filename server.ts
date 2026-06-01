@@ -17,6 +17,7 @@ import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
 import { detectHarness, HARNESSES } from './src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
+import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -78,6 +79,10 @@ const db = new Database('spans.db');
 // SECURITY: WAL mode allows concurrent reads during writes — prevents blocking under load
 db.pragma('journal_mode = WAL');
 
+for (const dbFile of ['spans.db', 'spans.db-wal', 'spans.db-shm']) {
+  try { fs.chmodSync(dbFile, 0o600); } catch {}
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS spans (
     spanId     TEXT PRIMARY KEY,
@@ -125,6 +130,21 @@ const upsertSession = db.prepare(
 const deleteAllSpans    = db.prepare(`DELETE FROM spans`);
 const deleteAllSessions = db.prepare(`DELETE FROM sessions`);
 const getAllSpans        = db.prepare(`SELECT * FROM spans`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS watch_offsets (
+    path      TEXT PRIMARY KEY,
+    offset    INTEGER NOT NULL DEFAULT 0,
+    updatedAt TEXT NOT NULL DEFAULT ''
+  );
+`);
+
+const getWatchOffset = db.prepare(`SELECT offset FROM watch_offsets WHERE path = ?`);
+const setWatchOffset = db.prepare(`
+  INSERT INTO watch_offsets (path, offset, updatedAt) VALUES (?, ?, ?)
+  ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, updatedAt = excluded.updatedAt
+`);
+const updateSpanEnd = db.prepare(`UPDATE spans SET endNano = ? WHERE spanId = ?`);
 
 // Query accelerators — covers the hot-path reads (session filter, severity
 // dashboards, per-harness aggregation).  Safe to add on existing DBs.
@@ -771,6 +791,14 @@ function getWebhookThreshold(): Severity {
   return (['low', 'medium', 'high'].includes(t) ? t : 'high') as Severity;
 }
 
+function maskWebhookUrl(url: string): string {
+  try {
+    return `${new URL(url).origin}/***`;
+  } catch {
+    return '***';
+  }
+}
+
 const SEV_RANK_MAP: Record<Severity, number> = { none: 0, low: 1, medium: 2, high: 3 };
 
 async function fireWebhook(alert: {
@@ -844,7 +872,7 @@ async function fireWebhook(alert: {
     });
   }
 
-  const urlPreview = url.replace(/\/[^/]{8,}$/, '/***');
+  const urlPreview = maskWebhookUrl(url);
   const deliveryRow = insertDelivery.run({
     ruleLabel: alert.ruleLabel, severity: alert.severity,
     urlPreview, createdAt: new Date().toISOString(),
@@ -895,20 +923,31 @@ async function fireWebhook(alert: {
 
 const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number; label: string }> = {
   // Claude
-  'claude-opus-4-6':      { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4.6' },
-  'claude-opus-4-5':      { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4.5' },
+  'claude-opus-4-8':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.8' },
+  'claude-opus-4-7':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.7' },
+  'claude-opus-4-6':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.6' },
+  'claude-opus-4-5':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.5' },
+  'claude-opus-4-1':      { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4.1' },
   'claude-opus-4':        { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude Opus 4' },
   'claude-sonnet-4-6':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 4.6' },
   'claude-sonnet-4-5':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 4.5' },
+  'claude-sonnet-4':      { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 4' },
   'claude-sonnet-3-7':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 3.7' },
   'claude-sonnet-3-5':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude Sonnet 3.5' },
-  'claude-haiku-4-5':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude Haiku 4.5' },
+  'claude-haiku-4-5':     { inputPer1M: 1,     outputPer1M: 5,     label: 'Claude Haiku 4.5' },
   'claude-haiku-3-5':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude Haiku 3.5' },
   'claude-3-haiku':       { inputPer1M: 0.25,  outputPer1M: 1.25,  label: 'Claude 3 Haiku' },
   'claude-3-5-sonnet':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude 3.5 Sonnet' },
   'claude-3-5-haiku':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude 3.5 Haiku' },
   'claude-3-opus':        { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude 3 Opus' },
   // OpenAI
+  'gpt-5.5':              { inputPer1M: 5,     outputPer1M: 30,    label: 'GPT-5.5' },
+  'gpt-5.4':              { inputPer1M: 2.5,   outputPer1M: 15,    label: 'GPT-5.4' },
+  'gpt-5.3-codex':        { inputPer1M: 1.75,  outputPer1M: 14,    label: 'GPT-5.3 Codex' },
+  'gpt-5.3':              { inputPer1M: 0.88,  outputPer1M: 7,     label: 'GPT-5.3' },
+  'gpt-5.2-codex':        { inputPer1M: 1.75,  outputPer1M: 14,    label: 'GPT-5.2 Codex' },
+  'gpt-5.2':              { inputPer1M: 0.88,  outputPer1M: 7,     label: 'GPT-5.2' },
+  'gpt-5':                { inputPer1M: 0.88,  outputPer1M: 7,     label: 'GPT-5' },
   'gpt-4o':               { inputPer1M: 5,     outputPer1M: 15,    label: 'GPT-4o' },
   'gpt-4o-mini':          { inputPer1M: 0.15,  outputPer1M: 0.6,   label: 'GPT-4o mini' },
   'gpt-4-turbo':          { inputPer1M: 10,    outputPer1M: 30,    label: 'GPT-4 Turbo' },
@@ -1051,6 +1090,25 @@ const SEVERITY_RULES: { pattern: RegExp; severity: Severity; label: string }[] =
   { pattern: /nsenter\s+/i,                                      severity: 'high', label: 'Namespace enter (container escape)' },
   { pattern: /capsh\s+--print/i,                                 severity: 'high', label: 'Container capabilities check' },
 
+  { pattern: /\.aws\/credentials\b/i,                           severity: 'high', label: 'AWS credentials file read' },
+  { pattern: /\.aws\/config\b/i,                                severity: 'high', label: 'AWS config file read' },
+  { pattern: /\.kube\/config\b/i,                               severity: 'high', label: 'Kubeconfig access' },
+  { pattern: /\bKUBECONFIG\s*=/i,                               severity: 'high', label: 'Kubeconfig access' },
+  { pattern: /(^|\/|~)\.netrc\b/i,                              severity: 'high', label: 'Netrc credentials file read' },
+  { pattern: /gcloud\/[^\s]*credentials/i,                      severity: 'high', label: 'GCP credentials file read' },
+  { pattern: /application_default_credentials\.json/i,          severity: 'high', label: 'GCP application-default credentials read' },
+  { pattern: /\.gnupg\/(secring|private-keys-v1\.d|[^\s]*\.gpg)/i, severity: 'high', label: 'GnuPG private keyring access' },
+  { pattern: /(Chrome|Brave|Edge|Chromium)[\/\\][^\n]{0,80}(Login Data|Cookies)\b/i, severity: 'high', label: 'Browser credential store access' },
+  { pattern: /(User Data|Default)[\/\\](Login Data|Cookies|Network[\/\\]Cookies)\b/i, severity: 'high', label: 'Browser credential store access' },
+  { pattern: /(logins\.json|key4\.db|cookies\.sqlite)\b/i,      severity: 'high', label: 'Firefox credential store access' },
+  { pattern: /\.npmrc\b[^\n]{0,80}_authToken/i,                 severity: 'high', label: 'npm auth token file read' },
+  { pattern: /_authToken[^\n]{0,80}\.npmrc\b/i,                 severity: 'high', label: 'npm auth token file read' },
+  { pattern: /\.pypirc\b[^\n]{0,80}(password|token)\s*[=:]/i,   severity: 'high', label: 'PyPI credentials file read' },
+  { pattern: /\.docker\/config\.json/i,                         severity: 'high', label: 'Docker registry auth config read' },
+  { pattern: /login\.keychain-db\b/i,                           severity: 'high', label: 'macOS keychain database read' },
+  { pattern: /(cat|less|more|head|tail|cp|scp|rsync|curl|base64|xxd|strings|open)\b[^\n]{0,60}\.aws\/credentials/i, severity: 'high', label: 'AWS credentials file read' },
+  { pattern: /(cat|less|more|head|tail|cp|source|base64|xxd)\b[^\n]{0,40}(^|\/|\s)\.env(\.[a-z]+)?\b/i, severity: 'high', label: 'Dotenv file read' },
+
   // ═══════════════════════════════════════════════════════════════════════════
   // MEDIUM — exfiltration, sensitive access, recon, suspicious patterns
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1065,10 +1123,10 @@ const SEVERITY_RULES: { pattern: RegExp; severity: Severity; label: string }[] =
 
   // SSH & key access
   { pattern: /ssh-add/i,                                         severity: 'medium', label: 'SSH key manipulation' },
-  { pattern: /~\/\.ssh\//i,                                      severity: 'medium', label: 'SSH directory access' },
+  { pattern: /~\/\.ssh\//i,                                      severity: 'high', label: 'SSH directory access' },
   { pattern: /ssh-keygen/i,                                      severity: 'medium', label: 'SSH key generation' },
   { pattern: /authorized_keys/i,                                 severity: 'medium', label: 'SSH authorized_keys access' },
-  { pattern: /id_rsa|id_ed25519|id_ecdsa/i,                     severity: 'medium', label: 'SSH private key file access' },
+  { pattern: /id_rsa|id_ed25519|id_ecdsa/i,                     severity: 'high', label: 'SSH private key file access' },
 
   // Encoding / obfuscation
   { pattern: /atob\s*\(/i,                                       severity: 'medium', label: 'Base64 decode (JS)' },
@@ -1379,6 +1437,8 @@ const ELECTRON_HELPER_RE = /Helper\s*\(|helper\s*\(|chrome_crashpad_handler|--ty
 
 const PROCESS_PATTERNS: { pattern: RegExp; harness: string }[] = [
   { pattern: /\bclaude\b/i, harness: 'claude-code' },
+  { pattern: /\bcopilot\b/i, harness: 'copilot' },
+  { pattern: /\bcodex\b/i, harness: 'codex' },
 ];
 
 function scanAgentProcesses(): AgentProcess[] {
@@ -1499,6 +1559,81 @@ async function startServer() {
 
   const io = new Server(httpServer, { cors: { origin: corsOrigins } });
 
+  function ingestSpan(input: IngestInput): { newSession: boolean; alertChanged: boolean } {
+    const rawAttrs: Record<string, any> = { ...input.rawAttrs };
+    const searchText = JSON.stringify(rawAttrs) + ' ' + input.name;
+    const hit = detectSeverity(searchText);
+    if (hit.matchedLabel) rawAttrs['claudesec.threat.rule'] = hit.matchedLabel;
+
+    const { attrs, honeytokenHits } = scrubAttributes(rawAttrs, scrubOptions);
+    const scrubbedName    = scrubText(input.name, scrubOptions);
+    const scrubbedMatched = scrubText(hit.matchedText, scrubOptions);
+
+    const traceId  = input.traceId  || 'unknown';
+    const parentId = input.parentId || input.harnessId;
+
+    let newSession = false;
+    if (!db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(traceId)) {
+      const sessionName = `${input.harnessName} · ${new Date().toLocaleTimeString()}`;
+      upsertSession.run(traceId, sessionName, new Date().toISOString());
+      newSession = true;
+    }
+
+    const finalSeverity: Severity = honeytokenHits.length > 0 ? 'high' : hit.severity;
+    const finalLabel =
+      honeytokenHits.length > 0
+        ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
+        : hit.matchedLabel;
+
+    const spanRecord: SpanRecord = {
+      spanId:     input.spanId,
+      traceId,
+      parentId,
+      name:       scrubbedName,
+      protocol:   String(attrs['protocol'] ?? 'HTTPS'),
+      reason:     String(attrs['reason']   ?? 'Processing step'),
+      severity:   finalSeverity,
+      harness:    input.harnessId,
+      attributes: JSON.stringify(attrs),
+      startNano:  input.startNano || '0',
+      endNano:    input.endNano   || '0',
+    };
+    insertSpan.run(spanRecord);
+    pushToSse(spanRecord);
+    io.emit('span-added', {
+      spanId:   spanRecord.spanId,
+      name:     spanRecord.name,
+      harness:  spanRecord.harness,
+      severity: spanRecord.severity,
+      ts:       new Date().toISOString(),
+    });
+
+    let alertChanged = false;
+    if (finalLabel) {
+      insertOrDedupeAlert({
+        ts:          new Date().toISOString(),
+        ruleLabel:   finalLabel,
+        severity:    finalSeverity,
+        spanId:      input.spanId,
+        traceId,
+        harness:     input.harnessId,
+        spanName:    scrubbedName,
+        matchedText: scrubbedMatched || '(honeytoken)',
+      });
+      alertChanged = true;
+      fireWebhook({
+        ruleLabel:   finalLabel,
+        severity:    finalSeverity,
+        harness:     input.harnessId,
+        spanName:    scrubbedName,
+        matchedText: scrubbedMatched || '(honeytoken)',
+        traceId,
+      }).catch(() => {});
+    }
+
+    return { newSession, alertChanged };
+  }
+
   // Security headers.  The dashboard uses inline event handlers, dynamic
   // Tailwind classes, and a live Socket.io websocket, so the CSP is configured
   // permissively (it allows inline/eval and ws/wss) rather than disabled — this
@@ -1596,7 +1731,7 @@ async function startServer() {
 
       rs.scopeSpans?.forEach(ss => {
         ss.spans?.forEach(span => {
-          // Step 1 — assemble raw attrs from OTLP wire format.
+          if (process.env.CLAUDESEC_WATCH !== '0' && span.name === 'tool_call/unknown') return;
           const rawAttrs: Record<string, any> = {};
           (span.attributes || []).forEach(attr => {
             rawAttrs[attr.key] =
@@ -1606,81 +1741,19 @@ async function startServer() {
               JSON.stringify(attr.value);
           });
 
-          // Step 2 — run detection on RAW data so secret/path rules still fire.
-          const searchText = JSON.stringify(rawAttrs) + ' ' + span.name;
-          const hit = detectSeverity(searchText);
-          if (hit.matchedLabel) rawAttrs['claudesec.threat.rule'] = hit.matchedLabel;
-
-          // Step 3 — scrub for persistence & broadcast.  Honeytoken detection
-          // runs against raw values, independent of the scrub flag.
-          const { attrs, honeytokenHits } = scrubAttributes(rawAttrs, scrubOptions);
-          const scrubbedName = scrubText(span.name, scrubOptions);
-          const scrubbedMatched = scrubText(hit.matchedText, scrubOptions);
-
-          const traceId  = span.traceId  || 'unknown';
-          const parentId = span.parentSpanId || harness.id;
-
-          // Auto-create session for new traceIds
-          if (!db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(traceId)) {
-            const sessionName = `${harness.name} · ${new Date().toLocaleTimeString()}`;
-            upsertSession.run(traceId, sessionName, new Date().toISOString());
-            newSessions = true;
-          }
-
-          // Honeytokens escalate severity even if no other rule fired.
-          const finalSeverity: Severity =
-            honeytokenHits.length > 0 ? 'high' : hit.severity;
-          const finalLabel =
-            honeytokenHits.length > 0
-              ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
-              : hit.matchedLabel;
-
-          const spanRecord: SpanRecord = {
-            spanId:    span.spanId,
-            traceId,
-            parentId,
-            name:      scrubbedName,
-            protocol:  String(attrs['protocol'] ?? 'HTTPS'),
-            reason:    String(attrs['reason']   ?? 'Processing step'),
-            severity:  finalSeverity,
-            harness:   harness.id,
-            attributes: JSON.stringify(attrs),
-            startNano:  String(span.startTimeUnixNano ?? '0'),
-            endNano:    String(span.endTimeUnixNano   ?? '0'),
-          };
-          insertSpan.run(spanRecord);
-          pushToSse(spanRecord);
-          // Lightweight per-span event for the live ticker (avoids full graph rebuild)
-          io.emit('span-added', {
-            spanId:   spanRecord.spanId,
-            name:     spanRecord.name,
-            harness:  spanRecord.harness,
-            severity: spanRecord.severity,
-            ts:       new Date().toISOString(),
+          const result = ingestSpan({
+            spanId:      span.spanId,
+            traceId:     span.traceId || 'unknown',
+            parentId:    span.parentSpanId || '',
+            name:        span.name,
+            rawAttrs,
+            harnessId:   harness.id,
+            harnessName: harness.name,
+            startNano:   String(span.startTimeUnixNano ?? '0'),
+            endNano:     String(span.endTimeUnixNano ?? '0'),
           });
-
-          if (finalLabel) {
-            insertOrDedupeAlert({
-              ts:          new Date().toISOString(),
-              ruleLabel:   finalLabel,
-              severity:    finalSeverity,
-              spanId:      span.spanId,
-              traceId,
-              harness:     harness.id,
-              spanName:    scrubbedName,
-              matchedText: scrubbedMatched || '(honeytoken)',
-            });
-            alertsChanged = true;
-            // Fire webhook asynchronously — don't block OTLP ingestion
-            fireWebhook({
-              ruleLabel:   finalLabel,
-              severity:    finalSeverity,
-              harness:     harness.id,
-              spanName:    scrubbedName,
-              matchedText: scrubbedMatched || '(honeytoken)',
-              traceId,
-            }).catch(() => {});
-          }
+          if (result.newSession)   newSessions   = true;
+          if (result.alertChanged) alertsChanged = true;
         });
       });
     });
@@ -1759,7 +1832,39 @@ async function startServer() {
   });
 
   // ── Threat heatmap — 7×24 day-of-week × hour matrix ─────────────────────
-  app.get('/api/heatmap', (_req, res) => {
+  app.get('/api/heatmap', (req, res) => {
+    if (req.query.mode === 'calendar') {
+      const calGrid: { spans: number; threats: number }[][] = Array.from({ length: 14 }, () =>
+        Array.from({ length: 24 }, () => ({ spans: 0, threats: 0 })),
+      );
+      const now = new Date();
+      const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const days: string[] = [];
+      for (let i = 0; i < 14; i++) {
+        const d = new Date(todayMidnight - (13 - i) * 86400000);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        days.push(`${yyyy}-${mm}-${dd}`);
+      }
+      const calSpans = getAllSpans.all() as SpanRecord[];
+      for (const span of calSpans) {
+        try {
+          const nanoMs = Number(BigInt(span.startNano) / 1_000_000n);
+          if (!nanoMs) continue;
+          const d = new Date(nanoMs);
+          const spanMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+          const daysAgo = Math.floor((todayMidnight - spanMidnight) / 86400000);
+          const dayIndex = 13 - daysAgo;
+          if (dayIndex < 0 || dayIndex > 13) continue;
+          const hour = d.getHours();
+          calGrid[dayIndex][hour].spans++;
+          if (span.severity !== 'none') calGrid[dayIndex][hour].threats++;
+        } catch {}
+      }
+      return res.json({ mode: 'calendar', days, grid: calGrid }) as any;
+    }
+
     // Matrix: grid[dayOfWeek 0-6][hour 0-23] = { spans, threats }
     const grid: { spans: number; threats: number }[][] = Array.from({ length: 7 }, () =>
       Array.from({ length: 24 }, () => ({ spans: 0, threats: 0 })),
@@ -2644,7 +2749,7 @@ service:
     } else {
       alerts = db.prepare(`SELECT * FROM alerts${where} ORDER BY id DESC LIMIT ?`).all(...params, limit);
     }
-    const total  = (db.prepare(`SELECT COUNT(*) as c FROM alerts${where}`).get(...params) as any).c;
+    const total  = groupBy ? alerts.length : (db.prepare(`SELECT COUNT(*) as c FROM alerts${where}`).get(...params) as any).c;
 
     // SECURITY: Redact sensitive matched text (API keys, tokens, passwords)
     // Show first 6 + last 4 chars, mask the rest
@@ -2696,7 +2801,7 @@ service:
       if (span.severity !== 'none') entry.threatCount++;
       try {
         const attrs = JSON.parse(span.attributes);
-        const toolName = attrs['gen_ai.tool.name'] || attrs['tool.name'];
+        const toolName = attrs['tool'] || attrs['gen_ai.tool.name'] || attrs['tool.name'] || span.name || '';
         if (toolName) entry.tools.add(String(toolName));
       } catch {}
     }
@@ -2737,7 +2842,7 @@ service:
     for (const span of allSpans) {
       try {
         const attrs = JSON.parse(span.attributes);
-        const toolName = attrs['gen_ai.tool.name'] || attrs['tool.name'];
+        const toolName = attrs['tool'] || attrs['gen_ai.tool.name'] || attrs['tool.name'] || span.name || '';
         if (!toolName) continue;
         const key = `${toolName}::${span.harness}`;
         if (!toolMap.has(key)) toolMap.set(key, { toolName: String(toolName), harness: span.harness, count: 0, threatCount: 0 });
@@ -3103,9 +3208,9 @@ ${alerts.length > 0 ? `
     for (const span of allSpans) {
       try {
         const attrs = JSON.parse(span.attributes);
-        const toolName = attrs['gen_ai.tool.name'] ?? '';
+        const toolName = attrs['tool'] ?? attrs['gen_ai.tool.name'] ?? span.name ?? '';
         if (!SHELL_TOOLS.has(toolName) && !span.name.toLowerCase().includes('bash')) continue;
-        const cmd = attrs['tool.input'] ?? '';
+        const cmd = attrs['command'] ?? attrs['tool.input'] ?? '';
         if (!cmd) continue;
         commands.push({
           spanId:    span.spanId,
@@ -3139,8 +3244,8 @@ ${alerts.length > 0 ? `
     for (const span of allSpans) {
       try {
         const attrs = JSON.parse(span.attributes);
-        const toolName = attrs['gen_ai.tool.name'] ?? '';
-        const input = attrs['tool.input'] ?? '';
+        const toolName = attrs['tool'] ?? attrs['gen_ai.tool.name'] ?? span.name ?? '';
+        const input = attrs['file_path'] ?? attrs['path'] ?? attrs['pattern'] ?? attrs['tool.input'] ?? '';
         if (!input || typeof input !== 'string') continue;
 
         const isRead = READ_TOOLS.has(toolName);
@@ -3182,12 +3287,27 @@ ${alerts.length > 0 ? `
       ) latest ON s.harness = latest.harness AND s.endNano = latest.maxEnd
     `).all() as SpanRecord[];
 
+    const resolveModel = (attrs: Record<string, string>): string =>
+      attrs['gen_ai.request.model'] ?? attrs['llm.model'] ?? attrs['gen_ai.response.model'] ?? '';
+
+    const lastModelByHarness = new Map<string, string>();
+    const modelRows = db.prepare(`
+      SELECT harness, attributes FROM spans ORDER BY CAST(endNano AS INTEGER) DESC
+    `).all() as { harness: string; attributes: string }[];
+    for (const row of modelRows) {
+      if (lastModelByHarness.has(row.harness)) continue;
+      let rowAttrs: Record<string, string> = {};
+      try { rowAttrs = JSON.parse(row.attributes); } catch {}
+      const m = resolveModel(rowAttrs);
+      if (m) lastModelByHarness.set(row.harness, m);
+    }
+
     const agents = latestPerHarness.map(span => {
       let attrs: Record<string, string> = {};
       try { attrs = JSON.parse(span.attributes); } catch {}
-      const toolName = attrs['gen_ai.tool.name'] ?? '';
-      const toolInput = attrs['tool.input'] ?? '';
-      const model = attrs['gen_ai.request.model'] ?? '';
+      const toolName = attrs['gen_ai.tool.name'] ?? attrs['tool'] ?? '';
+      const toolInput = attrs['tool.input'] ?? attrs['command'] ?? attrs['description'] ?? attrs['file_path'] ?? '';
+      const model = resolveModel(attrs) || lastModelByHarness.get(span.harness) || '';
       const endMs = Number(BigInt(span.endNano || '0') / 1_000_000n);
       const secondsAgo = Math.max(0, Math.round((Date.now() - endMs) / 1000));
       const h = HARNESSES.find(h => h.id === span.harness) ?? HARNESSES[HARNESSES.length - 1];
@@ -3330,7 +3450,7 @@ ${alerts.length > 0 ? `
     res.json({
       configured:  !!url,
       // Never expose full URL — only show redacted form for UI display
-      urlPreview:  url ? url.replace(/\/[^/]{8,}$/, '/***') : null,
+      urlPreview:  url ? maskWebhookUrl(url) : null,
       threshold,
       envOverride: !!process.env.CLAUDESEC_WEBHOOK_URL,
     });
@@ -3359,7 +3479,7 @@ ${alerts.length > 0 ? `
     if (threshold && ['low', 'medium', 'high'].includes(threshold)) {
       setConfig.run('webhook.threshold', threshold);
     }
-    res.json({ status: 'ok', urlPreview: url.replace(/\/[^/]{8,}$/, '/***'), threshold: getWebhookThreshold() });
+    res.json({ status: 'ok', urlPreview: maskWebhookUrl(url), threshold: getWebhookThreshold() });
   });
 
   app.delete('/api/webhook', (_req, res) => {
@@ -3381,7 +3501,7 @@ ${alerts.length > 0 ? `
       matchedText: 'This is a test alert from ClaudeSec',
       traceId:     'test-' + Date.now().toString(16),
     });
-    res.json({ status: 'ok', url: url.replace(/\/[^/]{8,}$/, '/***') });
+    res.json({ status: 'ok', url: maskWebhookUrl(url) });
   });
 
   // ── Token cost estimation ─────────────────────────────────────────────────
@@ -3399,6 +3519,8 @@ ${alerts.length > 0 ? `
       modelLabel: string;
       tokensIn:   number;
       tokensOut:  number;
+      cacheReadTokens:  number;
+      cacheWriteTokens: number;
       costUsd:    number;
       knownPrice: boolean;
       inferred:   boolean;
@@ -3409,6 +3531,8 @@ ${alerts.length > 0 ? `
     let totalCostUsd = 0;
     let totalTokensIn = 0;
     let totalTokensOut = 0;
+    let totalCacheReadTokens = 0;
+    let totalCacheWriteTokens = 0;
 
     for (const span of allSpans) {
       try {
@@ -3427,7 +3551,9 @@ ${alerts.length > 0 ? `
         }
         const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);
         const to = Number(attrs['gen_ai.usage.output_tokens'] ?? attrs['llm.usage.output_tokens'] ?? 0);
-        if (!model && ti === 0 && to === 0) continue;
+        const cacheRead   = Number(attrs['gen_ai.usage.cache_read_input_tokens']     ?? 0);
+        const cacheCreate = Number(attrs['gen_ai.usage.cache_creation_input_tokens'] ?? 0);
+        if (!model && ti === 0 && to === 0 && cacheRead === 0 && cacheCreate === 0) continue;
 
         const k = key(span.traceId, model || 'unknown');
         if (!rowMap.has(k)) {
@@ -3438,7 +3564,7 @@ ${alerts.length > 0 ? `
             harness:    span.harness,
             model:      model || 'unknown',
             modelLabel: pricing?.label ?? (model || 'Unknown Model'),
-            tokensIn:   0, tokensOut: 0, costUsd: 0,
+            tokensIn:   0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0,
             knownPrice: !!pricing,
             inferred:   modelInferred,
           });
@@ -3446,13 +3572,18 @@ ${alerts.length > 0 ? `
         const row = rowMap.get(k)!;
         row.tokensIn  += ti;
         row.tokensOut += to;
+        row.cacheReadTokens  += cacheRead;
+        row.cacheWriteTokens += cacheCreate;
         totalTokensIn  += ti;
         totalTokensOut += to;
+        totalCacheReadTokens  += cacheRead;
+        totalCacheWriteTokens += cacheCreate;
 
         if (model) {
           const pricing = lookupPricing(model);
           if (pricing) {
-            row.costUsd += (ti / 1_000_000) * pricing.inputPer1M + (to / 1_000_000) * pricing.outputPer1M;
+            const billedInput = ti + cacheCreate * 1.25 + cacheRead * 0.1;
+            row.costUsd += (billedInput / 1_000_000) * pricing.inputPer1M + (to / 1_000_000) * pricing.outputPer1M;
           }
         }
       } catch {}
@@ -3462,14 +3593,16 @@ ${alerts.length > 0 ? `
     rows.forEach(r => { totalCostUsd += r.costUsd; });
 
     // Per-model summary (across all sessions)
-    const modelSummary = new Map<string, { label: string; tokensIn: number; tokensOut: number; costUsd: number; knownPrice: boolean; inferred: boolean }>();
+    const modelSummary = new Map<string, { label: string; tokensIn: number; tokensOut: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd: number; knownPrice: boolean; inferred: boolean }>();
     for (const row of rows) {
       if (!modelSummary.has(row.model)) {
-        modelSummary.set(row.model, { label: row.modelLabel, tokensIn: 0, tokensOut: 0, costUsd: 0, knownPrice: row.knownPrice, inferred: row.inferred });
+        modelSummary.set(row.model, { label: row.modelLabel, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, knownPrice: row.knownPrice, inferred: row.inferred });
       }
       const ms = modelSummary.get(row.model)!;
       ms.tokensIn  += row.tokensIn;
       ms.tokensOut += row.tokensOut;
+      ms.cacheReadTokens  += row.cacheReadTokens;
+      ms.cacheWriteTokens += row.cacheWriteTokens;
       ms.costUsd   += row.costUsd;
       if (row.inferred) ms.inferred = true; // if ANY session was inferred, mark model as inferred
     }
@@ -3480,6 +3613,8 @@ ${alerts.length > 0 ? `
       totalCostUsd:  Math.round(totalCostUsd  * 1_000_000) / 1_000_000,
       totalTokensIn,
       totalTokensOut,
+      totalCacheReadTokens,
+      totalCacheWriteTokens,
       pricingTable:  Object.entries(MODEL_PRICING).map(([model, p]) => ({ model, ...p })),
     });
   });
@@ -3768,6 +3903,7 @@ ${alerts.length > 0 ? `
       processes:  enriched,
       total:      enriched.length,
       scannedAt:  new Date().toISOString(),
+      platform:   process.platform,
       supported:  process.platform === 'darwin' || process.platform === 'linux',
     });
   });
@@ -4160,9 +4296,53 @@ ${alerts.length > 0 ? `
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+  }
+
+  const offsetStore: OffsetStore = {
+    get: (filePath) => (getWatchOffset.get(filePath) as { offset: number } | undefined)?.offset,
+    set: (filePath, offset) => { setWatchOffset.run(filePath, offset, new Date().toISOString()); },
+  };
+
+  const watchEnabled = process.env.CLAUDESEC_WATCH !== '0';
+  const watchRoots = defaultRoots();
+  if (watchEnabled) {
+    const dirtyTraces = new Set<string>();
+    const sweep = setInterval(() => {
+      if (dirtyTraces.size === 0) return;
+      const traces = [...dirtyTraces];
+      dirtyTraces.clear();
+      for (const traceId of traces) {
+        const harnessId = (db.prepare('SELECT harness FROM spans WHERE traceId = ? LIMIT 1').get(traceId) as { harness: string } | undefined)?.harness ?? 'unknown';
+        try { detectBehavioralAnomalies(traceId, harnessId); } catch {}
+        try { evaluateThresholdRules(traceId, harnessId); } catch {}
+      }
+      io.emit('sessions-update');
+    }, 2500);
+    if (typeof sweep.unref === 'function') sweep.unref();
+
+    startTranscriptWatcher({
+      roots: watchRoots,
+      backfill: process.env.CLAUDESEC_BACKFILL === '1',
+      offsets: offsetStore,
+      onError: () => {},
+      onEvent: (event: WatcherEvent) => {
+        if (event.kind === 'span') {
+          const { newSession, alertChanged } = ingestSpan(event.span);
+          dirtyTraces.add(event.span.traceId);
+          recordActivity(1, 0, 0);
+          if (newSession)   io.emit('sessions-update');
+          if (alertChanged) io.emit('alerts-update');
+          emitGraphUpdateThrottled();
+        } else if (event.kind === 'end') {
+          updateSpanEnd.run(event.endNano, event.spanId);
+        } else if (event.kind === 'usage') {
+          recordActivity(0, event.tokensIn, event.tokensOut);
+        }
+      },
+    });
   }
 
   // SECURITY: Bind to localhost by default — set CLAUDESEC_HOST=0.0.0.0 to expose to network
@@ -4170,7 +4350,8 @@ ${alerts.length > 0 ? `
   httpServer.listen(PORT, HOST, () => {
     console.log(`\n  ClaudeSec  http://localhost:${PORT}`);
     console.log(`  OTLP       http://localhost:${PORT}/v1/traces`);
-    console.log(`  Auto-scan  Every ${AUTO_SCAN_INTERVAL / 1000}s for running agents\n`);
+    console.log(`  Auto-scan  Every ${AUTO_SCAN_INTERVAL / 1000}s for running agents`);
+    console.log(`  Watcher    ${watchEnabled ? `on — zero-config capture of Claude Code & Codex (${watchRoots.length} roots)` : 'off (CLAUDESEC_WATCH=0)'}\n`);
     const n = (getAllSpans.all() as SpanRecord[]).length;
     if (n > 0) console.log(`  Loaded ${n} spans from database.\n`);
   });

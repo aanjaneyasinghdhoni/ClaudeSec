@@ -5,12 +5,12 @@ import {
 } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import {
-  Shield, AlertTriangle, Activity, Terminal, Trash2,
+  Shield, AlertTriangle, Activity, Terminal,
   CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
-  Sun, Moon, Server, GitCompare, Monitor, Bookmark,
-  ChevronDown, MoreHorizontal,
+  Server, GitCompare, Monitor, Bookmark,
+  ChevronDown, MoreHorizontal, HelpCircle,
 } from 'lucide-react';
 import { socket } from './socket';
 import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
@@ -27,8 +27,8 @@ import { type ReplayState } from './GraphReplay';
 import { ComparePanel } from './ComparePanel';
 import { SearchTab } from './SearchTab';
 import { ProcessesTab } from './ProcessesTab';
+import { ThemeSwitcher, LIGHT_THEMES, type ThemeId } from './ThemeSwitcher';
 import { BookmarksTab } from './BookmarksTab';
-import { WelcomeScreen } from './WelcomeScreen';
 import { LiveActivityPanel } from './LiveActivityPanel';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -53,8 +53,8 @@ function styleNodeBySeverity(n: Node): Node {
   let nodeHeight = NODE_H;
 
   if (isRoot) {
-    borderColor = '#00d4aa';
-    shadow = '0 0 24px rgba(0,212,170,0.2), 0 4px 16px rgba(0,0,0,0.3)';
+    borderColor = 'var(--cs-accent)';
+    shadow = '0 0 24px rgba(var(--cs-accent-rgb),0.2), 0 4px 16px rgba(0,0,0,0.3)';
     nodeWidth = 200;
     nodeHeight = 60;
   } else if (sev === 'high') {
@@ -573,8 +573,6 @@ export default function App() {
   const [workflows, setWorkflows]           = useState<Workflow[]>([]);
   const [sessions, setSessions]             = useState<Session[]>([]);
   const [activeSession, setActiveSession]   = useState<string | null>(null);
-  const [hasEverHadData, setHasEverHadData] = useState(false);
-  const [showWelcome, setShowWelcome] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'live' | 'idle' | 'setup'>('setup');
   const [timelineIntroShown, setTimelineIntroShown] = useState(
     () => localStorage.getItem('claudesec-timeline-intro-dismissed') !== 'true'
@@ -588,6 +586,17 @@ export default function App() {
   const [search, setSearch]                 = useState('');
   const [filterMode, setFilterMode]         = useState<FilterMode>('all');
   const [harnessFilter, setHarnessFilter]   = useState<string | null>(null);
+  const [hideNone, setHideNone]             = useState(() => localStorage.getItem('claudesec.hideNone') === 'true');
+
+  useEffect(() => {
+    const sync = () => setHideNone(localStorage.getItem('claudesec.hideNone') === 'true');
+    window.addEventListener('claudesec:hideNoneChange', sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener('claudesec:hideNoneChange', sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
 
   // ── Notification state ────────────────────────────────────────────────────
   const [notifyEnabled, setNotifyEnabled] = useState(false);
@@ -603,16 +612,19 @@ export default function App() {
 
   // ── Theme (s53) ───────────────────────────────────────────────────────────
   const [liveActivityOpen, setLiveActivityOpen] = useState(false);
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+  const [theme, setTheme] = useState<ThemeId>(() => {
     try {
-      const saved = localStorage.getItem('claudesec.theme') as 'dark' | 'light' | null;
-      if (saved) return saved;
-      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-    } catch { return 'dark'; }
+      const saved = localStorage.getItem('claudesec.theme');
+      if (saved === 'dark') return 'midnight';
+      if (saved === 'light') return 'daylight';
+      if (saved === 'midnight' || saved === 'carbon' || saved === 'daylight' || saved === 'paper') return saved;
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'daylight' : 'midnight';
+    } catch { return 'midnight'; }
   });
 
   useEffect(() => {
-    document.documentElement.classList.toggle('light', theme === 'light');
+    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.classList.toggle('light', LIGHT_THEMES.includes(theme));
     try { localStorage.setItem('claudesec.theme', theme); } catch { /* ignore */ }
   }, [theme]);
 
@@ -694,9 +706,7 @@ export default function App() {
 
   const fetchSessions = () =>
     fetch('/api/sessions').then(r => r.json()).then(({ sessions: s }) => {
-      const list = s ?? [];
-      setSessions(list);
-      if (list.length > 0) setHasEverHadData(true);
+      setSessions(s ?? []);
     });
 
   const fetchAlertCount = () =>
@@ -863,23 +873,6 @@ export default function App() {
 
   const onNodeClick = (_: any, node: Node) => setSelectedNode(node);
 
-  const resetGraph = async () => {
-    await fetch('/api/reset', { method: 'POST' });
-    setSelectedNode(null);
-    setWorkflows([]);
-    setSessions([]);
-    seenIds.current.clear();
-    seenHighIds.current.clear();
-    setSearch('');
-    setFilterMode('all');
-    setHarnessFilter(null);
-    setActiveSession(null);
-    setAlertCount(0);
-    setReplay({ active: false, playing: false, speed: 1, progress: 0, currentStep: 0, totalSteps: 0 });
-    setCompareIds(null);
-    setComparePending(null);
-  };
-
   // ── Replay ────────────────────────────────────────────────────────────────
 
   const allSpansSorted = useMemo(() =>
@@ -967,6 +960,8 @@ export default function App() {
 
       const matchHarness = !harnessFilter || wf.harness === harnessFilter;
 
+      const matchHideNone = !hideNone || wf.severity !== 'none';
+
       const matchSearch = (() => {
         if (!search) return true;
         const term = search.toLowerCase();
@@ -985,9 +980,9 @@ export default function App() {
         );
       })();
 
-      return matchSeverity && matchHarness && matchSearch;
+      return matchSeverity && matchHarness && matchSearch && matchHideNone;
     });
-  }, [workflows, filterMode, harnessFilter, search, activeSession]);
+  }, [workflows, filterMode, harnessFilter, search, activeSession, hideNone]);
 
   const counts = useMemo(() => ({
     ok:     workflows.filter(w => w.severity === 'none').length,
@@ -1102,16 +1097,16 @@ export default function App() {
         {/* Left cluster: logo + sparkline */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #00d4aa, #009e7f)' }}>
+            <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, var(--cs-accent), #009e7f)' }}>
               <Shield className="w-3.5 h-3.5 text-white" />
             </div>
             <span className="font-display font-bold text-[13px] tracking-tight" style={{ color: 'var(--cs-text-base)' }}>ClaudeSec</span>
           </div>
           <div className="hidden lg:flex items-center gap-2 pl-3" style={{ borderLeft: '1px solid var(--cs-border)' }}>
             <ActivitySparkline />
-            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,170,0.08)' }}>
-              <div className="w-1.5 h-1.5 rounded-full status-live" style={{ background: '#00d4aa' }} />
-              <span className="text-[10px] font-mono font-semibold" style={{ color: '#00d4aa' }}>LIVE</span>
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full" style={{ background: 'rgba(var(--cs-accent-rgb),0.08)' }}>
+              <div className="w-1.5 h-1.5 rounded-full status-live" style={{ background: 'var(--cs-accent)' }} />
+              <span className="text-[10px] font-mono font-semibold" style={{ color: 'var(--cs-accent)' }}>LIVE</span>
             </div>
           </div>
         </div>
@@ -1130,8 +1125,8 @@ export default function App() {
             onClick={requestNotifications}
             className="p-1.5 rounded-lg transition-all"
             style={{
-              background: notifyEnabled ? 'rgba(0,212,170,0.1)' : 'transparent',
-              color: notifyEnabled ? '#00d4aa' : 'var(--cs-text-faint)',
+              background: notifyEnabled ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
+              color: notifyEnabled ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
             }}
             title={notifyEnabled ? 'Notifications enabled' : 'Enable desktop notifications'}
           >
@@ -1196,19 +1191,6 @@ export default function App() {
 
           <div className="header-divider" />
 
-          {/* Setup guide */}
-          <button
-            onClick={() => setShowWelcome(v => !v)}
-            className="p-1.5 rounded-lg transition-all"
-            style={{
-              background: showWelcome ? 'rgba(0,212,170,0.1)' : 'transparent',
-              color: showWelcome ? '#00d4aa' : 'var(--cs-text-faint)',
-            }}
-            title="Setup Guide"
-          >
-            <Shield className="w-3.5 h-3.5" />
-          </button>
-
           {/* Live activity */}
           <button
             onClick={() => setLiveActivityOpen(v => !v)}
@@ -1222,27 +1204,19 @@ export default function App() {
             <Zap className="w-3.5 h-3.5" />
           </button>
 
-          {/* Theme toggle */}
+          {/* Theme picker */}
+          <ThemeSwitcher theme={theme} onChange={setTheme} />
+
+          {/* Docs */}
           <button
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            onClick={() => window.open('https://github.com/aanjaneyasinghdhoni/ClaudeSec', '_blank', 'noopener')}
             className="p-1.5 rounded-lg transition-all"
             style={{ color: 'var(--cs-text-faint)' }}
-            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title="Documentation"
           >
-            {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+            <HelpCircle className="w-3.5 h-3.5" />
           </button>
 
-          <div className="header-divider" />
-
-          {/* Reset */}
-          <button
-            onClick={resetGraph}
-            className="p-1.5 rounded-lg transition-all hover:text-red-400"
-            style={{ color: 'var(--cs-text-faint)' }}
-            title="Reset all data"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
         </div>
       </header>
 
@@ -1270,7 +1244,7 @@ export default function App() {
               'bg-red-500'
             }`} />
             <span className="text-[11px] font-mono" style={{
-              color: connectionStatus === 'live' ? '#00d4aa' :
+              color: connectionStatus === 'live' ? 'var(--cs-accent)' :
                      connectionStatus === 'idle' ? '#f59e0b' :
                      '#ef4444'
             }}>
@@ -1278,15 +1252,6 @@ export default function App() {
                connectionStatus === 'idle' ? 'Idle' :
                'Setup needed'}
             </span>
-            {connectionStatus === 'setup' && (
-              <button
-                onClick={() => setShowWelcome(true)}
-                className="ml-auto text-[11px] hover:underline"
-                style={{ color: '#00d4aa' }}
-              >
-                Connect
-              </button>
-            )}
           </div>
 
           {/* Sessions */}
@@ -1344,7 +1309,7 @@ export default function App() {
                 onClick={() => setActiveSession(null)}
                 className="w-full text-left px-2 py-1.5 rounded-md text-xs font-medium transition-all"
                 style={activeSession === null
-                  ? { background: 'rgba(0,212,170,0.12)', color: '#00d4aa', border: '1px solid rgba(0,212,170,0.2)' }
+                  ? { background: 'rgba(var(--cs-accent-rgb),0.12)', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)' }
                   : { background: 'transparent', color: 'var(--cs-text-muted)', border: '1px solid transparent' }
                 }
               >
@@ -1364,7 +1329,7 @@ export default function App() {
                     className="session-row relative flex items-center gap-1.5 px-2 py-2 text-xs group"
                     style={{
                       ...(isActive
-                        ? { background: 'rgba(0,212,170,0.1)', color: '#00d4aa', borderLeftColor: '#00d4aa' }
+                        ? { background: 'rgba(var(--cs-accent-rgb),0.1)', color: 'var(--cs-accent)', borderLeftColor: 'var(--cs-accent)' }
                         : comparePending === s.traceId
                         ? { background: 'rgba(59,158,255,0.08)', color: '#3b9eff', borderLeftColor: '#3b9eff' }
                         : isPinned
@@ -1617,7 +1582,7 @@ export default function App() {
             <div className="flex items-center justify-between mb-2">
               <p className="text-[11px] font-bold uppercase tracking-wider font-mono" style={{ color: 'var(--cs-text-faint)' }}>Spans</p>
               <div className="flex items-center gap-1.5 text-[11px] font-mono">
-                <span style={{ color: '#00d4aa' }}>{counts.ok}<span style={{ opacity: 0.5 }}>ok</span></span>
+                <span style={{ color: 'var(--cs-accent)' }}>{counts.ok}<span style={{ opacity: 0.5 }}>ok</span></span>
                 {counts.low    > 0 && <span style={{ color: '#ffb224' }}>{counts.low}<span style={{ opacity: 0.5 }}>low</span></span>}
                 {counts.medium > 0 && <span style={{ color: '#f97316' }}>{counts.medium}<span style={{ opacity: 0.5 }}>med</span></span>}
                 {counts.high   > 0 && <span style={{ color: '#ff3b5c' }}>{counts.high}<span style={{ opacity: 0.5 }}>hi</span></span>}
@@ -1680,13 +1645,8 @@ export default function App() {
         {/* ── Main Area ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
 
-          {/* Welcome screen — shown on first run OR via Setup button */}
-          {(showWelcome || (sessions.length === 0 && !hasEverHadData)) && (
-            <WelcomeScreen onDemoLoaded={() => { setHasEverHadData(true); setShowWelcome(false); fetchSessions(); }} />
-          )}
-
           {/* Sub-tab strip — filtered by active category */}
-          <div className={`flex items-center gap-0.5 px-3 shrink-0 overflow-x-auto ${(showWelcome || (sessions.length === 0 && !hasEverHadData)) ? 'hidden' : ''}`} style={{
+          <div className="flex items-center gap-0.5 px-3 shrink-0 overflow-x-auto" style={{
             borderBottom: '1px solid var(--cs-border)',
             background: 'var(--cs-bg-surface)',
           }}>
@@ -1703,7 +1663,7 @@ export default function App() {
                   activeTab === tab.id ? 'tab-active' : ''
                 }`}
                 style={{
-                  color: activeTab === tab.id ? '#00d4aa' : 'var(--cs-text-faint)',
+                  color: activeTab === tab.id ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
                 }}
               >
                 {TAB_ICONS[tab.id]} {tab.label}
@@ -1724,11 +1684,11 @@ export default function App() {
             <>
             {timelineIntroShown && (
               <div className="mx-4 mt-3 mb-1 px-4 py-3 rounded-xl text-xs leading-relaxed flex items-start gap-3" style={{
-                background: 'rgba(0,212,170,0.06)',
-                border: '1px solid rgba(0,212,170,0.15)',
+                background: 'rgba(var(--cs-accent-rgb),0.06)',
+                border: '1px solid rgba(var(--cs-accent-rgb),0.15)',
                 color: 'var(--cs-text-muted)',
               }}>
-                <Activity className="w-4 h-4 shrink-0 mt-0.5" style={{ color: '#00d4aa' }} />
+                <Activity className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--cs-accent)' }} />
                 <div>
                   <strong style={{ color: 'var(--cs-text-base)' }}>How to read the timeline:</strong>{' '}
                   Spans are individual operations (LLM calls, tool uses, bash commands).
@@ -1749,31 +1709,8 @@ export default function App() {
                 </button>
               </div>
             )}
-            {(() => {
-              const displayWfs = activeSession ? visibleWorkflows : workflows;
-              const toolSpans = displayWfs.filter(wf => wf.label.startsWith('tool_call/'));
-              const allUnknown = toolSpans.length > 0 && toolSpans.every(wf => wf.label === 'tool_call/unknown');
-              return allUnknown ? (
-                <div className="mx-4 mt-2 mb-1 px-4 py-3 rounded-xl text-xs leading-relaxed flex items-start gap-3" style={{
-                  background: 'rgba(249,115,22,0.06)',
-                  border: '1px solid rgba(249,115,22,0.15)',
-                  color: 'var(--cs-text-muted)',
-                }}>
-                  <Zap className="w-4 h-4 shrink-0 mt-0.5" style={{ color: '#f97316' }} />
-                  <div>
-                    <strong style={{ color: 'var(--cs-text-base)' }}>Limited telemetry:</strong>{' '}
-                    Claude Code is sending spans but tool names are not included.
-                    This is a known limitation of the current Claude Code telemetry —{' '}
-                    <code className="font-mono bg-slate-800 px-1 rounded text-[10px]">OTEL_LOG_TOOL_DETAILS=1</code>{' '}
-                    is set but the emitter does not populate tool names yet.
-                    Spans are tracked as <span className="font-semibold text-orange-300">Tool Call</span> until
-                    a future Claude Code update enriches the data.
-                  </div>
-                </div>
-              ) : null;
-            })()}
             <Timeline
-              workflows={activeSession ? visibleWorkflows : workflows}
+              workflows={visibleWorkflows}
               onSelect={onTimelineSelect}
               selectedId={timelineSelected ?? undefined}
             />
@@ -1839,25 +1776,19 @@ export default function App() {
         <div className="flex items-center gap-2 shrink-0">
           <Terminal className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} />
           <span className="text-[11px] font-mono hidden sm:inline" style={{ color: 'var(--cs-text-faint)' }}>
-            OTLP <span style={{ color: 'var(--cs-accent)', opacity: 0.7 }}>→</span> localhost:3000/v1/traces
+            Local watcher <span style={{ color: 'var(--cs-accent)', opacity: 0.7 }}>+</span> OTLP :3000
           </span>
           <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{
             color: 'var(--cs-text-muted)',
             background: 'var(--cs-bg-elevated)',
           }}>{sessions.length} sessions</span>
-          {workflows.length > 0 && workflows.filter(wf => wf.label.startsWith('tool_call/')).every(wf => wf.label === 'tool_call/unknown') && (
-            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{
-              color: '#f97316',
-              background: 'rgba(249,115,22,0.1)',
-            }} title="Claude Code telemetry does not include tool names in this version">tool_call/unknown</span>
-          )}
         </div>
 
         {/* Live span ticker */}
         <div className="flex items-center gap-2 flex-1 overflow-hidden min-w-0">
           {tickerSpans.length > 0 && !tickerQuiet ? (
             <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-              <span className="w-1.5 h-1.5 rounded-full shrink-0 status-live" style={{ background: '#00d4aa' }} />
+              <span className="w-1.5 h-1.5 rounded-full shrink-0 status-live" style={{ background: 'var(--cs-accent)' }} />
               <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
                 {tickerSpans.slice(0, 3).map((sp, i) => (
                   <span key={sp.spanId} className={`flex items-center gap-1 text-[11px] font-mono shrink-0`} style={{ opacity: i > 0 ? 0.4 : 1 }}>

@@ -31,8 +31,10 @@ interface RateLimitInfo {
 }
 
 interface WebhookConfig {
-  url: string;
+  configured: boolean;
+  urlPreview: string | null;
   threshold: 'low' | 'medium' | 'high';
+  envOverride: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ export function Section({ icon, title, children, defaultOpen = true }: SectionPr
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/40 transition-colors"
       >
-        <span style={{ color: '#00d4aa' }}>{icon}</span>
+        <span style={{ color: 'var(--cs-accent)' }}>{icon}</span>
         <span className="text-sm font-semibold text-slate-200 flex-1">{title}</span>
         {open
           ? <ChevronUp className="w-4 h-4 text-slate-500" />
@@ -113,9 +115,9 @@ function SaveButton({ onClick, disabled, label = 'Save' }: SaveButtonProps) {
       onClick={handle}
       disabled={disabled || busy}
       className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
-      style={{ background: '#00d4aa' }}
+      style={{ background: 'var(--cs-accent)' }}
       onMouseEnter={e => (e.currentTarget.style.background = '#00c09a')}
-      onMouseLeave={e => (e.currentTarget.style.background = '#00d4aa')}
+      onMouseLeave={e => (e.currentTarget.style.background = 'var(--cs-accent)')}
     >
       {saved ? (
         <>
@@ -259,6 +261,7 @@ export function RateLimitSection() {
 
 export function WebhookSection() {
   const [url,         setUrl]         = useState('');
+  const [urlPreview,  setUrlPreview]  = useState<string | null>(null);
   const [threshold,   setThreshold]   = useState<'low' | 'medium' | 'high'>('high');
   const [configured,  setConfigured]  = useState(false);
   const [testMsg,     setTestMsg]     = useState('');
@@ -269,7 +272,7 @@ export function WebhookSection() {
     fetch('/api/webhook')
       .then(r => r.json())
       .then((d: Partial<WebhookConfig>) => {
-        if (d.url) { setUrl(d.url); setConfigured(true); }
+        if (d.configured) { setConfigured(true); setUrlPreview(d.urlPreview ?? null); }
         if (d.threshold) setThreshold(d.threshold);
       })
       .catch(() => {});
@@ -290,13 +293,16 @@ export function WebhookSection() {
       throw new Error(d.error ?? 'Failed to save webhook');
     }
     setConfigured(!!url.trim());
-  }, [url, threshold]);
+    setUrl('');
+    load();
+  }, [url, threshold, load]);
 
   const handleDelete = async () => {
     setError('');
     const res = await fetch('/api/webhook', { method: 'DELETE' });
     if (res.ok) {
       setUrl('');
+      setUrlPreview(null);
       setConfigured(false);
       setTestMsg('');
       setTestOk(null);
@@ -329,20 +335,19 @@ export function WebhookSection() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="sm:col-span-2">
           <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Webhook URL</label>
-          <div className="relative">
-            <input
-              type="url"
-              value={url}
-              onChange={e => setUrl(e.target.value)}
-              placeholder="https://hooks.example.com/..."
-              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500 pr-20"
-            />
-            {configured && (
-              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-mono px-1.5 py-0.5 rounded bg-green-900/40 text-green-300 border border-green-700/40">
-                configured
-              </span>
-            )}
-          </div>
+          <input
+            type="url"
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            placeholder={configured ? 'Enter a new URL to replace' : 'https://hooks.example.com/...'}
+            className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
+          />
+          {configured && (
+            <p className="text-[11px] font-mono mt-1 flex items-center gap-1.5" style={{ color: 'var(--cs-text-muted)' }}>
+              <Check className="w-3 h-3" style={{ color: 'var(--cs-accent)' }} />
+              Configured: <span style={{ color: 'var(--cs-text-faint)' }}>{urlPreview ?? '••••'}</span>
+            </p>
+          )}
         </div>
         <div>
           <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Min Threshold</label>
@@ -384,7 +389,7 @@ export function WebhookSection() {
             </button>
           </>
         )}
-        <SaveButton onClick={save} />
+        <SaveButton onClick={save} disabled={!url.trim()} />
       </div>
     </div>
   );
@@ -395,27 +400,21 @@ export function WebhookSection() {
 // ---------------------------------------------------------------------------
 
 export function DisplaySection() {
-  const [hideNone,    setHideNone]    = useState(() => localStorage.getItem('claudesec.hideNone')    === 'true');
-  const [autoLayout,  setAutoLayout]  = useState(() => localStorage.getItem('claudesec.autoLayout')  !== 'false');
+  const [hideNone, setHideNone] = useState(() => localStorage.getItem('claudesec.hideNone') === 'true');
 
   const toggle = (key: string, value: boolean, setter: (v: boolean) => void) => {
     setter(value);
     localStorage.setItem(key, String(value));
+    window.dispatchEvent(new Event('claudesec:hideNoneChange'));
   };
 
   return (
     <div className="space-y-3 mt-3">
       <ToggleRow
-        label="Hide safe spans in graph"
-        description="Suppress spans with no threat (severity: none) from the React Flow canvas."
+        label="Hide safe spans"
+        description="Hide spans with no threat (severity: none) from the spans list."
         checked={hideNone}
         onChange={v => toggle('claudesec.hideNone', v, setHideNone)}
-      />
-      <ToggleRow
-        label="Auto-layout on update"
-        description="Re-run Dagre layout automatically when new spans arrive."
-        checked={autoLayout}
-        onChange={v => toggle('claudesec.autoLayout', v, setAutoLayout)}
       />
       <p className="text-xs text-slate-600 italic">Settings are saved locally in your browser.</p>
     </div>
@@ -440,7 +439,7 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
         className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors duration-200 focus:outline-none ${
           checked ? '' : 'bg-slate-700 border-slate-700'
         }`}
-        style={checked ? { background: '#00d4aa', borderColor: '#00d4aa' } : undefined}
+        style={checked ? { background: 'var(--cs-accent)', borderColor: 'var(--cs-accent)' } : undefined}
       >
         <span
           className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transform transition-transform duration-200 translate-y-[-1px] ${
@@ -499,7 +498,7 @@ function EnvReferenceSection() {
     <div className="space-y-4 mt-3">
       {/* Quick setup command */}
       <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 rounded-lg">
-        <Terminal className="w-3.5 h-3.5" style={{ color: '#00d4aa' }} />
+        <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--cs-accent)' }} />
         <code className="text-xs text-slate-300 font-mono flex-1">npx claudesec init</code>
         <EnvCopyButton text="npx claudesec init" />
       </div>
@@ -543,7 +542,7 @@ export function SettingsTab(): React.ReactElement {
 
         {/* Header */}
         <div className="flex items-center gap-2 mb-2">
-          <Settings className="w-5 h-5" style={{ color: '#00d4aa' }} />
+          <Settings className="w-5 h-5" style={{ color: 'var(--cs-accent)' }} />
           <h2 className="text-sm font-bold text-slate-200">Settings</h2>
         </div>
 
