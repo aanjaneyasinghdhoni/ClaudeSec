@@ -1,80 +1,105 @@
 ---
 title: "ClaudeSec"
-description: "Real-time AI agent observability and security dashboard. Ingest OpenTelemetry traces from any CLI agent and surface suspicious activity through purpose-built security views."
+description: "A zero-config, fully-local security observatory for your AI coding agents. One command tails every Claude Code, GitHub Copilot CLI, and Codex session on your machine and scores it live against a built-in threat-detection engine."
 ---
 
 ## What is ClaudeSec?
 
-ClaudeSec is a local-first observability dashboard designed for developers who run AI coding agents on their machines. It listens for [OpenTelemetry](https://opentelemetry.io/) (OTLP) traces, persists them in a local SQLite database, evaluates every span against a library of security detection rules, and renders the resulting activity through purpose-built dashboard views — timeline, orchestration, alerts, cost analysis, and more.
+ClaudeSec is a **zero-config, local-first security observatory** for AI coding agents. It watches every Claude Code, GitHub Copilot CLI, and Codex session already running on your machine — across every repo — and surfaces what your agents are actually doing: every tool call, every command, every file touched, scored live against 183 built-in threat-detection rules.
 
-Because everything runs locally — Express backend on `localhost:3000`, SQLite on disk — no data ever leaves your machine.
+No environment variables. No restarting your terminal. Nothing ever leaves your computer.
+
+<Note>
+  These agents **already write full session transcripts to disk** as they work. ClaudeSec tails those transcripts in real time, so the moment you install it, it sees everything — including sessions that were already running.
+</Note>
+
+---
+
+## Install
+
+One command installs a tiny background service, starts watching every agent on your machine, and opens the dashboard already full of real activity:
+
+```bash
+npx claudesec
+```
+
+That's it. See the [Quickstart](/quickstart) for what happens next, or [stop and remove](/quickstart#stopping) the service anytime with `claudesec stop`.
 
 ---
 
 ## Key Features
 
 <CardGroup cols={2}>
-  <Card title="Real-time OTLP ingestion" icon="bolt">
-    Accepts standard OTLP/HTTP JSON payloads at `POST /v1/traces`. Any OpenTelemetry-compatible agent works out of the box.
+  <Card title="Zero-config capture" icon="bolt">
+    Tails on-disk transcripts for Claude Code, GitHub Copilot CLI, and Codex — real tool names, full command text, durations, and token usage, with no setup.
   </Card>
-  <Card title="Multi-harness support" icon="grid-2">
-    15 built-in harness profiles for Claude Code, GitHub Copilot CLI, OpenHands, Cursor, Aider, Cline, Goose, Continue.dev, Windsurf, Codex CLI, Amazon Q Developer, Gemini CLI, Roo-Code, Google Antigravity, and Bolt.new — each with its own color and detection heuristics.
+  <Card title="183 threat rules" icon="shield-halved">
+    HIGH / MEDIUM / LOW regex rules covering prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration, and recon — evaluated on every span.
   </Card>
-  <Card title="Threat detection" icon="shield-halved">
-    183 built-in regex rules covering prompt injection, secret leakage, destructive shell commands, supply-chain attacks, reverse shells, credential theft, and more. Add custom rules from the UI without restarting the server.
+  <Card title="Honeytokens & secret scrubbing" icon="user-secret">
+    Plant canary strings that fire HIGH alerts on exfiltration. Known secret shapes are redacted before anything is stored, broadcast, or exported.
   </Card>
-  <Card title="Timeline view" icon="timeline">
-    Gantt-style timeline shows when each span ran relative to others, making it easy to correlate suspicious events with agent actions. Default landing view.
+  <Card title="Live timeline & orchestration" icon="timeline">
+    Watch tool calls stream in with nanosecond durations. Drill into per-agent tool inventory, a command-audit trail, and a sensitive-file-access panel.
   </Card>
-  <Card title="Orchestration view" icon="sitemap">
-    Per-harness statistics (span count, threat count, tools used) and cross-harness co-occurrence data for sessions where multiple agents ran simultaneously.
+  <Card title="Process scanner" icon="microchip">
+    Detect running agent CLIs and kill / pause / resume them straight from the dashboard.
   </Card>
-  <Card title="Custom rules" icon="sliders">
-    Create, test, and delete regex-based detection rules via the Rules tab in the dashboard or the REST API.
-  </Card>
-  <Card title="Desktop notifications" icon="bell">
-    Browser `Notification` API alerts fire immediately when a high-severity threat is detected, even if the ClaudeSec tab is in the background.
+  <Card title="Cost view" icon="dollar-sign">
+    API-equivalent cost per session and model, plus subscription-plan awareness (API / Pro / Max 5× / Max 20×).
   </Card>
 </CardGroup>
 
 ---
 
-## Architecture
+## Privacy by construction
 
-```mermaid
-flowchart LR
-    A[AI Agent\ne.g. Claude Code] -->|POST /v1/traces\nOTLP JSON| B[server.ts\nExpress + Socket.io]
-    B --> C[(spans.db\nSQLite)]
-    B --> D[Threat Detection\nregex rules]
-    D --> E[(alerts table)]
-    B -->|real-time events| F[App.tsx\nReact 19 + Tailwind CSS 4]
-    F -->|GET /api/sessions| B
-    F -->|GET /api/alerts| B
-```
+ClaudeSec reads sensitive material, so it is built local-first:
 
-### Data flow
-
-1. An AI agent emits OTLP/HTTP JSON traces to `http://localhost:3000/v1/traces`.
-2. `server.ts` parses each `resourceSpan`, detects which harness produced it, and runs every span's serialized attributes through the security rule engine.
-3. Spans are written to `spans.db` (SQLite, persisted across restarts). Any matched rules create an alert row.
-4. The server broadcasts real-time Socket.io events (`sessions-update`, `alerts-update`, `span-added`) to all connected browser clients.
-5. `App.tsx` receives the events and updates the dashboard views (timeline, alerts, orchestration, etc.) in real time.
+- **Loopback only** — the server binds `127.0.0.1` by default.
+- **No egress** — nothing is sent anywhere (the single optional outbound path is `OTEL_FORWARD_URL`, SSRF-blocked for private ranges).
+- **Owner-only database** — `spans.db` is created with `0600` permissions.
+- **Secret scrubbing on by default** — see [Privacy & Security](/security/privacy).
 
 ---
 
-## Quick Links
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    subgraph machine["Your machine — zero config"]
+        CC["Claude Code"]
+        CP["GitHub Copilot CLI"]
+        CX["Codex"]
+    end
+    CC --> W["transcriptWatcher<br/>tails .jsonl live"]
+    CP --> W
+    CX --> W
+    REMOTE["Remote / CI agents"] -->|"OTLP POST /v1/traces"| ING
+    W --> ING["ingestSpan()"]
+    ING --> RULES["183 rules + secret scrub"]
+    RULES --> DB[("SQLite · spans.db · 0600")]
+    DB --> IO["Socket.io"]
+    IO --> UI["Dashboard · 127.0.0.1:3000"]
+```
+
+The watcher and the OTLP endpoint feed the **same** pipeline, so local capture and remote/CI agents land in one dashboard. See [Architecture](/architecture) and [How the watcher works](/explanation/watcher) for the full picture.
+
+---
+
+## Quick links
 
 <CardGroup cols={2}>
-  <Card title="Quick Start" icon="rocket" href="/quickstart">
-    Install ClaudeSec, start the server, and connect your first agent in under two minutes.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install ClaudeSec and see real activity in under a minute.
   </Card>
-  <Card title="Claude Code harness" icon="terminal" href="/harnesses/claude-code">
-    The most common integration — Anthropic's official CLI agent.
+  <Card title="The dashboard" icon="gauge" href="/observe/timeline">
+    A tour of every screen — Timeline, Orchestration, Alerts, Costs, and more.
   </Card>
   <Card title="Security rules" icon="shield" href="/security/rules">
-    Understand and extend the built-in detection rule library.
+    Understand and extend the built-in detection library.
   </Card>
-  <Card title="API Reference" icon="code" href="/api-reference/introduction">
-    Full REST API documentation for all endpoints.
+  <Card title="Remote & CI agents" icon="cloud" href="/how-to/remote-agents">
+    Send OTLP traces from machines ClaudeSec can't read from disk.
   </Card>
 </CardGroup>

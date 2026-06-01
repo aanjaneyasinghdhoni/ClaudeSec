@@ -1,0 +1,37 @@
+---
+title: "Processes"
+description: "Detect running agent CLIs and kill, pause, or resume them from the dashboard."
+---
+
+The **Processes** screen scans your local process table for known agent CLIs (Claude Code, Copilot, Codex) and lets you control them — a kill switch for when an agent goes off the rails.
+
+## What you see
+
+For each detected agent process: PID, agent name, CPU%, memory, and a username-scrubbed command line. Sessions active in the last 2 hours are attached by harness match.
+
+<Note>
+  Process scanning is supported on **macOS and Linux**. On Windows the list is empty and the control actions return `501`.
+</Note>
+
+## Controls
+
+| Action | Effect |
+|--------|--------|
+| Kill | `SIGTERM` to one agent process |
+| Kill all | `SIGTERM` to every detected agent process |
+| Pause all | `SIGSTOP` — freeze agents without losing state |
+| Resume all | `SIGCONT` — un-freeze paused agents |
+
+Only processes ClaudeSec recognizes as agent CLIs are eligible — it will not terminate arbitrary PIDs.
+
+## Privacy
+
+The command line is scrubbed (`/Users/***`) and the OS username is always reported as `***`, so screenshots and exports never leak your identity.
+
+## From the terminal
+
+```bash
+claudesec processes
+```
+
+Backed by the [Processes API](/api-reference/processes): `GET /api/processes`, `DELETE /api/processes/:pid`, and the `kill-all` / `pause-all` / `resume-all` endpoints.

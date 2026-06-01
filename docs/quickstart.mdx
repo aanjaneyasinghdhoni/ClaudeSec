@@ -1,155 +1,112 @@
 ---
-title: "Quick Start"
-description: "Get ClaudeSec running and connected to an AI agent in under two minutes."
+title: "Quickstart"
+description: "Install ClaudeSec and watch real agent activity stream in — in under a minute."
 ---
+
+ClaudeSec is zero-config. You do not set any environment variables, edit your shell profile, or restart your agents. One command installs a background service and opens the dashboard.
 
 ## Prerequisites
 
 - **Node.js 18+** (Node 20 LTS recommended)
-- An AI agent that supports OpenTelemetry OTLP export (see [Harnesses](/harnesses/claude-code))
+- At least one supported agent on your machine — [Claude Code](/harnesses/claude-code), [GitHub Copilot CLI](/harnesses/copilot), or [Codex](/harnesses/codex)
+
+<Note>
+  `better-sqlite3` builds a native module on install. If you hit a build error, install the Xcode Command Line Tools (macOS) or `build-essential` (Linux) and try again.
+</Note>
 
 ---
 
-## Step 1 — Install
+## Step 1 — Run it
 
-Clone the repository and install dependencies:
+```bash
+npx claudesec
+```
+
+This single command:
+
+1. Removes any legacy OTEL environment config left over from older setups.
+2. Installs a user-level background service (launchd on macOS, systemd user service on Linux, a Scheduled Task on Windows).
+3. Starts tailing every Claude Code, Copilot CLI, and Codex session on your machine.
+4. Opens the dashboard at **http://localhost:3000**.
+
+Because your agents already write transcripts to disk, the dashboard fills with **real, live activity immediately** — including sessions that were running before you installed.
+
+---
+
+## Step 2 — Look around
+
+Open [http://localhost:3000](http://localhost:3000) (it opens automatically). Within seconds of any agent action you'll see:
+
+- A session row per trace, tagged with the harness that produced it.
+- Spans appearing in the **Timeline** as colored bars, with live durations.
+- **Alert** counts incrementing whenever a detection rule matches.
+
+Take the [dashboard tour](/observe/timeline) to learn each screen.
+
+---
+
+## Step 3 — Check status from the terminal
+
+```bash
+claudesec status      # server health, span/session/alert counts, uptime
+claudesec tail        # stream new spans live in your terminal
+claudesec processes   # list running agent processes
+```
+
+See the [CLI reference](/reference/cli) for every command.
+
+---
+
+## Stopping {#stopping}
+
+Stop and remove the background service at any time:
+
+```bash
+claudesec stop
+```
+
+Your data in `~/.claudesec` / `spans.db` is left untouched. To wipe stored data, run `claudesec reset`.
+
+---
+
+## Running from source
 
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
 cd ClaudeSec
 npm install
+npx claudesec        # or: npm run dev   (foreground, no background service)
 ```
 
-<Note>
-  `better-sqlite3` requires a native build step. If you see a build error, make sure you have the Xcode Command Line Tools (macOS) or `build-essential` (Linux) installed, then re-run `npm install`.
-</Note>
+`npm run dev` runs the Express backend with Vite HMR in the foreground on port 3000 — handy for development.
 
 ---
 
-## Step 2 — Start the server
+## Platform support
 
-```bash
-npm run dev
-```
+| Platform | Background service | Status |
+|---|---|---|
+| macOS | launchd LaunchAgent | **Verified** |
+| Linux | systemd user service | Experimental |
+| Windows | Scheduled Task (at logon) | Experimental |
 
-This starts the Express backend with Vite HMR (hot module replacement) for the frontend simultaneously. Both are served on a single port.
-
-```
-  VITE v6.x.x  ready in 312 ms
-  ➜  Local:   http://localhost:3000/
-  ClaudeSec listening on :3000
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser. You should see the welcome screen — that is expected until your first agent session.
-
----
-
-## Step 3 — Connect an agent
-
-### Claude Code (most common)
-
-In your terminal — **before** launching Claude Code — export these environment variables:
-
-```bash
-export CLAUDE_CODE_ENABLE_TELEMETRY=1
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-```
-
-Then run Claude Code normally:
-
-```bash
-claude
-```
-
-Every tool call and model turn will now emit spans to your local ClaudeSec instance.
-
-### Other agents
-
-See the [Harnesses](/harnesses/claude-code) section for per-agent setup instructions. The pattern is the same for all agents — set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL`, then start the agent.
-
----
-
-## Step 4 — Verify data is flowing
-
-### Option A — Browser
-
-Open [http://localhost:3000](http://localhost:3000). Within a few seconds of the agent performing its first action you should see:
-
-- A session row in the sidebar with the harness name (e.g., **Claude Code**).
-- Spans appearing in the Timeline view as colored bars.
-- Alert counts incrementing if any security rules match.
-
-### Option B — curl
-
-Send a minimal OTLP payload manually to confirm the ingestion endpoint is working:
-
-```bash
-curl -s -X POST http://localhost:3000/v1/traces \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "resourceSpans": [{
-      "resource": {
-        "attributes": [
-          {"key": "service.name", "value": {"stringValue": "test-agent"}},
-          {"key": "telemetry.sdk.name", "value": {"stringValue": "test"}}
-        ]
-      },
-      "scopeSpans": [{
-        "scope": {},
-        "spans": [{
-          "traceId": "abc123",
-          "spanId": "span001",
-          "name": "test.operation",
-          "kind": 1,
-          "startTimeUnixNano": "1700000000000000000",
-          "endTimeUnixNano":   "1700000001000000000",
-          "attributes": [
-            {"key": "reason", "value": {"stringValue": "quickstart test"}}
-          ],
-          "status": {"code": 1}
-        }]
-      }]
-    }]
-  }'
-```
-
-Expected response:
-
-```json
-{"status":"ok"}
-```
-
-You should immediately see a new session appear in the dashboard.
-
----
-
-## Step 5 — Production build (optional)
-
-To serve a fully compiled build without the Vite dev server:
-
-```bash
-npm run build
-npm run preview
-```
-
-This compiles the React frontend into `dist/` and serves it from the Express server.
+The watcher and dashboard run anywhere Node ≥ 18 runs; only the auto-start *service* layer is platform-specific. On any platform you can always run the foreground server with `npm run dev`.
 
 ---
 
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Claude Code harness" icon="terminal" href="/harnesses/claude-code">
-    Full guide including span attributes and what to look for in the dashboard.
+  <Card title="Dashboard tour" icon="gauge" href="/observe/timeline">
+    Every screen, explained.
   </Card>
   <Card title="Security rules" icon="shield" href="/security/rules">
-    Understand the built-in threat library and add custom rules.
+    The built-in threat library and how to add your own.
   </Card>
-  <Card title="Alerts" icon="bell" href="/security/alerts">
-    Configure desktop notifications and export threat reports.
+  <Card title="Remote & CI agents" icon="cloud" href="/how-to/remote-agents">
+    Capture agents ClaudeSec can't read from disk, via OTLP.
   </Card>
-  <Card title="API Reference" icon="code" href="/api-reference/introduction">
-    Automate ClaudeSec with the REST API.
+  <Card title="Privacy & Security" icon="lock" href="/security/privacy">
+    Loopback binding, the 0600 database, and secret scrubbing.
   </Card>
 </CardGroup>

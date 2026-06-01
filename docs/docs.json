@@ -17,48 +17,77 @@
           "quickstart"
         ]
       },
-        {
-          "group": "Harnesses",
-          "pages": [
-            "harnesses/claude-code",
-            "harnesses/copilot",
-          "harnesses/openhands",
-          "harnesses/cursor",
-          "harnesses/aider",
-          "harnesses/cline",
-          "harnesses/goose",
-          "harnesses/continue",
-          "harnesses/windsurf",
-          "harnesses/codex",
-            "harnesses/amazon-q",
-            "harnesses/gemini-cli",
-            "harnesses/roo-code",
-            "harnesses/antigravity",
-            "harnesses/bolt"
-          ]
-        },
       {
-        "group": "Architecture",
+        "group": "Agents",
         "pages": [
-          "architecture"
+          "harnesses/claude-code",
+          "harnesses/copilot",
+          "harnesses/codex"
         ]
       },
       {
-        "group": "Security",
+        "group": "Observe",
+        "pages": [
+          "observe/timeline",
+          "observe/orchestration",
+          "observe/heatmap",
+          "observe/processes"
+        ]
+      },
+      {
+        "group": "Detect",
+        "pages": [
+          "security/alerts",
+          "detect/search"
+        ]
+      },
+      {
+        "group": "Protect",
         "pages": [
           "security/rules",
-          "security/alerts",
           "security/suppressions"
         ]
       },
-        {
-          "group": "Observatory",
-          "pages": [
-            "observatory/welcome",
-            "observatory/processes",
-            "observatory/session-labels"
-          ]
-        },
+      {
+        "group": "Review",
+        "pages": [
+          "review/command-audit",
+          "review/file-access",
+          "review/tool-inventory",
+          "review/bookmarks",
+          "review/session-labels"
+        ]
+      },
+      {
+        "group": "Manage",
+        "pages": [
+          "manage/harnesses",
+          "cost/costs",
+          "manage/settings",
+          "manage/themes"
+        ]
+      },
+      {
+        "group": "How-to guides",
+        "pages": [
+          "how-to/remote-agents"
+        ]
+      },
+      {
+        "group": "Explanation",
+        "pages": [
+          "architecture",
+          "explanation/watcher"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli",
+          "reference/config",
+          "security/privacy"
+        ]
+      },
       {
         "group": "Integrations",
         "pages": [
@@ -66,39 +95,38 @@
           "collector"
         ]
       },
-        {
-          "group": "API Reference",
-          "pages": [
-            "api-reference/introduction",
-            "api-reference/otlp",
-            "api-reference/graph",
-            "api-reference/sessions",
-            "api-reference/health",
-            "api-reference/spans",
-            "api-reference/tags",
-            "api-reference/rules-api",
-            "api-reference/alerts-api",
-            "api-reference/search",
-            "api-reference/orchestration",
-            "api-reference/bookmarks",
-            "api-reference/export",
-            "api-reference/webhooks",
-            "api-reference/costs",
-            "api-reference/processes",
-            "api-reference/annotations",
-            "api-reference/graph-export",
-            "api-reference/activity",
-            "api-reference/command-audit",
-            "api-reference/reports",
-            "api-reference/config",
-            "api-reference/db-stats",
-            "api-reference/import",
-            "api-reference/simulate",
-            "api-reference/threshold-rules",
-            "api-reference/suppressions",
-            "api-reference/mcp"
-          ]
-        }
+      {
+        "group": "API Reference",
+        "pages": [
+          "api-reference/introduction",
+          "api-reference/otlp",
+          "api-reference/sessions",
+          "api-reference/spans",
+          "api-reference/health",
+          "api-reference/search",
+          "api-reference/alerts-api",
+          "api-reference/rules-api",
+          "api-reference/suppressions",
+          "api-reference/threshold-rules",
+          "api-reference/orchestration",
+          "api-reference/command-audit",
+          "api-reference/activity",
+          "api-reference/costs",
+          "api-reference/processes",
+          "api-reference/bookmarks",
+          "api-reference/tags",
+          "api-reference/annotations",
+          "api-reference/webhooks",
+          "api-reference/export",
+          "api-reference/import",
+          "api-reference/reports",
+          "api-reference/config",
+          "api-reference/db-stats",
+          "api-reference/graph",
+          "api-reference/graph-export",
+          "api-reference/mcp"
+        ]
+      }
     ]
   },
   "logo": {

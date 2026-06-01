@@ -10,7 +10,11 @@ POST /v1/traces
 Content-Type: application/json
 ```
 
-This is the primary data ingestion endpoint. It accepts OpenTelemetry Protocol (OTLP) trace data in JSON format, processes each span, evaluates security rules, and persists the results to SQLite.
+This endpoint accepts OpenTelemetry Protocol (OTLP) trace data in JSON format, processes each span, evaluates security rules, and persists the results to SQLite.
+
+<Note>
+  **Local agents are captured automatically** by the [transcript watcher](/explanation/watcher) — you don't need OTLP for Claude Code, GitHub Copilot CLI, or Codex on your own machine. This endpoint is for **remote or CI agents** ClaudeSec can't read from disk. See [Capture remote & CI agents](/how-to/remote-agents).
+</Note>
 
 ---
 

@@ -1,0 +1,31 @@
+---
+title: "File Access"
+description: "Every file your agents read or wrote, with sensitive paths flagged."
+---
+
+The **File Access** panel (inside [Orchestration](/observe/orchestration)) aggregates every file your agents touched, ranked by access count.
+
+For each path you see:
+
+- **Reads** and **writes** tallies.
+- Which **agents** accessed it.
+- A **sensitive** flag for credential-adjacent paths.
+
+## What counts as sensitive
+
+A path is flagged sensitive when it matches any of:
+
+- `.env` files
+- `~/.ssh/` directory contents
+- `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/etc/hosts`
+- anything containing `credentials`
+- `*.pem` files
+- `id_rsa`
+
+Read tools (`Read`, `Glob`, `Grep`, `cat`, `head`, `tail`, `file_read`) and write tools (`Write`, `Edit`, `touch`, `mv`, `cp`, `file_edit`) are both tracked.
+
+Backed by `GET /api/file-access`, documented alongside the [Command Audit API](/api-reference/command-audit).
+
+<Note>
+  Sensitive-file *reads* are also caught by the [detection rules](/security/rules) — for example SSH private-key access fires a HIGH alert independently of this panel.
+</Note>

@@ -1,0 +1,34 @@
+---
+title: "Settings"
+description: "Retention, rate limiting, webhooks, display, threshold rules, and the env-var reference."
+---
+
+The **Settings** screen is a set of collapsible sections.
+
+## Retention
+
+Set **Max Spans** and **Retention Days** — the two limits that drive automatic pruning. Shows current stored span count and DB size. Saved via `POST /api/db-stats/retention`.
+
+## Environment Variables
+
+A live reference of every configuration env var, grouped by category, showing each one's description, default, and whether it's currently set (sensitive values masked). See the full [Configuration reference](/reference/config).
+
+## Rate Limiting
+
+Read-only display of the OTLP intake limits (requests/second, burst, max spans per batch). Configure these via environment variables before starting the server.
+
+## Webhook
+
+Set a Slack / Discord / generic-JSON webhook URL and a minimum severity threshold, then **Test** delivery. HIGH-severity alerts (or your chosen threshold) are pushed to the endpoint. See [Webhooks](/api-reference/webhooks).
+
+## Display
+
+Local UI preferences, e.g. **Hide safe spans** (drops `severity: none` rows from the spans list). Stored in your browser.
+
+## Threshold Rules
+
+Fire an alert when a session metric crosses a limit within a time window — metrics like `tokens_in`, `threat_count`, `span_count`, or `high_threat_count`. Each rule fires at most once per window per session. See [Threshold Rules](/api-reference/threshold-rules).
+
+## Webhook Delivery Log
+
+Every webhook attempt is logged. Failed deliveries auto-retry up to 3× with exponential backoff; you can manually retry or clear the history. See [Webhook deliveries](/api-reference/webhooks).

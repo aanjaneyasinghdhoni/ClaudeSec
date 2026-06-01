@@ -1,0 +1,24 @@
+---
+title: "Search"
+description: "Full-text search across every span your agents have produced."
+---
+
+The **Search** screen queries the full history of captured spans — useful for incident review and "did any agent ever touch X?" questions.
+
+## What you can search
+
+- Span name, tool, and serialized attributes (commands, file paths, reasons).
+- Filter by **severity** (`high` / `medium` / `low` / `none`) and **harness**.
+
+Results are paginated and link back to the originating session.
+
+## From the terminal
+
+```bash
+claudesec search "rm -rf" --severity high
+claudesec search "id_rsa" --harness claude-code --limit 50
+```
+
+## Under the hood
+
+ClaudeSec maintains an SQLite **FTS5** full-text index (`spans_fts`) mirroring `spans(spanId, name, attributes)`, kept in sync by an insert trigger. Backed by [`GET /api/search`](/api-reference/search) (and `/api/search/fts` for index-backed queries).

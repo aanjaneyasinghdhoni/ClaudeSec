@@ -28,19 +28,22 @@ npm run dev
 
 The app is available at **http://localhost:3000**.
 
+`npm run dev` runs the Express backend with Vite HMR in the foreground (no background service). To exercise the one-command install path during development, run `npx claudesec` from the repo.
+
 ---
 
-## Connecting Your Agent (Live Telemetry)
+## Generating test activity (live capture)
 
-Before testing with a live AI agent, export these three environment variables:
+The transcript watcher captures your local agents automatically — just run Claude Code, GitHub Copilot CLI, or Codex in another terminal and activity will stream into the dashboard with no setup. See [How the watcher works](docs/explanation/watcher.mdx).
+
+For agents on other machines or in CI, point them at the OTLP endpoint:
 
 ```bash
-export CLAUDE_CODE_ENABLE_TELEMETRY=1
-export OTEL_TRACES_EXPORTER=otlp
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
-Restart your agent session after setting them. Spans will begin appearing in the dashboard immediately.
+You can also POST a synthetic OTLP payload directly to `http://localhost:3000/v1/traces` (see the curl example in the Quickstart docs) to test ingestion without a real agent.
 
 ---
 
@@ -97,24 +100,19 @@ Steps:
 2. Add your entry in the appropriate severity group (HIGH first, then MEDIUM, then LOW).
 3. Include a comment explaining what the rule targets.
 4. Add a matching entry to the threat-detection table in `README.md`.
-5. Test it via the **Simulate** button or a `curl` POST to `/v1/traces`.
+5. Test it with a `curl` POST to `/v1/traces`, or by running a real agent whose action matches the pattern.
 
 ---
 
-## Adding Harness Support
+## Adding agent capture
 
-Harness integrations live in `src/harnesses.ts`. The registry currently supports 14 agent frameworks. Each harness entry declares:
+ClaudeSec captures three agents automatically by tailing their on-disk session transcripts in `transcriptWatcher.ts`:
 
-- `id` — unique slug used as graph node ID prefix
-- `name` — display name shown in the UI
-- `color` — Tailwind-compatible hex color for the agent node
-- `description` — short description shown in the setup wizard
-- `envVars` — environment variables the user must set (use `{{ENDPOINT}}` as placeholder)
-- `serviceNamePattern` — regex to identify spans from this harness
-- `spanAttributes` — known span attribute keys this harness emits
-- `docsUrl` — link to the harness documentation
+- **Claude Code** — `~/.claude/projects/**/*.jsonl`
+- **GitHub Copilot CLI** — `~/.copilot/session-state/**/*.jsonl`
+- **Codex** — `~/.codex/sessions/**/*.jsonl`
 
-To add a new harness, add an entry to the `HARNESSES` array in `src/harnesses.ts` and create a corresponding docs page at `docs/harnesses/<id>.mdx`.
+To support a new local agent, add a `HarnessKind`, a default root in `defaultRoots()`, and a record-mapper (modeled on `mapClaudeRecord` / `mapCodexRecord` / `mapCopilotRecord`) in `transcriptWatcher.ts`. Agents that export OpenTelemetry can stream in over the OTLP endpoint with no code changes (see [docs/how-to/remote-agents.mdx](docs/how-to/remote-agents.mdx)).
 
 ---
 

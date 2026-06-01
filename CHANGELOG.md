@@ -5,6 +5,25 @@ All notable changes to ClaudeSec are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Zero-config transcript watcher** — ClaudeSec now tails on-disk session transcripts for **Claude Code**, **GitHub Copilot CLI**, and **Codex** across every repo, with no environment variables and no agent restart. Local capture and the OTLP endpoint feed the same pipeline.
+- **One-command install** — `npx claudesec` installs a background service (launchd / systemd / Scheduled Task), starts watching, and opens the dashboard.
+- **Four-theme switcher** — Midnight, Carbon, Daylight, Paper (saved locally).
+- **Subscription-plan awareness in the Cost view** — compare API-equivalent spend against a flat plan (API / Pro / Max 5× / Max 20×).
+- **Secret scrubbing** of known secret shapes (keys, tokens, webhook URLs, home paths, usernames, emails) before storage, broadcast, or export; honeytoken exfiltration alerts.
+
+### Changed
+- Installation is now **transcript-first**; the multi-step OTLP env-var setup is reserved for remote/CI agents only.
+- Documentation overhauled to match the current product (Diataxis structure; per-screen pages).
+
+### Removed
+- **First-run Welcome screen** and the synthetic-trace **Simulate** endpoint/UI.
+- Per-harness OTLP setup docs for agents no longer specially supported.
+
+---
+
 ## [1.1.0] — 2026-04-18
 
 ### Removed

@@ -1,0 +1,17 @@
+---
+title: "Command Audit"
+description: "A chronological, risk-scored log of every shell command your agents ran."
+---
+
+The **Command Audit** panel (inside [Orchestration](/observe/orchestration)) answers the single most important question about an autonomous agent: *what did it run on my machine?*
+
+It collects every span that came from a shell tool (`Bash` and friends) and shows, newest first:
+
+- The full command text.
+- The harness and session that ran it.
+- The detection **severity** (if a rule matched).
+- A **risk score** (0–100) computed heuristically from the command itself — e.g. piped remote execution, `nc`/`ncat`, `chmod 777`, `chown root`, `eval`/`exec`, and environment-variable dumping all raise the score.
+
+This is intentionally broader than rule matches: a command can carry a non-trivial risk score even when no built-in rule fires, surfacing things worth a second look.
+
+Backed by [`GET /api/command-audit`](/api-reference/command-audit) (`?limit=` up to 1000).

@@ -5,18 +5,22 @@ description: "Understand ClaudeSec's built-in threat detection library and learn
 
 ## How rules work
 
-Every span that arrives at `POST /v1/traces` is evaluated against the security rule engine. The engine concatenates all span attributes into a single string and tests it against each rule's regular expression in priority order:
+Every span — whether tailed from a local transcript or sent via OTLP to `POST /v1/traces` — is evaluated against the security rule engine. The engine concatenates the span name and all attributes into a single string and tests it against each rule's regular expression in priority order:
 
 1. **Custom rules** are checked first (most recently added = highest priority).
-2. **Built-in rules** are checked if no custom rule matches.
+2. **183 built-in rules** are checked if no custom rule matches.
 
-The first matching rule determines the span's severity level. If no rule matches, the severity is `none` and the span is treated as benign.
+The first matching rule determines the span's severity level (first-match-wins). If no rule matches, the severity is `none` and the span is treated as benign.
 
 A matched span results in:
-- The span node in the graph receiving a colored border (yellow/orange/red).
-- An **alert** row written to the `alerts` table.
+- The span being colored by severity in the Timeline and spans list (yellow/orange/red).
+- An **alert** row written to the `alerts` table and shown on the [Alerts](/security/alerts) screen.
 - A Socket.io `alerts-update` event broadcast to all connected clients.
-- A browser desktop notification (if permission has been granted).
+- A webhook delivery and desktop notification for HIGH-severity alerts (if configured / permitted).
+
+<Note>
+  Custom rule patterns are compiled with **RE2** (linear-time, ReDoS-safe), so a malformed or adversarial regex cannot hang the server.
+</Note>
 
 ---
 

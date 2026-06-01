@@ -55,7 +55,7 @@ The `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` flag enables `claude_code.llm_request`
 ### Key features
 
 - **Welcome screen** with auto-setup (`npx claudesec init`) — first-run UX
-- **189 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
+- **183 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
 - **Claude Code focused** — purpose-built for Claude Code telemetry and security monitoring
 - **Process scanner** — detects running Claude Code processes via `ps aux`, kill switch via `DELETE /api/processes/:pid`
 - **OTLP forwarding** — transparent proxy to upstream collectors (set `OTEL_FORWARD_URL`)

@@ -6,7 +6,7 @@ icon: "cpu"
 
 ## Overview
 
-The Processes API scans for running AI agent CLI processes (Claude Code, Copilot, Cursor, Aider, OpenHands, Cline, Goose, etc.) by matching patterns in `ps aux` output. It supports killing, pausing, and resuming detected agents. Only recognized agent PIDs can be targeted — arbitrary process control is blocked for security.
+The Processes API scans for running AI agent CLI processes — **Claude Code**, **GitHub Copilot CLI**, and **Codex** — by matching patterns in `ps aux` output. It supports killing, pausing, and resuming detected agents. Only recognized agent PIDs can be targeted — arbitrary process control is blocked for security.
 
 Supported platforms: macOS and Linux. Windows returns an empty list.
 
@@ -88,8 +88,8 @@ curl -X POST http://localhost:3000/api/processes/kill-all
   "total": 3,
   "results": [
     { "pid": 12345, "name": "Claude Code", "ok": true },
-    { "pid": 12346, "name": "Cursor", "ok": true },
-    { "pid": 12347, "name": "Aider", "ok": true }
+    { "pid": 12346, "name": "GitHub Copilot", "ok": true },
+    { "pid": 12347, "name": "Codex", "ok": true }
   ]
 }
 ```
@@ -108,7 +108,7 @@ curl -X POST http://localhost:3000/api/processes/pause-all
   "paused": 2,
   "results": [
     { "pid": 12345, "name": "Claude Code", "ok": true },
-    { "pid": 12346, "name": "Cursor", "ok": true }
+    { "pid": 12346, "name": "GitHub Copilot", "ok": true }
   ]
 }
 ```
@@ -127,7 +127,7 @@ curl -X POST http://localhost:3000/api/processes/resume-all
   "resumed": 2,
   "results": [
     { "pid": 12345, "name": "Claude Code", "ok": true },
-    { "pid": 12346, "name": "Cursor", "ok": true }
+    { "pid": 12346, "name": "GitHub Copilot", "ok": true }
   ]
 }
 ```

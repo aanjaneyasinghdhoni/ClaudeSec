@@ -1,0 +1,57 @@
+---
+title: "Session Labels & Notes"
+description: "Classify sessions by incident type and attach free-text investigation notes."
+---
+
+## Overview
+
+**Session Labels** let you categorize any trace session into one of five operational states. **Session Notes** attach free-text context — root-cause hypotheses, ticket links, or remediation steps — directly to a session so the context travels with the data.
+
+Together they turn ClaudeSec from a passive observer into a lightweight incident-management layer that lives alongside your agent telemetry.
+
+## Labels
+
+| Label | Color | Meaning |
+|-------|-------|---------|
+| `normal` | Gray | Routine operation — no action required |
+| `incident` | Red | Active security incident or anomaly requiring immediate attention |
+| `investigation` | Orange | Under active review; root cause not yet determined |
+| `automated` | Blue | Fully automated pipeline run — suppress noise from dashboards |
+| `other` | Purple | Catch-all for custom workflows |
+
+### Setting a label
+
+**In the dashboard** — click the sticky-note icon on any session row in the sidebar, then pick one of the five colored label buttons. It saves instantly via `PATCH /api/sessions/:traceId`.
+
+**Via the API:**
+
+```bash
+curl -X PATCH http://localhost:3000/api/sessions/TRACE_ID \
+  -H "Content-Type: application/json" \
+  -d '{"label":"incident"}'
+```
+
+### Filtering by label
+
+Use the label filter pills above the session list, or pass `?label=incident` to `GET /api/sessions`.
+
+## Session Notes
+
+Notes are free-text fields attached to a session — ideal for recording an initial hypothesis, linking a ticket, capturing remediation steps, or confirming a false positive. They auto-save when the text area loses focus.
+
+```bash
+curl -X PATCH http://localhost:3000/api/sessions/TRACE_ID \
+  -H "Content-Type: application/json" \
+  -d '{"notes":"Prompt injection from user input — mitigated by sanitization."}'
+```
+
+## A typical workflow
+
+```
+1. Alert fires → session shows high severity
+2. Analyst sets label to "investigation" and adds a hypothesis note
+3. Root cause found → label "incident", note updated with the fix
+4. Resolved → label set back to "normal"
+```
+
+See the [Sessions API](/api-reference/sessions) for the full request/response shape.

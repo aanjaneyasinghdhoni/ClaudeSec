@@ -5,76 +5,247 @@
 [![npm version](https://img.shields.io/npm/v/claudesec.svg)](https://www.npmjs.com/package/claudesec)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
 
-**Real-time local observatory and security dashboard for AI agent telemetry.**
+**A zero-config, fully-local security observatory for your AI coding agents.**
 
-ClaudeSec ingests OpenTelemetry traces from any AI agent harness — Claude Code, Copilot, Cursor, Aider, and more — and surfaces suspicious activity through a purpose-built security dashboard. Built for developers running local AI agents who need visibility into what those agents are actually doing.
+ClaudeSec watches every Claude Code, GitHub Copilot CLI, and Codex session already running on your machine — across every repo — and surfaces what your agents are actually doing: every tool call, every command, every file touched, scored live against a built-in threat-detection engine. No environment variables. No restarting your terminal. Nothing ever leaves your computer.
 
 ---
 
-## Features
+## Why ClaudeSec
 
-- **Timeline** — Gantt-style span timeline with BigInt nanosecond precision. Zoom into exactly when each tool call happened. Default landing view.
-- **Orchestration** — Agent DAG showing inter-agent edges, sub-agent spawn trees across traces, and a tool inventory heatmap (tool x harness matrix).
-- **Alerts** — Immutable threat alert log with severity filtering, deduplication, triage (dismiss/false-positive), and JSON export.
-- **Rules engine** — 183 built-in regex rules (HIGH / MEDIUM / LOW) plus a custom rule CRUD UI with a live tester. Rules persist to `rules.json`.
-- **Rule suppressions** — Temporarily or permanently suppress noisy rules without deleting them.
-- **Cost estimator** — Token cost breakdown for 20+ models (Claude, GPT, Gemini) with per-session and per-model views, including cost trend over time.
-- **Webhooks** — Push HIGH-severity alerts to Slack, Discord, or any generic JSON endpoint. Delivery history with retry support.
-- **Desktop notifications** — Native OS alerts for HIGH severity detections, no browser tab required.
-- **Prometheus metrics** — `GET /metrics` endpoint ready to scrape with Grafana.
-- **Health endpoint** — `GET /api/health` for uptime monitoring.
-- **MCP server** — 11 Model Context Protocol tools at `POST /mcp` for AI-to-AI interaction (get sessions, search spans, tag spans, manage bookmarks, etc.).
-- **Process scanner** — Detects running AI agent CLIs on your machine. Kill, pause, or resume agents from the dashboard.
-- **OTLP forwarding** — Transparent proxy to upstream OpenTelemetry collectors. Set `OTEL_FORWARD_URL` to forward traces while still analyzing them locally.
-- **Auto-export** — Hourly JSON snapshots to `exports/` directory (last 24 retained automatically).
-- **Span bookmarks** — Save interesting spans for later review.
-- **Span tags & annotations** — Add custom metadata to any span.
-- **Session labels & notes** — Organize sessions with labels (normal, incident, investigation, automated) and free-text notes.
-- **Graph export API** — Export the span dependency graph as Mermaid or Graphviz DOT format via `GET /api/graph/mermaid` and `GET /api/graph/dot`.
-- **Command audit log** — Track which commands agents have executed.
-- **Welcome screen** — First-run onboarding with a demo simulator that injects 3 realistic sessions (`POST /api/simulate`).
-- **Setup wizard** — `npx claudesec init` interactive CLI prints copy-paste env var commands for your harness.
+Most agent-observability tools ask you to set five OpenTelemetry environment variables, edit your shell profile, and restart your agent before you see a single span. People don't — so they never get visibility.
+
+ClaudeSec takes a different path. Claude Code, GitHub Copilot CLI, and Codex **already write full session transcripts to disk** as they work. ClaudeSec tails those transcripts in real time, so the moment you install it, it sees everything — including sessions that are already running.
+
+```mermaid
+flowchart LR
+    subgraph machine["Your machine — already running, zero config"]
+        CC["Claude Code<br/>sessions"]
+        CP["GitHub Copilot CLI<br/>sessions"]
+        CX["Codex<br/>sessions"]
+    end
+    CC -->|writes transcripts| TA["~/.claude/projects/**.jsonl"]
+    CP -->|writes transcripts| TC["~/.copilot/session-state/**.jsonl"]
+    CX -->|writes transcripts| TB["~/.codex/sessions/**.jsonl"]
+    TA --> W["transcriptWatcher<br/>tails files live"]
+    TB --> W
+    TC --> W
+    REMOTE["Remote / CI agents"] -->|"OTLP POST /v1/traces"| ING
+    W --> ING["ingestSpan()"]
+    ING --> RULES["183 threat rules<br/>+ secret scrub"]
+    RULES --> DB[("SQLite · spans.db<br/>0600 · local only")]
+    DB --> IO["Socket.io live push"]
+    IO --> UI["Dashboard<br/>127.0.0.1:3000"]
+```
+
+The watcher and the OpenTelemetry endpoint feed the **same** pipeline, so local capture and remote/CI agents land in one dashboard.
 
 ---
 
 ## Quick Start
 
+One command installs a tiny background service, starts watching every agent on your machine, and opens the dashboard already full of real activity:
+
+```bash
+npx claudesec
+```
+
+```mermaid
+flowchart TD
+    A["npx claudesec"] --> B["remove any legacy OTEL env config"]
+    B --> C["install a user-level background service<br/>launchd · systemd · Scheduled Task"]
+    C --> D["watch every Claude Code, Copilot CLI &amp; Codex session, computer-wide"]
+    D --> E["open the dashboard — already streaming real tool calls"]
+```
+
+Stop and remove the service at any time:
+
+```bash
+claudesec stop
+```
+
+### From source
+
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
 cd ClaudeSec
 npm install
-npm run dev
+npx claudesec        # or: npm run dev   (foreground, no service)
 ```
 
-Then open your browser at:
+Then open **http://localhost:3000**.
 
-```
-http://localhost:3000
-```
+### Platform support
+
+| Platform | Background service | Status |
+|---|---|---|
+| macOS | launchd LaunchAgent | **Verified** |
+| Linux | systemd user service | Experimental |
+| Windows | Scheduled Task (at logon) | Experimental |
+
+The watcher and dashboard run anywhere Node ≥ 18 runs; only the auto-start *service* layer is platform-specific. On every platform you can always run the foreground server with `npm run dev`.
 
 ---
 
-## Connecting an Agent
+## Zero-config capture
 
-### Claude Code (primary example)
+Once the service is running it captures, with **no further setup**:
 
-Set these environment variables before starting a Claude Code session:
+- **Real tool names** — `Bash`, `Read`, `Edit`, `Write`, MCP tools, skills — not opaque `tool_call/unknown`.
+- **Full command text** — so the detection rules have real input to match.
+- **Accurate durations** — each tool call is paired with its result.
+- **Model & token usage** — for cost and activity views.
+- **Every repo, every session** — including agents that were already running before you installed.
+- **Three agents, automatically** — Claude Code (`~/.claude/projects`), GitHub Copilot CLI (`~/.copilot/session-state`), and Codex (`~/.codex/sessions`).
+
+Disable the watcher with `CLAUDESEC_WATCH=0`. Importing historical sessions is opt-in (`CLAUDESEC_BACKFILL=1`); by default only new activity is captured.
+
+---
+
+## Connecting remote or CI agents (OTLP)
+
+The local watcher covers everything on your machine. For agents on **other** machines, in **containers**, or in **CI** — where ClaudeSec can't read the filesystem — the OpenTelemetry endpoint stays available:
 
 ```bash
-export CLAUDE_CODE_ENABLE_TELEMETRY=1
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/v1/traces
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:3000/v1/traces
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
-Then start Claude Code as normal. Spans will appear in the dashboard live.
+Both intakes converge on the same detection-and-storage pipeline. Any OTLP/HTTP-JSON-compatible tool works.
 
-### Other harnesses — interactive setup
+---
 
-```bash
-npm run init
+## Privacy & security
+
+ClaudeSec reads sensitive material (your agents' commands, prompts, and code), so it is built local-first by construction:
+
+- **Loopback only** — the server binds `127.0.0.1` by default. Set `CLAUDESEC_HOST=0.0.0.0` only if you deliberately want LAN access.
+- **No egress** — nothing is sent anywhere. The single optional outbound path is `OTEL_FORWARD_URL`, off unless you set it (and SSRF-blocked for private ranges).
+- **Owner-only database** — `spans.db` is created with `0600` permissions.
+- **Secret scrubbing (on by default)** — known secret shapes (keys, tokens, credentials), home paths, usernames, and emails are redacted before anything is persisted, broadcast, or exported. The attribute *shape* is preserved so downstream collectors keep working. Disable with `CLAUDESEC_DISABLE_SCRUB=1`.
+- **Honeytokens** — plant canary strings; any span containing one fires a HIGH-severity `Honeytoken exfiltration` alert.
+
+  ```bash
+  export CLAUDESEC_HONEYTOKENS='aws-prod-key-DO-NOT-LEAK,CanaryDB-SensitiveRow-42'
+  ```
+
+Scrubbing catches known secret *shapes*; it does not sanitize arbitrary source code or free-form prose. Keep ClaudeSec on a trusted, local machine.
+
+---
+
+## Features
+
+- **Live activity feed & Timeline** — real tool calls streaming in as they happen, with nanosecond-precision durations.
+- **Orchestration** — per-agent tool inventory, command-audit trail, and a file-access panel that flags sensitive paths.
+- **Heatmap** — tool-usage intensity across harnesses and sessions.
+- **Threat detection** — 183 built-in regex rules (HIGH / MEDIUM / LOW) plus honeytoken canaries and behavioral-anomaly checks, evaluated on every span.
+- **Alerts** — deduplicated, triageable detection log (dismiss / false-positive) with JSON export.
+- **Custom rules** — CRUD UI with a live tester; user patterns compiled with RE2 (linear-time, ReDoS-safe).
+- **Cost view** — token usage and API-equivalent cost per session and per model, plus subscription-plan awareness (API / Pro / Max 5× / Max 20×) so flat-rate users see value-vs-plan instead of a misleading bill.
+- **Themes** — four built-in themes (Midnight, Carbon, Daylight, Paper), saved locally.
+- **Process scanner** — detect running agent CLIs and **kill / pause / resume** them from the dashboard.
+- **Webhooks** — push HIGH-severity alerts to Slack, Discord, or any JSON endpoint, with delivery history.
+- **Desktop notifications** — native OS alerts for HIGH-severity detections.
+- **MCP server** — Model Context Protocol tools at `POST /mcp` for AI-to-AI interaction.
+- **Prometheus metrics** — `GET /metrics` for Grafana.
+- **OTLP forwarding** — transparent proxy to an upstream collector (`OTEL_FORWARD_URL`).
+- **Auto-export** — hourly JSON snapshots to `exports/` (last 24 retained).
+- **Bookmarks, tags, annotations, session labels & notes** — organize and review.
+
+---
+
+## Threat detection
+
+Every span is evaluated against the built-in rule engine before storage.
+
+```mermaid
+flowchart LR
+    SPAN["incoming span<br/>(name + command + args)"] --> RULES{"183 regex rules<br/>RE2-compiled"}
+    SPAN --> HT{"honeytoken<br/>match?"}
+    RULES -->|match| SEV["severity:<br/>HIGH / MED / LOW"]
+    HT -->|yes| HIGH["force HIGH:<br/>exfiltration alert"]
+    SEV --> SCRUB["scrub secrets"]
+    HIGH --> SCRUB
+    SCRUB --> STORE[("store + dedupe alert")]
+    STORE --> NOTIFY["desktop notify + webhook<br/>(HIGH)"]
 ```
 
-The setup wizard prompts you to choose your harness and prints the exact env var commands to copy-paste.
+| Severity | Example patterns |
+|---|---|
+| **HIGH** | Destructive commands, credential reads, piped remote code, SQL destruction, exfiltration, prompt injection, reverse shells, supply-chain attacks, container escape |
+| **MEDIUM** | Env-var access, dotenv reads, SSH-key manipulation, sensitive system files, base64 decode, network recon |
+| **LOW** | Full table scans, world-executable permissions, sudo usage, global installs, broad globs |
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph intake["Intake"]
+        W["transcriptWatcher.ts<br/>local, zero-config"]
+        O["POST /v1/traces<br/>OTLP, remote/CI"]
+    end
+    subgraph server["server.ts — Express + Socket.io"]
+        ING["ingestSpan()"]
+        DET["detection + scrub"]
+        SQL[("better-sqlite3")]
+    end
+    W --> ING
+    O --> ING
+    ING --> DET --> SQL
+    SQL --> PUSH["Socket.io"]
+    PUSH --> APP["App.tsx — React 19 + Tailwind 4"]
+    subgraph tabs["Dashboard"]
+        APP --> T1["Observe: Timeline · Orchestration · Heatmap · Processes"]
+        APP --> T2["Detect: Alerts · Search"]
+        APP --> T3["Protect: Rules"]
+        APP --> T4["Review: Bookmarks"]
+        APP --> T5["Manage: Harnesses · Costs · Settings"]
+    end
+```
+
+**Tech stack:** Express · Socket.io · better-sqlite3 · React 19 · Tailwind CSS 4 · Vite 6 · TypeScript. The watcher uses Node built-ins only — no extra runtime dependencies.
+
+---
+
+## Configuration
+
+All configuration is optional — see `.env.example`. Highlights:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CLAUDESEC_PORT` | `3000` | Dashboard + OTLP listen port |
+| `CLAUDESEC_HOST` | `127.0.0.1` | Bind address (loopback by default) |
+| `CLAUDESEC_WATCH` | `1` | Local transcript watcher (`0` to disable) |
+| `CLAUDESEC_BACKFILL` | `0` | Import historical transcripts on first run |
+| `CLAUDESEC_DISABLE_SCRUB` | — | Forward raw, unscrubbed attributes |
+| `CLAUDESEC_HONEYTOKENS` | — | Comma-separated exfiltration canaries |
+| `CLAUDESEC_MAX_SPANS` | `50000` | Count-based retention |
+| `CLAUDESEC_RETENTION_DAYS` | `30` | Age-based retention |
+| `OTEL_FORWARD_URL` | — | Transparent OTLP proxy target (SSRF-blocked for private ranges) |
+| `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / generic JSON endpoint |
+| `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to webhook |
+
+---
+
+## CLI
+
+```bash
+claudesec                 # install + start the background watcher, open the dashboard
+claudesec stop            # stop and remove the background service
+claudesec status          # server health, span/session counts, uptime
+claudesec open            # open the dashboard in the default browser
+claudesec tail            # stream live spans in the terminal (--harness, --severity)
+claudesec processes       # list running agent processes
+claudesec sessions        # list sessions with health scores (--json)
+claudesec top             # rank sessions (--by spans|threats|health)
+claudesec search <query>  # full-text span search (--severity, --harness, --limit)
+claudesec bookmarks       # view or delete bookmarked spans
+claudesec export [file]   # download all spans as JSON
+claudesec report [id]     # generate a session security report (Markdown, --out)
+claudesec reset           # wipe all spans, sessions, and alerts (with confirmation)
+```
 
 ---
 
@@ -84,162 +255,16 @@ The setup wizard prompts you to choose your harness and prints the exact env var
 docker compose up
 ```
 
-The Docker image runs both the Express backend and serves the production-built frontend. Data persists via a mounted volume for `spans.db`.
+Runs the Express backend and serves the production-built frontend. `spans.db` persists via a mounted volume. (Filesystem-based local watching is most useful on the host; in containers, prefer the OTLP endpoint.)
 
 ---
 
-## Supported Harnesses
+## API & integrations
 
-| Harness | OTLP env var |
-|---|---|
-| Claude Code | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| GitHub Copilot CLI | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| OpenHands | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Cursor | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Aider | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Cline | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Goose | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Continue.dev | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Windsurf | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Codex CLI | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Amazon Q Developer | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Gemini CLI | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Roo-Code | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Bolt.new | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Google Antigravity | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Any OTLP-compatible tool | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-
-All harnesses use the same OTLP HTTP/JSON wire format. Set the endpoint to `http://localhost:3000/v1/traces` and set `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`.
-
----
-
-## Configuration
-
-All configuration is via optional environment variables — see `.env.example` for defaults. A few are worth calling out:
-
-ClaudeSec is intentionally local-first and unauthenticated. Keep it on loopback/private networks.
-
-### Privacy — attribute scrubbing (default: **ON**)
-
-ClaudeSec inline-redacts personal / machine-specific information from span attributes before persisting, broadcasting, or exporting them. The OTLP attribute **shape** is preserved, so every harness and downstream collector (Jaeger, Tempo, Honeycomb, DataDog, …) keeps working unchanged. What gets redacted:
-
-- `/Users/<name>`, `/home/<name>`, `C:\Users\<name>` → `/Users/***`, etc.
-- The current process `$HOME` → `~`
-- Host OS username → `***`
-- Email addresses → `***@<domain>`
-- Attribute keys matching `authorization`, `token`, `secret`, `password`, `cookie`, `api_key`, `bearer`, etc. → `***`
-
-Set `CLAUDESEC_DISABLE_SCRUB=1` to forward raw attributes.
-
-### Honeytokens (exfiltration canaries)
-
-Plant unique strings that should never legitimately appear in telemetry. If any span contains one, a HIGH-severity `Honeytoken exfiltration` alert fires regardless of other rules.
-
-```bash
-export CLAUDESEC_HONEYTOKENS='aws-prod-key-DO-NOT-LEAK,CanaryDB-SensitiveRow-42'
-```
-
-Or manage them at runtime via `POST /api/honeytokens` (body: `{ "tokens": ["..."] }`).
-
-### Other useful vars
-
-| Var | Default | Purpose |
-|---|---|---|
-| `CLAUDESEC_PORT` | `3000` | Dashboard + OTLP listen port |
-| `CLAUDESEC_MAX_SPANS` | `50000` | Count-based retention |
-| `CLAUDESEC_RETENTION_DAYS` | `30` | Age-based retention |
-| `CLAUDESEC_RATE_LIMIT_RPS` | `50` | OTLP ingest ceiling per IP |
-| `CLAUDESEC_RATE_LIMIT_BURST` | `200` | Burst capacity |
-| `CLAUDESEC_CORS_ORIGINS` | loopback only | Extra dashboard origins |
-| `OTEL_FORWARD_URL` | — | Transparent OTLP proxy target (SSRF-blocked for private networks) |
-| `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / generic JSON — format auto-detected |
-| `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to webhook |
-
----
-
-## Architecture
-
-```
-AI Agent
-   |
-   | POST /v1/traces  (OTLP JSON)
-   v
-server.ts (Express + Socket.io)
-   |
-   +-- Threat detection (183 built-in regex rules)
-   |
-   +-- SQLite  (spans.db, persists across restarts)
-   |
-   +-- Socket.io broadcast  (live push to browser)
-   |
-   +-- OTLP forwarding  (optional, to upstream collectors)
-   |
-   +-- MCP server  (POST /mcp, 11 tools for AI-to-AI)
-   |
-   +-- Process scanner  (detect running agent CLIs)
-   |
-   +-- Auto-export  (hourly JSON snapshots)
-   |
-   v
-App.tsx (React 19 + Tailwind CSS 4)
-   |
-   +-- Timeline tab     (Gantt, nanosecond precision — default view)
-   +-- Orchestration    (agent DAG + tool heatmap)
-   +-- Alerts tab       (immutable detection log with triage)
-   +-- Rules tab        (183 built-in + custom rules + suppressions)
-   +-- Costs tab        (token cost estimator + trend)
-   +-- Processes tab    (running agent detection + kill switch)
-   +-- Bookmarks tab    (saved spans)
-```
-
-**Tech stack:** Express + Socket.io + better-sqlite3 · React 19 + Tailwind CSS 4 · Vite 6 · TypeScript
-
----
-
-## Threat Detection
-
-The security engine evaluates every incoming span against 183 built-in rules. Custom rules can be added via the Rules tab UI or directly in `rules.json`.
-
-| Severity | Example patterns |
-|---|---|
-| **HIGH** | Destructive commands, passwd reads, piped remote code, SQL destruction, credential exfiltration, prompt injection, reverse shells, supply-chain attacks, container escape |
-| **MEDIUM** | Environment variable access, dotenv files, SSH key manipulation, sensitive system files, base64 decoding, network reconnaissance, Python one-liners |
-| **LOW** | Full table scans, world-executable permissions, sudo usage, global package installs, broad file globs |
-
-HIGH severity detections trigger desktop notifications and fire configured webhooks immediately.
-
----
-
-## API Reference
-
-ClaudeSec exposes 73 REST endpoints. Key groups:
-
-| Group | Endpoints | Description |
-|---|---|---|
-| **OTLP** | `POST /v1/traces` | Ingest OTLP JSON trace payloads |
-| **MCP** | `POST /mcp` | Model Context Protocol server (11 tools) |
-| **Graph** | `GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot` | Span dependency data + export formats (API only, no UI tab) |
-| **Sessions** | `GET /api/sessions`, `PATCH`, compare, report, health | Session management and analysis |
-| **Spans** | `GET /api/spans`, search, tags, annotations, bookmarks | Span queries and metadata |
-| **Alerts** | `GET /api/alerts`, export, triage (`PATCH`) | Threat alert log |
-| **Rules** | `GET/POST/DELETE /api/rules`, threshold rules, suppressions | Rule management |
-| **Webhooks** | `GET/POST/DELETE /api/webhook`, test, deliveries | Webhook configuration and history |
-| **Costs** | `GET /api/costs`, `/api/cost-trend` | Token usage and cost estimates |
-| **Processes** | `GET/DELETE /api/processes`, kill-all, pause, resume | Running agent management |
-| **Export** | `GET /api/export`, `/api/export/csv`, `POST /api/import` | Data import/export |
-| **Monitoring** | `GET /api/health`, `GET /metrics` | Health check and Prometheus metrics |
-| **Activity** | `GET /api/activity`, `/api/live-activity`, `/api/heatmap`, `/api/tail` | Activity monitoring and streaming |
-| **Audit** | `GET /api/command-audit`, `/api/file-access` | Agent action audit logs |
-| **Config** | `GET /api/config`, `/api/collector-config`, `/api/db-stats` | Server configuration and DB stats |
-| **Simulate** | `POST /api/simulate` | Demo trace injection |
-
-Full OpenAPI 3.0.3 spec: [`openapi.yaml`](openapi.yaml)
-
----
-
-## Prometheus / Grafana
-
-ClaudeSec exposes a Prometheus-compatible metrics endpoint. Add this scrape config to your `prometheus.yml`:
+- **OpenAPI spec:** [`openapi.yaml`](openapi.yaml)
+- **Graph export:** `GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`
+- **Prometheus:** scrape `GET /metrics`
+- **MCP:** `POST /mcp`
 
 ```yaml
 scrape_configs:
@@ -249,37 +274,11 @@ scrape_configs:
     metrics_path: /metrics
 ```
 
-Then point a Grafana data source at your Prometheus instance to build dashboards over ClaudeSec data.
-
----
-
-## Webhooks
-
-Send HIGH-severity alerts to Slack, Discord, or any HTTP endpoint. Configure webhook URLs in the dashboard UI, or set them directly via the API:
-
-```bash
-curl -X POST http://localhost:3000/api/webhook \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"}'
-```
-
----
-
-## Documentation
-
-Full docs are in the [`docs/`](docs/) folder, powered by Mintlify.
-
-```bash
-npx mintlify dev
-```
-
-Then open `http://localhost:3333`.
-
 ---
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on opening issues, submitting pull requests, and the local development workflow.
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Run `npm run lint` (TypeScript type-check) before opening a PR.
 
 ---
 

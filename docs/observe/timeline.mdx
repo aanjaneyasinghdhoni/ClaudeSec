@@ -1,0 +1,31 @@
+---
+title: "Timeline"
+description: "The default Observe screen — a live, filterable stream of every tool call your agents make."
+---
+
+The **Timeline** is the default landing screen. It shows every span — tool call, command, file access, model request — as it streams in, newest activity first, with nanosecond-precision durations.
+
+## Reading the timeline
+
+- Each row is a span: its tool name, the harness that produced it, a one-line `reason` summary of the input, and its duration.
+- Spans are colored by severity — gray (none), yellow (low), orange (medium), red (high).
+- New spans arrive live over Socket.io; no refresh needed.
+
+## Filtering
+
+The timeline always respects the active filters:
+
+- **Severity / threat mode** — show all, only normal, or only malicious spans.
+- **Harness chips** — when more than one agent is active, click a chip to isolate Claude Code, Copilot, or Codex.
+- **Search box** — substring-match on span name, reason, or harness.
+- **Hide safe spans** — toggle in [Settings → Display](/manage/settings) to drop `severity: none` rows.
+- **Session** — selecting a session in the sidebar scopes the timeline to that trace.
+
+## Live activity feed
+
+Alongside the timeline, a live activity panel summarizes what each agent is doing *right now* — the most recent span per harness — so you can glance at machine-wide agent state at a moment.
+
+## Related
+
+- [Orchestration](/observe/orchestration) — per-agent tool inventory, command audit, and file access.
+- [Search](/detect/search) and the [Search API](/api-reference/search) for historical queries.
