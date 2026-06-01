@@ -673,6 +673,17 @@ html[data-theme="paper"].light .border-slate-700 { border-color: #d8cfbf !import
   margin: 1rem 0;
 }
 .docs-prose pre code { background: none; border: none; padding: 0; font-size: 0.82rem; }
+.docs-prose .docs-mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 1.25rem 0;
+  padding: 1rem;
+  background: var(--cs-bg-elevated);
+  border: 1px solid var(--cs-border);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.docs-prose .docs-mermaid svg { max-width: 100%; height: auto; }
 .docs-prose blockquote { border-left: 3px solid var(--cs-border); padding-left: 1rem; margin: 1rem 0; color: var(--cs-text-faint); }
 .docs-prose hr { border: none; border-top: 1px solid var(--cs-border); margin: 1.75rem 0; }
 .docs-prose table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }

@@ -76,6 +76,7 @@
     "express-rate-limit": "^7.5.1",
     "helmet": "^8.1.0",
     "lucide-react": "^0.546.0",
+    "mermaid": "^11.15.0",
     "motion": "^12.23.24",
     "re2": "^1.24.1",
     "react": "^19.0.0",

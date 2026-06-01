@@ -1,6 +1,7 @@
 import React, { createContext, useContext } from 'react';
 import { MDXProvider } from '@mdx-js/react';
 import { Info as InfoIcon, AlertTriangle, Lightbulb } from 'lucide-react';
+import { Mermaid } from './Mermaid';
 
 interface DocsNav {
   navigate: (slug: string) => void;
@@ -90,6 +91,20 @@ const DocsLink = ({ href, children, ...rest }: AnchorProps) => {
   );
 };
 
+type PreProps = React.HTMLAttributes<HTMLPreElement>;
+
+const Pre = ({ children, ...rest }: PreProps) => {
+  if (React.isValidElement(children)) {
+    const codeProps = children.props as { className?: string; children?: React.ReactNode };
+    if (typeof codeProps.className === 'string' && codeProps.className.includes('language-mermaid')) {
+      if (typeof codeProps.children === 'string') {
+        return <Mermaid source={codeProps.children} />;
+      }
+    }
+  }
+  return <pre {...rest}>{children}</pre>;
+};
+
 export const mdxComponents = {
   Note,
   Info,
@@ -98,6 +113,7 @@ export const mdxComponents = {
   Card,
   CardGroup,
   a: DocsLink,
+  pre: Pre,
 };
 
 export function DocsMDX({ children }: { children: React.ReactNode }) {
