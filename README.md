@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml/badge.svg)](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20.19-green.svg)](https://nodejs.org)
 
 **A zero-config, fully-local security observatory for your AI coding agents.**
 
@@ -52,7 +52,7 @@ npm install
 npm run dev          # dashboard at http://localhost:3000
 ```
 
-Requires Node ≥ 18. No environment variables, no shell edits, no agent restart — the watcher tails your agents' on-disk transcripts the moment any of them does something.
+Requires Node ≥ 20.19. No environment variables, no shell edits, no agent restart — the watcher tails your agents' on-disk transcripts the moment any of them does something.
 
 ```mermaid
 flowchart LR
@@ -80,7 +80,7 @@ Installing the service also removes any legacy ClaudeSec OTEL environment config
 | Linux | systemd user service | Experimental |
 | Windows | Scheduled Task (at logon) | Experimental |
 
-The watcher and dashboard run anywhere Node ≥ 18 runs; only the auto-start *service* layer is platform-specific. On every platform you can always run the foreground server with `npm run dev`.
+The watcher and dashboard run anywhere Node ≥ 20.19 runs; only the auto-start *service* layer is platform-specific. On every platform you can always run the foreground server with `npm run dev`.
 
 ---
 
@@ -202,7 +202,7 @@ flowchart TB
     end
 ```
 
-**Tech stack:** Express · Socket.io · better-sqlite3 · React 19 · Tailwind CSS 4 · Vite 6 · TypeScript. The watcher uses Node built-ins only — no extra runtime dependencies.
+**Tech stack:** Express · Socket.io · better-sqlite3 · React 19 · Tailwind CSS 4 · Vite 8 · TypeScript. The watcher uses Node built-ins only — no extra runtime dependencies.
 
 ---
 
