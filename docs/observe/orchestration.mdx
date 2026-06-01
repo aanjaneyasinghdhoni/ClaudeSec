@@ -9,6 +9,10 @@ The **Orchestration** screen is where you review what your agents actually did, 
 
 A tree of agent / sub-agent relationships across sessions, so you can see which agents spawned which.
 
+<Warning>
+  **Experimental.** The spawn tree is a heuristic grouping of related sessions — agents don't emit cross-trace spawn parentage yet, so the hierarchy is inferred rather than reported. Likewise, the Orchestration Graph's interaction (DAG) edges only appear when multiple agents share a single trace.
+</Warning>
+
 ## Tool Inventory
 
 Every tool each agent invoked, with call counts and threat counts. Two views:

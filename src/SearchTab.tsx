@@ -217,7 +217,6 @@ export function SearchTab() {
   const [selected, setSelected] = useState<SpanRow | null>(null);
 
   // Debounced query
-  const debouncedQuery = useRef('');
   const debounceTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchResults = useCallback(async (q: string, sev: string, h: string, f: string, t: string, p: number) => {
@@ -263,7 +262,7 @@ export function SearchTab() {
 
   function buildExportUrl(): string {
     const params = new URLSearchParams();
-    if (debouncedQuery.current) params.set('q', debouncedQuery.current);
+    if (query) params.set('q', query);
     if (severity) params.set('severity', severity);
     if (harness)  params.set('harness',  harness);
     if (from)     params.set('from',     from);

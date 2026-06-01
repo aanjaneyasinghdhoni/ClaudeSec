@@ -3,6 +3,7 @@ import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Te
 import { socket } from './socket';
 import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
+import { ExperimentalBadge } from './ExperimentalBadge';
 import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
@@ -274,6 +275,9 @@ export function OrchestrationTab() {
       <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
           <Cpu className="w-3 h-3" /> Agent Orchestration Graph
+          <span className="ml-1">
+            <ExperimentalBadge title="Cross-agent edges only appear when multiple agents share a trace" />
+          </span>
         </p>
 
         {agents.length === 0 ? (
@@ -362,8 +366,11 @@ export function OrchestrationTab() {
       <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
           <GitBranch className="w-3 h-3" /> Sub-Agent Spawn Tree
+          <span className="ml-1">
+            <ExperimentalBadge title="Heuristic — agents don't emit cross-trace spawn parentage yet" />
+          </span>
           <span className="ml-auto text-[11px] text-slate-600 normal-case font-normal tracking-normal">
-            cross-trace parent-child relationships
+            Heuristic grouping of related sessions — experimental
           </span>
         </p>
 

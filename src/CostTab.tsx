@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { DollarSign, TrendingUp, Cpu, HelpCircle, Webhook, CheckCircle, XCircle, AlertTriangle, Database, Trash2, RefreshCw } from 'lucide-react';
 import { socket } from './socket';
+import { ExperimentalBadge } from './ExperimentalBadge';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -715,13 +716,16 @@ export function CostTab() {
           {/* Pricing disclaimer */}
           <div className="flex items-start gap-2 p-3 rounded-xl text-xs text-slate-600" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
             <AlertTriangle className="w-3.5 h-3.5 text-yellow-700 shrink-0 mt-0.5" />
-            <p>
-              Cost estimates are approximate and based on publicly available pricing.
-              Prices vary by region, tier, and caching. Tokens are aggregated from{' '}
-              <code className="font-mono">gen_ai.usage.input_tokens</code> /{' '}
-              <code className="font-mono">gen_ai.usage.output_tokens</code> span attributes.
-              Models without pricing data show 0 cost.
-            </p>
+            <div className="space-y-2">
+              <p>
+                Cost estimates are approximate and based on publicly available pricing.
+                Prices vary by region, tier, and caching. Tokens are aggregated from{' '}
+                <code className="font-mono">gen_ai.usage.input_tokens</code> /{' '}
+                <code className="font-mono">gen_ai.usage.output_tokens</code> span attributes.
+                Models without pricing data show 0 cost.
+              </p>
+              <ExperimentalBadge title="GPT-5.x / non-Claude rates are estimates; some models are inferred" />
+            </div>
           </div>
         </div>
       )}

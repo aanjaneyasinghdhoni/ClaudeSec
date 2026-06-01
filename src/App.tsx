@@ -414,7 +414,6 @@ function Timeline({
         <p className="text-xs text-slate-600 max-w-xs text-center leading-relaxed">
           Spans need <code className="font-mono bg-slate-800 px-1 rounded">startTimeUnixNano</code> /{' '}
           <code className="font-mono bg-slate-800 px-1 rounded">endTimeUnixNano</code> to appear here.
-          Simulated traces include timing.
         </p>
       </div>
     );
