@@ -68,9 +68,15 @@ export function DocsView({ onClose }: { onClose: () => void }) {
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search docs"
-              className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-lg outline-none"
+              className="w-full pl-8 pr-12 py-1.5 text-xs rounded-lg outline-none"
               style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)', color: 'var(--cs-text-base)' }}
             />
+            <kbd
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono px-1.5 py-0.5 rounded pointer-events-none"
+              style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)', color: 'var(--cs-text-faint)' }}
+            >
+              ⌘K
+            </kbd>
           </div>
         </div>
 

@@ -19,12 +19,25 @@ export interface DocNavGroup {
   pages: DocPage[];
 }
 
+export interface DocSearchEntry {
+  slug: string;
+  title: string;
+  description: string;
+  headings: string[];
+  text: string;
+}
+
 const frontmatters = import.meta.glob<DocFrontmatter>(
   ['/docs/**/*.mdx', '!/docs/superpowers/**'],
   { eager: true, import: 'frontmatter' },
 );
 
 const loaders = import.meta.glob(['/docs/**/*.mdx', '!/docs/superpowers/**']);
+
+const rawSources = import.meta.glob<string>(
+  ['/docs/**/*.mdx', '!/docs/superpowers/**'],
+  { eager: true, query: '?raw', import: 'default' },
+);
 
 function toSlug(filePath: string): string {
   return filePath.replace(/^\/docs\//, '').replace(/\.mdx$/, '');
@@ -83,3 +96,48 @@ export const defaultDocSlug =
 export function getDocPage(slug: string): DocPage | undefined {
   return pages[slug];
 }
+
+function stripFrontmatter(raw: string): string {
+  return raw.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+}
+
+function extractHeadings(body: string): string[] {
+  const out: string[] = [];
+  const re = /^#{1,3}\s+(.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const h = m[1].replace(/[#*`_]/g, '').trim();
+    if (h) out.push(h);
+  }
+  return out;
+}
+
+function toPlainText(body: string): string {
+  return body
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/<\/?[A-Za-z][^>]*>/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_~>#|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 2000);
+}
+
+const searchEntries: DocSearchEntry[] = [];
+for (const [filePath, raw] of Object.entries(rawSources)) {
+  const slug = toSlug(filePath);
+  const page = pages[slug];
+  const body = stripFrontmatter(typeof raw === 'string' ? raw : '');
+  searchEntries.push({
+    slug,
+    title: page?.title ?? humanize(slug),
+    description: page?.description ?? '',
+    headings: extractHeadings(body),
+    text: toPlainText(body),
+  });
+}
+
+export const docsSearchIndex: DocSearchEntry[] = searchEntries;

@@ -15,6 +15,7 @@ import {
 import { socket } from './socket';
 import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
 import { DocsView } from './docs/DocsView';
+import { CommandPalette } from './docs/CommandPalette';
 import { ContextSidebar } from './ContextSidebar';
 import { RulesTab } from './RulesTab';
 import { AlertsTab } from './AlertsTab';
@@ -555,7 +556,19 @@ export default function App() {
   const [activeTab, setActiveTab]           = useState<Tab>('timeline');
   const [activeCategory, setActiveCategory] = useState<Category>('observe');
   const [docsOpen, setDocsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen(v => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // When category changes, jump to its first tab
   const handleCategoryChange = (cat: Category) => {
@@ -1224,6 +1237,17 @@ export default function App() {
 
       {/* Live Activity floating panel */}
       <LiveActivityPanel open={liveActivityOpen} onClose={() => setLiveActivityOpen(false)} />
+
+      {/* Docs command palette (⌘K) */}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onSelect={slug => {
+          window.location.hash = '#/docs/' + slug;
+          setDocsOpen(true);
+          setPaletteOpen(false);
+        }}
+      />
 
       <div className="flex-1 flex overflow-hidden min-h-0">
 
