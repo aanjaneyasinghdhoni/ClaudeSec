@@ -174,7 +174,7 @@ function ReviewSidebar() {
         <div className="text-center">
           <Bookmark className="w-8 h-8 mx-auto mb-2" style={{ color: 'var(--cs-text-faint)', opacity: 0.4 }} />
           <p className="text-[11px]" style={{ color: 'var(--cs-text-faint)' }}>
-            Bookmark spans from the timeline to see them here
+            Select a span in the Timeline and click the bookmark icon to see it here
           </p>
         </div>
       </div>

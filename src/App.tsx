@@ -1045,6 +1045,23 @@ export default function App() {
     if (n) setSelectedNode(n);
   };
 
+  const toggleBookmark = async () => {
+    if (!selectedNode || selectedNode.id === 'agent') return;
+    const spanId = selectedNode.id;
+    const traceId = String((selectedNode.data as any).traceId ?? '');
+    if (isBookmarked) {
+      setIsBookmarked(false);
+      await fetch(`/api/bookmarks/span/${encodeURIComponent(spanId)}`, { method: 'DELETE' }).catch(() => {});
+    } else {
+      setIsBookmarked(true);
+      await fetch('/api/bookmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spanId, traceId }),
+      }).catch(() => {});
+    }
+  };
+
   // ── Graph search derived state ────────────────────────────────────────────
   const graphSearchMatchIds = useMemo(() => {
     const q = graphSearchQuery.trim().toLowerCase();
@@ -1761,6 +1778,32 @@ export default function App() {
               onSelect={onTimelineSelect}
               selectedId={timelineSelected ?? undefined}
             />
+            {selectedNode && selectedNode.id !== 'agent' && (
+              <div className="mx-4 mb-3 px-4 py-2.5 rounded-xl flex items-center gap-3" style={{
+                background: 'var(--cs-bg-surface)',
+                border: '1px solid var(--cs-border)',
+              }}>
+                <span className="text-[11px] font-semibold truncate" style={{ color: 'var(--cs-text-base)' }}>
+                  {formatSpanName(String(selectedNode.data.label ?? selectedNode.id))}
+                </span>
+                <code className="text-[11px] font-mono truncate" style={{ color: 'var(--cs-text-faint)' }}>
+                  {selectedNode.id}
+                </code>
+                <button
+                  onClick={toggleBookmark}
+                  className="ml-auto shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors"
+                  style={{
+                    color: isBookmarked ? 'var(--cs-accent)' : 'var(--cs-text-muted)',
+                    border: '1px solid var(--cs-border)',
+                    background: isBookmarked ? 'rgba(var(--cs-accent-rgb),0.08)' : 'transparent',
+                  }}
+                  title={isBookmarked ? 'Remove bookmark' : 'Bookmark this span'}
+                >
+                  <Bookmark className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
+                  {isBookmarked ? 'Bookmarked' : 'Bookmark'}
+                </button>
+              </div>
+            )}
             </>
           )}
 

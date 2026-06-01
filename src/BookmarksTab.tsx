@@ -98,7 +98,7 @@ export function BookmarksTab({
             <Bookmark className="w-8 h-8 text-slate-700" />
             <p className="text-sm font-medium text-slate-500">No bookmarks yet</p>
             <p className="text-xs text-slate-600 max-w-xs text-center leading-relaxed">
-              Bookmark any span from the graph view to save it here for quick reference.
+              Select a span in the Timeline and click the bookmark icon to save it here for quick reference.
             </p>
           </div>
         ) : (
