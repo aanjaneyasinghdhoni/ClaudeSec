@@ -19,7 +19,7 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 Any OpenTelemetry-compatible tool then works out of the box.
 
 <Warning>
-  **Experimental.** OTLP harness detection reliably recognizes only Claude Code. Other agents arriving over OTLP are labeled **Unknown**. For Copilot or Codex, prefer the local [transcript watcher](/explanation/watcher), which identifies them correctly.
+  **Experimental.** OTLP harness detection matches the incoming `service.name` against known patterns (Claude Code, Copilot, Codex). Agents that don't emit a recognizable `service.name` are labeled **Unknown** — for local Copilot or Codex sessions, the [transcript watcher](/explanation/watcher) identifies them reliably from their on-disk transcripts.
 </Warning>
 
 ## Claude Code over OTLP
