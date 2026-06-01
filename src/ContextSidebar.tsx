@@ -65,8 +65,21 @@ function useAlertCounts() {
   return { counts, highTotal };
 }
 
+export type TimeRange = '1h' | '24h' | '7d' | 'all';
+
+const TIME_RANGES: { label: string; range: TimeRange }[] = [
+  { label: 'Last 1 hour',   range: '1h' },
+  { label: 'Last 24 hours', range: '24h' },
+  { label: 'Last 7 days',   range: '7d' },
+  { label: 'All time',      range: 'all' },
+];
+
 // ── Detect Sidebar ─────────────────────────────────────────────────────────
-function DetectSidebar({ alertCount }: { alertCount: number }) {
+function DetectSidebar({ alertCount, timeRange, onTimeRangeChange }: {
+  alertCount: number;
+  timeRange: TimeRange;
+  onTimeRangeChange: (range: TimeRange) => void;
+}) {
   const { highTotal } = useAlertCounts();
   return (
     <div className="flex flex-col h-full">
@@ -90,17 +103,22 @@ function DetectSidebar({ alertCount }: { alertCount: number }) {
           <Search className="w-3 h-3" /> Quick Filters
         </p>
         <div className="space-y-1">
-          {['Last 1 hour', 'Last 24 hours', 'Last 7 days', 'All time'].map(label => (
-            <button
-              key={label}
-              className="w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
-              style={{ color: 'var(--cs-text-muted)' }}
-              onMouseEnter={e => (e.target as HTMLElement).style.background = 'var(--cs-bg-elevated)'}
-              onMouseLeave={e => (e.target as HTMLElement).style.background = 'transparent'}
-            >
-              {label}
-            </button>
-          ))}
+          {TIME_RANGES.map(({ label, range }) => {
+            const isActive = timeRange === range;
+            return (
+              <button
+                key={range}
+                onClick={() => onTimeRangeChange(range)}
+                className="w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+                style={{
+                  background: isActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
+                  color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-muted)',
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className="flex-1 flex items-center justify-center p-4">
@@ -212,15 +230,17 @@ export interface ContextSidebarProps {
   alertCount: number;
   activeTab: string;
   onTabChange: (tab: string) => void;
+  timeRange: TimeRange;
+  onTimeRangeChange: (range: TimeRange) => void;
   /** Observe sidebar is rendered inline in App.tsx (too much state to extract cleanly) */
   observeContent?: React.ReactNode;
 }
 
-export function ContextSidebar({ category, alertCount, activeTab, onTabChange, observeContent }: ContextSidebarProps) {
+export function ContextSidebar({ category, alertCount, activeTab, onTabChange, timeRange, onTimeRangeChange, observeContent }: ContextSidebarProps) {
   return (
     <aside className="w-64 flex flex-col overflow-hidden shrink-0" style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
       {category === 'observe' && observeContent}
-      {category === 'detect' && <DetectSidebar alertCount={alertCount} />}
+      {category === 'detect' && <DetectSidebar alertCount={alertCount} timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />}
       {category === 'protect' && <ProtectSidebar />}
       {category === 'review' && <ReviewSidebar />}
       {category === 'manage' && <ManageSidebar activeTab={activeTab} onTabChange={onTabChange} />}

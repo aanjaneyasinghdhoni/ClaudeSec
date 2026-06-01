@@ -17,6 +17,7 @@ import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
 import { DocsView } from './docs/DocsView';
 import { CommandPalette } from './docs/CommandPalette';
 import { ContextSidebar } from './ContextSidebar';
+import type { TimeRange } from './ContextSidebar';
 import { RulesTab } from './RulesTab';
 import { AlertsTab } from './AlertsTab';
 import { OrchestrationTab } from './OrchestrationTab';
@@ -605,6 +606,7 @@ export default function App() {
   const [search, setSearch]                 = useState('');
   const [filterMode, setFilterMode]         = useState<FilterMode>('all');
   const [harnessFilter, setHarnessFilter]   = useState<string | null>(null);
+  const [timeRange, setTimeRange]           = useState<TimeRange>('all');
   const [hideNone, setHideNone]             = useState(() => localStorage.getItem('claudesec.hideNone') === 'true');
 
   useEffect(() => {
@@ -981,6 +983,15 @@ export default function App() {
 
       const matchHideNone = !hideNone || wf.severity !== 'none';
 
+      const matchTime = (() => {
+        if (timeRange === 'all') return true;
+        const windowMs =
+          timeRange === '1h'  ? 60 * 60 * 1000 :
+          timeRange === '24h' ? 24 * 60 * 60 * 1000 :
+          7 * 24 * 60 * 60 * 1000;
+        return toMs(wf.startNano) >= Date.now() - windowMs;
+      })();
+
       const matchSearch = (() => {
         if (!search) return true;
         const term = search.toLowerCase();
@@ -999,9 +1010,9 @@ export default function App() {
         );
       })();
 
-      return matchSeverity && matchHarness && matchSearch && matchHideNone;
+      return matchSeverity && matchHarness && matchSearch && matchHideNone && matchTime;
     });
-  }, [workflows, filterMode, harnessFilter, search, activeSession, hideNone]);
+  }, [workflows, filterMode, harnessFilter, search, activeSession, hideNone, timeRange]);
 
   const counts = useMemo(() => ({
     ok:     workflows.filter(w => w.severity === 'none').length,
@@ -1268,6 +1279,8 @@ export default function App() {
           alertCount={alertCount}
           activeTab={activeTab}
           onTabChange={(tab) => handleTabChange(tab as Tab)}
+          timeRange={timeRange}
+          onTimeRangeChange={setTimeRange}
           observeContent={<>
 
           {/* Connection Status */}
