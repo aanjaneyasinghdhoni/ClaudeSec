@@ -2078,6 +2078,7 @@ async function startServer() {
   app.get('/api/spans', (req, res) => {
     const q       = String(req.query.q       ?? '').trim();
     const session = String(req.query.session ?? '').trim();
+    const offset  = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
 
     let sql = 'SELECT * FROM spans WHERE 1=1';
     const params: unknown[] = [];
@@ -2097,8 +2098,10 @@ async function startServer() {
       }
     }
 
-    sql += ' ORDER BY startNano ASC LIMIT 500';
-    res.json({ spans: db.prepare(sql).all(...params) as SpanRecord[] });
+    sql += ' ORDER BY startNano ASC LIMIT 500 OFFSET ?';
+    params.push(offset);
+    const spans = db.prepare(sql).all(...params) as SpanRecord[];
+    res.json({ spans, offset, hasMore: spans.length === 500 });
   });
 
   // ── Export ───────────────────────────────────────────────────────────────
