@@ -44,11 +44,13 @@ The watcher and the OpenTelemetry endpoint feed the **same** pipeline, so local 
 
 ## Quick Start
 
-One command installs a tiny background service, starts watching every agent on your machine, and opens the dashboard already full of real activity:
+One command installs a tiny background service, starts watching every agent on your machine, and opens the dashboard — streaming real activity the moment any agent does something:
 
 ```bash
 npx claudesec
 ```
+
+Requires Node ≥ 18. No environment variables, no shell edits, no agent restart.
 
 ```mermaid
 flowchart TD
@@ -70,10 +72,15 @@ claudesec stop
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
 cd ClaudeSec
 npm install
-npx claudesec        # or: npm run dev   (foreground, no service)
+npm run dev          # foreground dev server — open http://localhost:3000
 ```
 
-Then open **http://localhost:3000**.
+`npm run dev` needs no build step (Vite serves the dashboard directly). To install the **same background service** that `npx claudesec` uses, build the dashboard first — the service runs in production mode and serves the compiled `dist/`:
+
+```bash
+npm run build
+npx claudesec
+```
 
 ### Platform support
 

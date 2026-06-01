@@ -1,7 +1,7 @@
 {
   "name": "claudesec",
   "version": "1.0.0",
-  "description": "Real-time local observatory and security visualizer for AI agent telemetry. Ingests OpenTelemetry traces from any CLI agent harness (Claude Code, Copilot, OpenHands, Cursor, Aider, Cline, and more) and surfaces suspicious activity as an interactive graph.",
+  "description": "Zero-config, fully-local security observatory for your AI coding agents. Tails Claude Code, GitHub Copilot CLI, and Codex session transcripts in real time — no env vars, no agent restart — and scores every tool call, command, and file access against a built-in threat-detection engine. Nothing leaves your machine.",
   "type": "module",
   "license": "MIT",
   "author": "withkarann <https://github.com/withkarann>",
@@ -46,6 +46,7 @@
     "transcriptWatcher.ts",
     "cli/init.ts",
     "cli/init.mjs",
+    "cli/service.ts",
     "src/harnesses.ts",
     "dist"
   ],
