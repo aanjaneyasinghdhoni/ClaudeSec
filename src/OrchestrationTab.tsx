@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Terminal, FileText } from 'lucide-react';
 import { socket } from './socket';
 import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
+import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,8 @@ const HARNESS_NAMES: Record<string, string> = {
 };
 
 const SUSPICIOUS_TOOLS = new Set(['bash', 'eval', 'exec', 'curl', 'wget', 'rm', 'sh', 'python', 'node']);
+
+const toolSearchText = (t: ToolEntry) => t.toolName;
 
 const SVG_W = 700;
 const SVG_H = 260;
@@ -143,7 +146,7 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
 
 function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
   // Build unique tool names and harness ids
-  const toolNames = [...new Set(tools.map(t => t.toolName))].slice(0, 20);
+  const toolNames = [...new Set(tools.map(t => t.toolName))];
   const harnesses = [...new Set(tools.map(t => t.harness))];
 
   // Build lookup: toolName → harness → {count, threatCount}
@@ -242,6 +245,23 @@ export function OrchestrationTab() {
 
   const posMap = new Map<string, { x: number; y: number }>();
   agents.forEach((a, i) => posMap.set(a.harness, positions[i]));
+
+  const toolFacets = useMemo<FacetConfig<ToolEntry>[]>(() => {
+    const harnesses = [...new Set(tools.map(t => t.harness))].sort();
+    return [
+      {
+        key: 'harness',
+        label: 'Agents',
+        accessor: t => t.harness,
+        options: harnesses.map(h => ({ value: h, label: HARNESS_NAMES[h] ?? h })),
+      },
+    ];
+  }, [tools]);
+
+  const {
+    query, setQuery, facetValues, setFacet,
+    visible: visibleTools, total: toolTotal, shown: toolShown, showMore: toolShowMore, showAll: toolShowAll,
+  } = useListControls(tools, { searchText: toolSearchText, facets: toolFacets });
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-auto p-5" style={{ background: 'var(--cs-bg-primary)' }}>
@@ -366,9 +386,21 @@ export function OrchestrationTab() {
           <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
             <Wrench className="w-3 h-3" /> Tool Inventory
           </p>
+          {tools.length > 0 && (
+            <div className="ml-auto">
+              <FilterBar
+                query={query}
+                setQuery={setQuery}
+                facetValues={facetValues}
+                setFacet={setFacet}
+                facets={toolFacets}
+                placeholder="Filter tools..."
+              />
+            </div>
+          )}
           {/* View toggle */}
           {tools.length > 0 && (
-            <div className="ml-auto flex items-center bg-slate-800 rounded-lg p-0.5">
+            <div className="flex items-center bg-slate-800 rounded-lg p-0.5">
               <button
                 className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'table' ? 'text-slate-400 hover:text-slate-200' : ''}`}
                 style={toolView === 'table' ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
@@ -398,9 +430,15 @@ export function OrchestrationTab() {
               <code className="font-mono bg-slate-800 px-1 rounded">gen_ai.tool.name</code>.
             </p>
           </div>
+        ) : toolTotal === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 gap-2">
+            <Wrench className="w-7 h-7 text-slate-800" />
+            <p className="text-sm text-slate-500">No matching tools</p>
+          </div>
         ) : toolView === 'heatmap' ? (
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden p-2">
-            <ToolHeatmap tools={tools} />
+            <ToolHeatmap tools={visibleTools} />
+            <ListFooter shown={toolShown} total={toolTotal} showMore={toolShowMore} showAll={toolShowAll} noun="tools" />
           </div>
         ) : (
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -414,7 +452,7 @@ export function OrchestrationTab() {
                 </tr>
               </thead>
               <tbody>
-                {tools.map(tool => {
+                {visibleTools.map(tool => {
                   const isSuspicious  = SUSPICIOUS_TOOLS.has(tool.toolName.toLowerCase());
                   const harnessColor  = HARNESS_COLORS[tool.harness] ?? '#64748b';
                   return (
@@ -451,6 +489,7 @@ export function OrchestrationTab() {
                 })}
               </tbody>
             </table>
+            <ListFooter shown={toolShown} total={toolTotal} showMore={toolShowMore} showAll={toolShowAll} noun="tools" />
           </div>
         )}
       </div>
