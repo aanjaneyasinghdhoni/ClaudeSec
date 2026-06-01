@@ -816,8 +816,8 @@ export default function App() {
       .catch(() => {});
     fetch(`/api/bookmarks?session=${encodeURIComponent((selectedNode.data as any).traceId ?? '')}`)
       .then(r => r.json())
-      .then((rows: { spanId: string }[]) => {
-        setIsBookmarked((rows ?? []).some(b => b.spanId === selectedNode.id));
+      .then(({ bookmarks }: { bookmarks: { spanId: string }[] }) => {
+        setIsBookmarked((bookmarks ?? []).some(b => b.spanId === selectedNode.id));
       })
       .catch(() => {});
   }, [selectedNode]);
