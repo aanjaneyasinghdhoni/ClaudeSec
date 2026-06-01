@@ -1,6 +1,6 @@
-import React, { Suspense, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Search } from 'lucide-react';
-import { docsNav, getDocPage, defaultDocSlug } from './docsRegistry';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { docsNav, docsOrder, getDocPage, defaultDocSlug, slugifyHeading } from './docsRegistry';
 import { DocsMDX, DocsNavProvider } from './mdxComponents';
 
 const HASH_PREFIX = '#/docs/';
@@ -14,9 +14,154 @@ function readHashSlug(): string {
   return defaultDocSlug;
 }
 
+interface TocEntry {
+  id: string;
+  text: string;
+  level: 2 | 3;
+}
+
+function DocsPager({ slug, navigate }: { slug: string; navigate: (s: string) => void }) {
+  const index = docsOrder.findIndex(p => p.slug === slug);
+  if (index === -1) return null;
+  const prev = index > 0 ? docsOrder[index - 1] : null;
+  const next = index < docsOrder.length - 1 ? docsOrder[index + 1] : null;
+  if (!prev && !next) return null;
+
+  return (
+    <nav className="docs-pager">
+      {prev ? (
+        <button type="button" className="docs-pager-link" data-dir="prev" onClick={() => navigate(prev.slug)}>
+          <ChevronLeft className="docs-pager-icon" />
+          <span className="docs-pager-text">
+            <span className="docs-pager-label">Previous</span>
+            <span className="docs-pager-title">{prev.title}</span>
+          </span>
+        </button>
+      ) : (
+        <span className="docs-pager-spacer" />
+      )}
+      {next ? (
+        <button type="button" className="docs-pager-link" data-dir="next" onClick={() => navigate(next.slug)}>
+          <span className="docs-pager-text">
+            <span className="docs-pager-label">Next</span>
+            <span className="docs-pager-title">{next.title}</span>
+          </span>
+          <ChevronRight className="docs-pager-icon" />
+        </button>
+      ) : (
+        <span className="docs-pager-spacer" />
+      )}
+    </nav>
+  );
+}
+
+function DocsToc({
+  slug,
+  scrollRef,
+}: {
+  slug: string;
+  scrollRef: React.RefObject<HTMLDivElement>;
+}) {
+  const [entries, setEntries] = useState<TocEntry[]>([]);
+  const [activeId, setActiveId] = useState<string>('');
+
+  useEffect(() => {
+    setEntries([]);
+    setActiveId('');
+    const root = scrollRef.current;
+    if (!root) return;
+
+    const serialize = (list: TocEntry[]) => list.map(e => `${e.level}:${e.id}`).join('|');
+    let last = '';
+    const collect = () => {
+      const nodes = Array.from(root.querySelectorAll<HTMLElement>('.docs-prose h2, .docs-prose h3'));
+      const found: TocEntry[] = [];
+      const seen = new Map<string, number>();
+      for (const node of nodes) {
+        const text = (node.textContent ?? '').trim();
+        if (!text) continue;
+        const base = slugifyHeading(text) || 'section';
+        const count = seen.get(base) ?? 0;
+        seen.set(base, count + 1);
+        const id = count === 0 ? base : `${base}-${count}`;
+        if (node.id !== id) node.id = id;
+        found.push({ id, text, level: node.tagName === 'H3' ? 3 : 2 });
+      }
+      const sig = serialize(found);
+      if (sig !== last) {
+        last = sig;
+        setEntries(found);
+      }
+    };
+
+    collect();
+    const mo = new MutationObserver(collect);
+    mo.observe(root, { childList: true, subtree: true });
+    return () => mo.disconnect();
+  }, [slug, scrollRef]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || entries.length === 0) return;
+    const targets = entries
+      .map(e => root.querySelector<HTMLElement>(`#${CSS.escape(e.id)}`))
+      .filter((n): n is HTMLElement => n !== null);
+    if (targets.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      observed => {
+        const visible = observed
+          .filter(o => o.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) {
+          setActiveId(visible[0].target.id);
+        }
+      },
+      { root, rootMargin: '0px 0px -70% 0px', threshold: 0 },
+    );
+    targets.forEach(t => observer.observe(t));
+    return () => observer.disconnect();
+  }, [entries, scrollRef]);
+
+  const onClick = (id: string) => {
+    const root = scrollRef.current;
+    const target = root?.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveId(id);
+    }
+  };
+
+  return (
+    <aside className="docs-toc" aria-label="On this page">
+      {entries.length >= 2 && (
+        <>
+          <div className="docs-toc-label">On this page</div>
+          <ul className="docs-toc-list">
+            {entries.map(e => (
+              <li key={e.id}>
+                <button
+                  type="button"
+                  className="docs-toc-item"
+                  data-level={e.level}
+                  data-active={e.id === activeId ? 'true' : 'false'}
+                  onClick={() => onClick(e.id)}
+                >
+                  {e.text}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </aside>
+  );
+}
+
 export function DocsView({ onClose }: { onClose: () => void }) {
   const [slug, setSlug] = useState<string>(() => readHashSlug());
   const [query, setQuery] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const onHash = () => setSlug(readHashSlug());
@@ -28,13 +173,14 @@ export function DocsView({ onClose }: { onClose: () => void }) {
     if (slug && window.location.hash !== HASH_PREFIX + slug) {
       window.location.hash = HASH_PREFIX + slug;
     }
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [slug]);
 
-  const navigate = (s: string) => { if (getDocPage(s)) setSlug(s); };
+  const navigate = useCallback((s: string) => { if (getDocPage(s)) setSlug(s); }, []);
 
   const page = getDocPage(slug);
   const LazyDoc = useMemo(() => (page ? React.lazy(page.load) : null), [slug]);
-  const navCtx = useMemo(() => ({ navigate, has: (s: string) => !!getDocPage(s) }), []);
+  const navCtx = useMemo(() => ({ navigate, has: (s: string) => !!getDocPage(s) }), [navigate]);
 
   const filteredNav = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -110,17 +256,25 @@ export function DocsView({ onClose }: { onClose: () => void }) {
         </nav>
       </div>
 
-      <div className="flex-1 overflow-y-auto" style={{ background: 'var(--cs-bg-primary)' }}>
-        <div className="docs-prose max-w-3xl mx-auto px-8 py-8">
-          {page ? (
-            <Suspense fallback={<p className="text-sm" style={{ color: 'var(--cs-text-faint)' }}>Loading…</p>}>
-              <DocsNavProvider value={navCtx}>
-                <DocsMDX>{LazyDoc ? <LazyDoc /> : null}</DocsMDX>
-              </DocsNavProvider>
-            </Suspense>
-          ) : (
-            <p className="text-sm" style={{ color: 'var(--cs-text-faint)' }}>Select a page.</p>
-          )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ background: 'var(--cs-bg-primary)' }}>
+        <div className="docs-layout">
+          <div className="docs-main">
+            <div className="docs-prose max-w-3xl mx-auto px-8 py-8">
+              {page ? (
+                <>
+                  <Suspense fallback={<p className="text-sm" style={{ color: 'var(--cs-text-faint)' }}>Loading…</p>}>
+                    <DocsNavProvider value={navCtx}>
+                      <DocsMDX>{LazyDoc ? <LazyDoc /> : null}</DocsMDX>
+                    </DocsNavProvider>
+                  </Suspense>
+                  <DocsPager slug={slug} navigate={navigate} />
+                </>
+              ) : (
+                <p className="text-sm" style={{ color: 'var(--cs-text-faint)' }}>Select a page.</p>
+              )}
+            </div>
+          </div>
+          {page && <DocsToc slug={slug} scrollRef={scrollRef} />}
         </div>
       </div>
     </div>

@@ -2,6 +2,7 @@ import React, { createContext, useContext } from 'react';
 import { MDXProvider } from '@mdx-js/react';
 import { Info as InfoIcon, AlertTriangle, Lightbulb } from 'lucide-react';
 import { Mermaid } from './Mermaid';
+import { slugifyHeading } from './docsRegistry';
 
 interface DocsNav {
   navigate: (slug: string) => void;
@@ -91,6 +92,25 @@ const DocsLink = ({ href, children, ...rest }: AnchorProps) => {
   );
 };
 
+function headingText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(headingText).join('');
+  if (React.isValidElement(node)) {
+    return headingText((node.props as { children?: React.ReactNode }).children);
+  }
+  return '';
+}
+
+type HeadingProps = React.HTMLAttributes<HTMLHeadingElement>;
+
+const Heading2 = ({ children, ...rest }: HeadingProps) => (
+  <h2 id={slugifyHeading(headingText(children))} {...rest}>{children}</h2>
+);
+const Heading3 = ({ children, ...rest }: HeadingProps) => (
+  <h3 id={slugifyHeading(headingText(children))} {...rest}>{children}</h3>
+);
+
 type PreProps = React.HTMLAttributes<HTMLPreElement>;
 
 const Pre = ({ children, ...rest }: PreProps) => {
@@ -114,6 +134,8 @@ export const mdxComponents = {
   CardGroup,
   a: DocsLink,
   pre: Pre,
+  h2: Heading2,
+  h3: Heading3,
 };
 
 export function DocsMDX({ children }: { children: React.ReactNode }) {

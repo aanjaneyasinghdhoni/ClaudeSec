@@ -90,11 +90,30 @@ if (orphans.length) {
 
 export const docsNav = navGroups;
 export const docsPages = pages;
+
+export interface DocOrderEntry {
+  slug: string;
+  title: string;
+}
+
+export const docsOrder: DocOrderEntry[] = navGroups.flatMap(g =>
+  g.pages.map(p => ({ slug: p.slug, title: p.title })),
+);
 export const defaultDocSlug =
   navGroups[0]?.pages[0]?.slug ?? Object.keys(pages)[0] ?? '';
 
 export function getDocPage(slug: string): DocPage | undefined {
   return pages[slug];
+}
+
+export function slugifyHeading(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function stripFrontmatter(raw: string): string {
