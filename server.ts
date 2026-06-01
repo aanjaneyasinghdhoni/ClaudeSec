@@ -2012,7 +2012,7 @@ async function startServer() {
       LEFT JOIN spans  s ON s.traceId = se.traceId
       LEFT JOIN alerts a ON a.traceId = se.traceId
       GROUP BY se.traceId
-      ORDER BY se.pinned DESC, se.createdAt DESC
+      ORDER BY se.pinned DESC, (threatCount > 0) DESC, threatCount DESC, se.createdAt DESC
     `).all() as any[];
 
     // Compute per-session risk score (0-100, higher = riskier) and health score
