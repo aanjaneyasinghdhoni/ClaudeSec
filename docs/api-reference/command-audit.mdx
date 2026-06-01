@@ -106,6 +106,6 @@ curl http://localhost:3000/api/file-access
 }
 ```
 
-`sensitive` is `true` for paths matching known sensitive patterns: `.env`, `.ssh/`, `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `credentials`, `.pem`, `id_rsa`. Returns up to 100 files sorted by total access count.
+`sensitive` is `true` for paths matching known sensitive patterns: `.env`, `.ssh/`, `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/etc/hosts`, `credentials`, `.pem`, `id_rsa`. Returns up to 100 files sorted by total access count.
 
 Read tools: `Read`, `file_read`, `Glob`, `cat`, `head`, `tail`, `Grep`. Write tools: `Write`, `Edit`, `file_edit`, `touch`, `mv`, `cp`.

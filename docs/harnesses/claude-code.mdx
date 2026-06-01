@@ -54,7 +54,7 @@ See the full library on the [Security Rules](/security/rules) page.
 
 **No Claude Code activity appears**
 
-1. Confirm the service is running: `claudesec status`.
+1. Confirm the service is running: `node cli/init.mjs status`.
 2. Confirm transcripts exist: `ls ~/.claude/projects/`.
 3. By default only **new** activity is captured. To import history, restart with `CLAUDESEC_BACKFILL=1`.
 4. Make sure the watcher is enabled (it is unless `CLAUDESEC_WATCH=0`).

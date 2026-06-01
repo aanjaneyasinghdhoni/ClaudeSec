@@ -18,7 +18,7 @@ Get the current webhook configuration.
 ```json
 {
   "configured": true,
-  "urlPreview": "https://hooks.slack.com/services/***",
+  "urlPreview": "https://hooks.slack.com/***",
   "threshold": "high",
   "envOverride": false
 }
@@ -47,7 +47,7 @@ Configure a webhook URL. Blocked if the `CLAUDESEC_WEBHOOK_URL` environment vari
 ```json
 {
   "status": "ok",
-  "urlPreview": "https://hooks.slack.com/services/***",
+  "urlPreview": "https://hooks.slack.com/***",
   "threshold": "medium"
 }
 ```
@@ -77,7 +77,7 @@ curl -X POST http://localhost:3000/api/webhook/test
 ```json
 {
   "status": "ok",
-  "url": "https://hooks.slack.com/services/***"
+  "url": "https://hooks.slack.com/***"
 }
 ```
 
@@ -102,7 +102,7 @@ List recent webhook delivery attempts.
       "id": 42,
       "ruleLabel": "AWS access key detected",
       "severity": "high",
-      "urlPreview": "https://hooks.slack.com/services/***",
+      "urlPreview": "https://hooks.slack.com/***",
       "status": "success",
       "httpCode": 200,
       "latencyMs": 312,

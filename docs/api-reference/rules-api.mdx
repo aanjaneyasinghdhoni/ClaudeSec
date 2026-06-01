@@ -47,9 +47,11 @@ Returns both built-in rules and user-defined custom rules.
 ```
 
 - `severity`: `"low"` | `"medium"` | `"high"`
-- `pattern`: JavaScript regex string (tested with `new RegExp(pattern)`)
+- `pattern`: regex string, compiled with RE2 (`new RE2(pattern)`). RE2 is linear-time and rejects backtracking-only constructs such as backreferences and lookaround. Maximum length is 1000 characters.
 
-Returns `201 Created` with the new rule object.
+All three fields (`pattern`, `severity`, `label`) are required. The endpoint returns `400` if any is missing, if `severity` is not one of `low`/`medium`/`high`, if the pattern exceeds 1000 characters, or if the pattern fails to compile with RE2.
+
+Custom rules are always stored with `flags: "i"` (case-insensitive). Returns `201 Created` with the new rule object.
 
 ## Delete Custom Rule
 

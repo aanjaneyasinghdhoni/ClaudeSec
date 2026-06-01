@@ -25,15 +25,17 @@ An alert is created every time a span's attributes match one of ClaudeSec's [sec
 
 ### Alerts tab
 
-Click the **Alerts** tab in the ClaudeSec dashboard to see a live-updating table of all alerts, newest first. Each row shows the timestamp, rule label, severity badge, harness name, and matched text.
+Select **Detect → Alerts** in the left navigation rail to see a live-updating table of all alerts, newest first. Each row shows the timestamp, severity badge, rule label, agent (harness) name, span name, and a matched-text snippet.
 
 ### Severity filter
 
-Use the severity dropdown to narrow the list to `high`, `medium`, or `low` alerts only.
+Use the severity filter pills (`All` / `high` / `medium` / `low`) at the top of the Alert Log to narrow the list.
 
-### Span context
+### Grouping and triage
 
-Click any alert row to jump to the corresponding span in the graph view, where you can inspect all span attributes in the right panel.
+- **Group** toggle — collapse duplicate alerts that share the same rule into a single row with a hit count.
+- **Dismissed** toggle — show or hide alerts you've dismissed.
+- Per-row triage actions let you **dismiss** an alert or **mark it as a false positive** directly from the table.
 
 ---
 
@@ -43,9 +45,9 @@ ClaudeSec uses the browser [Notifications API](https://developer.mozilla.org/en-
 
 ### Enabling notifications
 
-1. The first time ClaudeSec detects a high-severity span, the browser will prompt you for notification permission.
-2. Click **Allow**.
-3. Future high-severity alerts will show as system notifications even when the ClaudeSec tab is in the background or minimized.
+1. Click the **bell** toggle in the dashboard header to enable desktop notifications.
+2. The browser prompts you for notification permission — click **Allow**.
+3. Once enabled, new high-severity spans show as system notifications even when the ClaudeSec tab is in the background or minimized. Click the bell again to turn them off.
 
 <Note>
   Notification permission is per-browser and per-origin. If you decline the prompt, you can re-enable it via your browser's site settings for `http://localhost:3000`.
@@ -54,9 +56,8 @@ ClaudeSec uses the browser [Notifications API](https://developer.mozilla.org/en-
 ### Notification content
 
 Each desktop notification shows:
-- **Title**: the rule label (e.g., "HIGH: AWS access key detected")
-- **Body**: the harness name and the first 100 characters of the matched text
-- **Icon**: the ClaudeSec favicon
+- **Title**: `ClaudeSec — HIGH Alert`
+- **Body**: the span label, followed by the matched threat rule when one is available
 
 ---
 
@@ -66,7 +67,7 @@ Each desktop notification shows:
 
 Download a JSON file containing all current alerts:
 
-**Via the dashboard**: Click **Export Alerts** in the Alerts tab toolbar.
+**Via the dashboard**: Click **Export JSON** in the Alerts tab toolbar.
 
 **Via curl**:
 
@@ -130,9 +131,9 @@ The `total` field reflects the total count matching the filter (not just the pag
 
 ## Clearing alerts
 
-Clearing alerts removes all alert records from the database. Spans are not affected — the graph and sessions remain intact.
+Clearing alerts removes all alert records from the database. Spans are not affected — the timeline and sessions remain intact.
 
-**Via the dashboard**: Click **Clear All Alerts** in the Alerts tab.
+**Via the dashboard**: Click **Clear** in the Alerts tab.
 
 **Via curl**:
 

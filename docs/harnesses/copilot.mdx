@@ -31,6 +31,6 @@ The session ID is inferred from the session-state directory name and used as the
 
 ## Troubleshooting
 
-1. Confirm the service is running: `claudesec status`.
+1. Confirm the service is running: `node cli/init.mjs status`.
 2. Confirm session files exist: `ls ~/.copilot/session-state/`.
 3. Only new activity is captured by default — set `CLAUDESEC_BACKFILL=1` to import history.

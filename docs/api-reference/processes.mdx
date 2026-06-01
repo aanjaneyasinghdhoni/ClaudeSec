@@ -43,6 +43,7 @@ curl http://localhost:3000/api/processes
   ],
   "total": 1,
   "scannedAt": "2026-04-09T14:00:00.000Z",
+  "platform": "darwin",
   "supported": true
 }
 ```
@@ -88,11 +89,15 @@ curl -X POST http://localhost:3000/api/processes/kill-all
   "total": 3,
   "results": [
     { "pid": 12345, "name": "Claude Code", "ok": true },
-    { "pid": 12346, "name": "GitHub Copilot", "ok": true },
-    { "pid": 12347, "name": "Codex", "ok": true }
+    { "pid": 12346, "name": "Claude Code", "ok": true },
+    { "pid": 12347, "name": "Claude Code", "ok": true }
   ]
 }
 ```
+
+<Note>
+  The `name` field is the harness display name. Only `claude-code` has a registered display name (`Claude Code`); other detected agents (Copilot CLI, Codex) currently report `Unknown Agent` here.
+</Note>
 
 ### POST /api/processes/pause-all
 
@@ -108,7 +113,7 @@ curl -X POST http://localhost:3000/api/processes/pause-all
   "paused": 2,
   "results": [
     { "pid": 12345, "name": "Claude Code", "ok": true },
-    { "pid": 12346, "name": "GitHub Copilot", "ok": true }
+    { "pid": 12346, "name": "Claude Code", "ok": true }
   ]
 }
 ```
@@ -127,7 +132,7 @@ curl -X POST http://localhost:3000/api/processes/resume-all
   "resumed": 2,
   "results": [
     { "pid": 12345, "name": "Claude Code", "ok": true },
-    { "pid": 12346, "name": "GitHub Copilot", "ok": true }
+    { "pid": 12346, "name": "Claude Code", "ok": true }
   ]
 }
 ```

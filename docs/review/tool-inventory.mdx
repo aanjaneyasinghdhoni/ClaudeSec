@@ -17,6 +17,6 @@ Tools that are inherently risky (shell-exec style) are flagged with an orange do
 Two views:
 
 - **Table** — sortable counts.
-- **Heatmap** — usage intensity at a glance (the same data drives the full-screen [Heatmap](/observe/heatmap)).
+- **Heatmap** — tool-usage intensity at a glance (distinct from the time-based full-screen [Heatmap](/observe/heatmap), which charts activity by day and hour).
 
 Backed by [`GET /api/orchestration`](/api-reference/orchestration), which derives the inventory from each span's `gen_ai.tool.name` / `tool` attribute.

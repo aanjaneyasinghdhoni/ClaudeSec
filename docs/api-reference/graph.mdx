@@ -10,7 +10,11 @@ GET /api/graph
 GET /api/graph?session={traceId}
 ```
 
-Returns node and edge data with Dagre-computed layout positions. This is a headless API endpoint — there is no graph tab in the dashboard UI. Use this endpoint for programmatic access, custom integrations, or to feed data into external visualization tools.
+Returns node and edge data for the span dependency graph. This is a headless API endpoint — there is no graph tab in the dashboard UI. Use this endpoint for programmatic access, custom integrations, or to feed data into external visualization tools.
+
+<Note>
+  All nodes are returned with `position: { x: 0, y: 0 }`. The server does not compute layout coordinates — run your own layout engine (e.g. Dagre or the built-in React Flow layout) client-side.
+</Note>
 
 ---
 
@@ -34,12 +38,12 @@ Returns node and edge data with Dagre-computed layout positions. This is a headl
         "isRoot": true,
         "harnessColor": "#f97316"
       },
-      "position": { "x": 250, "y": 0 },
+      "position": { "x": 0, "y": 0 },
       "type": "input",
       "style": {
         "backgroundColor": "#f9731622",
         "border": "2px solid #f97316",
-        "color": "#fff"
+        "color": "var(--cs-text-base)"
       }
     },
     {
@@ -60,8 +64,12 @@ Returns node and edge data with Dagre-computed layout positions. This is a headl
         "startNano": "1700000000000000000",
         "endNano": "1700000001500000000"
       },
-      "position": { "x": 250, "y": 100 },
-      "style": {}
+      "position": { "x": 0, "y": 0 },
+      "style": {
+        "backgroundColor": "var(--cs-bg-elevated)",
+        "border": "1px solid var(--cs-border-soft)",
+        "color": "var(--cs-text-base)"
+      }
     }
   ],
   "edges": [
@@ -94,17 +102,19 @@ Returns node and edge data with Dagre-computed layout positions. This is a headl
 | `data.traceId` | string | Session trace ID |
 | `data.startNano` | string | Start timestamp in nanoseconds |
 | `data.endNano` | string | End timestamp in nanoseconds |
-| `position` | object | `{x, y}` coordinates computed by Dagre layout |
-| `style` | object | React Flow inline style (border color reflects severity) |
+| `position` | object | `{x, y}` coordinates — always `{ "x": 0, "y": 0 }` (no server-side layout) |
+| `style` | object | React Flow inline style. Threat spans get a colored border (see below); clean (`none`) spans get a neutral elevated style. |
 
 ### Severity styles
 
 | Severity | Background | Border |
 |----------|-----------|--------|
-| `none` | _(none)_ | _(none)_ |
+| `none` | `var(--cs-bg-elevated)` | `1px solid var(--cs-border-soft)` |
 | `low` | `#fefce8` | `2px solid #eab308` |
 | `medium` | `#fff7ed` | `2px solid #f97316` |
 | `high` | `#fee2e2` | `2px solid #ef4444` |
+
+Threat spans (`low`/`medium`/`high`) use a `#1e293b` text color; clean (`none`) spans use the theme variables shown above.
 
 ### Edge object
 

@@ -10,6 +10,10 @@ The **Processes** screen scans your local process table for known agent CLIs (Cl
 For each detected agent process: PID, agent name, CPU%, memory, and a username-scrubbed command line. Sessions active in the last 2 hours are attached by harness match.
 
 <Note>
+  The scanner recognizes the Claude Code, Copilot, and Codex CLIs by their command line, so all three appear in the list and can be controlled. Only Claude Code currently has a friendly display name — Copilot and Codex processes are shown as **Unknown Agent**.
+</Note>
+
+<Note>
   Process scanning is supported on **macOS and Linux**. On Windows the list is empty and the control actions return `501`.
 </Note>
 

@@ -39,7 +39,7 @@ Configure them via `CLAUDESEC_HONEYTOKENS` (see the [Configuration reference](/r
 
 ## Sensitive-file access
 
-Reads of credential-adjacent paths — `.env`, `~/.ssh/`, `id_rsa`, `*.pem`, `/etc/passwd|shadow|sudoers|hosts` — are both flagged in the [File Access](/review/file-access) panel and raised as HIGH-severity detections by the rule engine.
+Reads of credential-adjacent paths — `.env`, `~/.ssh/`, `id_rsa`, `*.pem`, `/etc/passwd|shadow|sudoers|hosts` — are flagged in the [File Access](/review/file-access) panel. Many also trip the rule engine: SSH private keys and `~/.ssh/` access are HIGH-severity detections, while `.env` and `/etc/passwd`-family reads are MEDIUM.
 
 ## Data retention
 

@@ -20,7 +20,7 @@ Tools are derived from the `gen_ai.tool.name` / `tool` attribute on each span. B
 
 ## Command Audit Trail
 
-A chronological log of shell commands run by your agents — the real command text, the harness, the session, and the matched threat rule if any. This is the fastest way to answer "what did this agent run on my machine?" Backed by [`GET /api/command-audit`](/api-reference/command-audit). See [Command Audit](/review/command-audit) for detail.
+A risk-ranked log of shell commands run by your agents — the real command text, the harness, the session, and a heuristic risk score. This is the fastest way to answer "what did this agent run on my machine?" Backed by [`GET /api/command-audit`](/api-reference/command-audit). See [Command Audit](/review/command-audit) for detail.
 
 ## File Access
 

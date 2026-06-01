@@ -42,22 +42,22 @@ A matched span results in:
 | Rule label | Pattern | What it catches |
 |------------|---------|-----------------|
 | Recursive root deletion | `rm\s+-rf\s+[\/\\]` | `rm -rf /` or `rm -rf \` style commands |
-| Passwd file read | `cat\s+\/etc\/passwd` | Reading the Unix password database |
 | Remote code execution via curl | `curl\s+.*\|\s*(ba)?sh` | `curl URL | bash` one-liners |
 | Remote code execution via wget | `wget\s+.*\|\s*(ba)?sh` | `wget URL | bash` one-liners |
 | SQL destructive operation | `DROP\s+(TABLE|DATABASE|SCHEMA)` | Destructive DDL statements |
 | SQL table truncation | `TRUNCATE\s+TABLE` | Mass data deletion |
 | Code eval injection | `eval\s*\(` | Dynamic code execution |
 | Exec injection | `exec\s*\(` | Process spawning from user-controlled input |
-| Prompt injection attempt | `ignore\s+(previous\|prior\|all)\s+instructions?` | Classic jailbreak phrasing |
-| Prompt injection attempt | `disregard\s+your\s+(previous\|prior\|system)` | System prompt override attempt |
+| Prompt injection: instruction override | `ignore\s+(previous\|prior\|all)\s+instructions?` | Classic jailbreak phrasing |
+| Prompt injection: disregard system | `disregard\s+your\s+(previous\|prior\|system)` | System prompt override attempt |
 | DAN jailbreak attempt | `you\s+are\s+now\s+DAN` | "Do Anything Now" jailbreak |
 | AWS access key detected | `AKIA[0-9A-Z]{16}` | AWS IAM access key ID |
-| GitHub token detected | `ghp_[A-Za-z0-9]{36}` | GitHub personal access token |
-| OpenAI API key detected | `sk-[A-Za-z0-9]{48}` | OpenAI API key format |
+| GitHub PAT detected | `ghp_[A-Za-z0-9]{36}` | GitHub personal access token |
+| API secret key detected (OpenAI/Stripe) | `sk-[A-Za-z0-9]{20,}` | OpenAI / Stripe secret key format |
 | Supply-chain: custom PyPI index | `pip\s+install\s+.*--index-url` | Dependency confusion / typosquatting |
 | Supply-chain: custom npm registry | `npm\s+install.*--registry` | Custom npm registry override |
 | Clone-and-execute | `git\s+clone\s+.*&&\s*(ba)?sh` | Cloning and immediately executing |
+| SSH directory access | `~\/\.ssh\/` | Access to SSH key directory |
 | Bash TCP reverse shell | `\/dev\/tcp\/` | Bash built-in reverse shell technique |
 
 ### MEDIUM severity
@@ -66,23 +66,23 @@ A matched span results in:
 |------------|---------|-----------------|
 | Environment variable access | `process\.env` | Node.js env access (may expose secrets) |
 | Dotenv file access | `\.env\b` | Reading `.env` files |
+| Passwd file read | `cat\s+\/etc\/passwd` | Reading the Unix password database |
 | SSH key manipulation | `ssh-add` | Adding SSH keys to the agent |
-| Sensitive system file access | `\/etc\/(shadow\|hosts\|sudoers)` | Unix security files |
-| Base64 decode | `atob\s*\(` | Client-side base64 decode |
-| Base64 decode | `base64\s+-d` | Shell base64 decode |
-| SSH directory access | `~\/\.ssh\/` | Access to SSH key directory |
-| macOS keychain access | `security\s+find-generic-password` | macOS keychain credential extraction |
+| Sensitive system file access | `\/etc\/(shadow\|hosts\|sudoers\|resolv\.conf)` | Unix security files |
+| Base64 decode (JS) | `atob\s*\(` | Client-side base64 decode |
+| Base64 decode (CLI) | `base64\s+-d` | Shell base64 decode |
+| macOS Keychain access | `security\s+find-generic-password` | macOS keychain credential extraction |
 | Python one-liner execution | `python[23]?\s+-c\s+["']import` | One-shot Python code execution |
 
 ### LOW severity
 
 | Rule label | Pattern | What it catches |
 |------------|---------|-----------------|
-| Full table scan | `SELECT\s+\*\s+FROM` | Potentially expensive/sensitive DB queries |
-| World-executable permission | `chmod\s+[0-7]*7[0-7]*` | Setting world-executable bits |
+| Full table scan query | `SELECT\s+\*\s+FROM` | Potentially expensive/sensitive DB queries |
+| World-accessible permission | `chmod\s+[0-7]*7[0-7]*` | Setting world-accessible bits |
 | Sudo usage | `sudo\s+` | Privilege escalation |
 | Global npm package install | `npm\s+install\s+--global` | System-wide package installation |
-| Python package install | `pip\s+install` | Python package installation |
+| Python package install | `pip\s+install\s+\S` | Python package installation |
 
 ---
 
@@ -91,7 +91,7 @@ A matched span results in:
 ### Via the dashboard
 
 1. Open ClaudeSec at [http://localhost:3000](http://localhost:3000).
-2. Click the **Rules** tab in the top navigation.
+2. Select **Protect → Rules** in the left navigation rail.
 3. Click **Add Rule**.
 4. Fill in:
    - **Pattern** — a JavaScript-compatible regular expression (e.g., `secretToken[=:]\s*\w+`)

@@ -70,6 +70,10 @@ curl -X POST http://localhost:3000/mcp \
 
 ## Available Tools
 
+<Note>
+  Tool results are wrapped in the standard MCP envelope: `result.content[0].text` holds a **JSON-encoded string** that you must parse. The objects shown below are the **decoded** payloads inside that string.
+</Note>
+
 ### get_health
 
 Server health, span/session/alert counts, DB size.

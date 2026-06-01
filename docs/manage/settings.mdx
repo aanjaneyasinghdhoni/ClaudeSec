@@ -31,4 +31,4 @@ Fire an alert when a session metric crosses a limit within a time window — met
 
 ## Webhook Delivery Log
 
-Every webhook attempt is logged. Failed deliveries auto-retry up to 3× with exponential backoff; you can manually retry or clear the history. See [Webhook deliveries](/api-reference/webhooks).
+Every webhook attempt is logged. Failed deliveries auto-retry with exponential backoff, up to 3 total attempts (1 send + 2 retries); you can manually retry or clear the history. See [Webhook deliveries](/api-reference/webhooks).

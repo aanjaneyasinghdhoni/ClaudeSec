@@ -30,8 +30,11 @@ curl http://localhost:3000/api/costs
       "modelLabel": "Claude Sonnet 4.6",
       "tokensIn": 15200,
       "tokensOut": 4800,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
       "costUsd": 0.1176,
-      "knownPrice": true
+      "knownPrice": true,
+      "inferred": false
     }
   ],
   "models": [
@@ -40,25 +43,30 @@ curl http://localhost:3000/api/costs
       "label": "Claude Sonnet 4.6",
       "tokensIn": 15200,
       "tokensOut": 4800,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
       "costUsd": 0.1176,
-      "knownPrice": true
+      "knownPrice": true,
+      "inferred": false
     }
   ],
   "totalCostUsd": 0.1176,
   "totalTokensIn": 15200,
   "totalTokensOut": 4800,
+  "totalCacheReadTokens": 0,
+  "totalCacheWriteTokens": 0,
   "pricingTable": [
     {
       "model": "claude-opus-4-6",
-      "inputPer1M": 15,
-      "outputPer1M": 75,
+      "inputPer1M": 5,
+      "outputPer1M": 25,
       "label": "Claude Opus 4.6"
     }
   ]
 }
 ```
 
-The `sessions` array is sorted by cost (highest first). Each row represents a unique `(traceId, model)` pair. The `pricingTable` includes all supported models and their per-1M-token rates.
+The `sessions` array is sorted by cost (highest first). Each row represents a unique `(traceId, model)` pair. The `pricingTable` includes all supported models and their per-1M-token rates. `cacheReadTokens` and `cacheWriteTokens` track Anthropic prompt-caching token usage (cache reads are billed at 0.1x and cache writes at 1.25x the input rate). `inferred` is `true` when the model could not be read from telemetry and was inferred from the harness.
 
 When a model is not in the pricing table, `knownPrice` is `false` and `costUsd` is `0`.
 
