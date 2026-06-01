@@ -54,7 +54,7 @@ curl http://localhost:3000/api/sessions/trace-abc-123/health
 | Field | Type | Description |
 |-------|------|-------------|
 | `score` | number | Health score from 0 (worst) to 100 (best) |
-| `grade` | string | Letter grade: A (90+), B (75+), C (60+), D (40+), F (<40) |
+| `grade` | string | Letter grade: A (90+), B (75+), C (60+), D (40+), F (`<40`) |
 | `threatHigh` | number | Count of high-severity spans |
 | `threatMedium` | number | Count of medium-severity spans |
 | `threatLow` | number | Count of low-severity spans |

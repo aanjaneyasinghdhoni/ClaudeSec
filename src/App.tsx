@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { socket } from './socket';
 import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
+import { DocsView } from './docs/DocsView';
 import { ContextSidebar } from './ContextSidebar';
 import { RulesTab } from './RulesTab';
 import { AlertsTab } from './AlertsTab';
@@ -553,6 +554,7 @@ export default function App() {
   // ── UI state ──────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab]           = useState<Tab>('timeline');
   const [activeCategory, setActiveCategory] = useState<Category>('observe');
+  const [docsOpen, setDocsOpen] = useState(false);
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
 
   // When category changes, jump to its first tab
@@ -1209,9 +1211,9 @@ export default function App() {
 
           {/* Docs */}
           <button
-            onClick={() => window.open('https://github.com/aanjaneyasinghdhoni/ClaudeSec', '_blank', 'noopener')}
+            onClick={() => setDocsOpen(true)}
             className="p-1.5 rounded-lg transition-all"
-            style={{ color: 'var(--cs-text-faint)' }}
+            style={{ color: docsOpen ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}
             title="Documentation"
           >
             <HelpCircle className="w-3.5 h-3.5" />
@@ -1226,8 +1228,12 @@ export default function App() {
       <div className="flex-1 flex overflow-hidden min-h-0">
 
         {/* ── Category Rail ── */}
-        <CategoryNav active={activeCategory} onChange={handleCategoryChange} alertCount={alertCount} />
+        <CategoryNav active={activeCategory} onChange={handleCategoryChange} alertCount={alertCount} onOpenDocs={() => setDocsOpen(true)} docsActive={docsOpen} />
 
+        {docsOpen ? (
+          <DocsView onClose={() => setDocsOpen(false)} />
+        ) : (
+        <>
         {/* ── Contextual Sidebar ── */}
         <ContextSidebar
           category={activeCategory}
@@ -1766,6 +1772,8 @@ export default function App() {
             />
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* ── Footer ── */}

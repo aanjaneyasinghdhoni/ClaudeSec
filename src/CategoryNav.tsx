@@ -19,9 +19,11 @@ interface Props {
   active: Category;
   onChange: (cat: Category) => void;
   alertCount?: number;
+  onOpenDocs?: () => void;
+  docsActive?: boolean;
 }
 
-export function CategoryNav({ active, onChange, alertCount = 0 }: Props) {
+export function CategoryNav({ active, onChange, alertCount = 0, onOpenDocs, docsActive = false }: Props) {
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem(STORAGE_KEY) === 'true'
   );
@@ -91,14 +93,20 @@ export function CategoryNav({ active, onChange, alertCount = 0 }: Props) {
       />
 
       <button
-        onClick={() => window.open('https://github.com/aanjaneyasinghdhoni/ClaudeSec#readme', '_blank', 'noopener')}
+        onClick={() => onOpenDocs?.()}
         title="Documentation"
-        className={`category-btn h-10 rounded-xl flex items-center ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
-        style={{ color: 'var(--cs-text-faint)' }}
+        className={`category-btn relative h-10 rounded-xl flex items-center ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
+        style={{
+          background: docsActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
+          color: docsActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
+        }}
       >
         <BookOpen className="w-4 h-4 shrink-0" />
         {!collapsed && (
           <span className="text-xs font-medium tracking-wide whitespace-nowrap">Docs</span>
+        )}
+        {docsActive && (
+          <div className="absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full" style={{ background: 'var(--cs-accent)' }} />
         )}
       </button>
     </div>
