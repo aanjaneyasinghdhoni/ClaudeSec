@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { FileText, AlertTriangle, Eye, Edit2, Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { FileText, AlertTriangle, Eye, Edit2 } from 'lucide-react';
+import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
 
 interface FileEntry {
   path:      string;
@@ -16,23 +17,36 @@ const HARNESS_COLORS: Record<string, string> = {
   'unknown':     '#64748b',
 };
 
+const fileSearchText = (f: FileEntry) => f.path;
+
+const FILE_FACETS: FacetConfig<FileEntry>[] = [
+  {
+    key: 'type',
+    label: 'Files',
+    accessor: f => (f.sensitive ? 'sensitive' : 'normal'),
+    options: [
+      { value: 'sensitive', label: 'Sensitive' },
+      { value: 'normal',    label: 'Normal' },
+    ],
+  },
+];
+
 export function FileAccessPanel() {
-  const [files, setFiles]   = useState<FileEntry[]>([]);
-  const [total, setTotal]   = useState(0);
-  const [filter, setFilter] = useState('');
+  const [files, setFiles]         = useState<FileEntry[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
 
   useEffect(() => {
     fetch('/api/file-access')
       .then(r => r.json())
-      .then(d => { setFiles(d.files ?? []); setTotal(d.total ?? 0); })
+      .then(d => { setFiles(d.files ?? []); setTotalCount(d.total ?? 0); })
       .catch(() => {});
   }, []);
 
-  const filtered = filter
-    ? files.filter(f => f.path.toLowerCase().includes(filter.toLowerCase()))
-    : files;
+  const { query, setQuery, facetValues, setFacet, visible, total, shown, showMore, showAll } =
+    useListControls(files, { searchText: fileSearchText, facets: FILE_FACETS, pageSize: 40 });
 
   const sensitiveCount = files.filter(f => f.sensitive).length;
+  const maxAccess = useMemo(() => Math.max(...files.map(x => x.total), 1), [files]);
 
   return (
     <div className="space-y-4 mt-3">
@@ -41,34 +55,33 @@ export function FileAccessPanel() {
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4" style={{ color: 'var(--cs-accent)' }} />
           <span className="text-xs font-bold text-slate-200">File Access</span>
-          <span className="text-xs font-mono text-slate-500">{total} files accessed</span>
+          <span className="text-xs font-mono text-slate-500">{totalCount} files accessed</span>
         </div>
         {sensitiveCount > 0 && (
           <span className="flex items-center gap-1 px-2 py-0.5 bg-red-900/30 border border-red-700/30 rounded-lg text-xs text-red-400 font-medium">
             <AlertTriangle className="w-3 h-3" /> {sensitiveCount} sensitive
           </span>
         )}
-        <div className="ml-auto relative">
-          <Search className="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            type="text"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
+        <div className="ml-auto">
+          <FilterBar
+            query={query}
+            setQuery={setQuery}
+            facetValues={facetValues}
+            setFacet={setFacet}
+            facets={FILE_FACETS}
             placeholder="Filter files..."
-            className="pl-7 pr-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500 w-48"
           />
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {total === 0 ? (
         <div className="flex flex-col items-center justify-center h-32 gap-2">
           <FileText className="w-6 h-6 text-slate-700" />
-          <p className="text-xs text-slate-500">{filter ? 'No matching files' : 'No file access recorded'}</p>
+          <p className="text-xs text-slate-500">{files.length > 0 ? 'No matching files' : 'No file access recorded'}</p>
         </div>
       ) : (
         <div className="space-y-1.5">
-          {filtered.slice(0, 40).map(f => {
-            const maxAccess = Math.max(...files.map(x => x.total), 1);
+          {visible.map(f => {
             const pct = Math.round((f.total / maxAccess) * 100);
             return (
               <div
@@ -122,9 +135,7 @@ export function FileAccessPanel() {
               </div>
             );
           })}
-          {filtered.length > 40 && (
-            <p className="text-xs text-slate-600 text-center py-1">Showing 40 of {filtered.length} files</p>
-          )}
+          <ListFooter shown={shown} total={total} showMore={showMore} showAll={showAll} noun="files" />
         </div>
       )}
     </div>
