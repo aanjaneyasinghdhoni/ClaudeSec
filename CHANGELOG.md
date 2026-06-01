@@ -5,13 +5,11 @@ All notable changes to ClaudeSec are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — 2026-06-01
-
-The zero-config relaunch: ClaudeSec now sees your agents the moment it installs, with no environment variables and no agent restart.
+## [Unreleased]
 
 ### Added
 - **Zero-config transcript watcher** — ClaudeSec now tails on-disk session transcripts for **Claude Code**, **GitHub Copilot CLI**, and **Codex** across every repo, with no environment variables and no agent restart. Local capture and the OTLP endpoint feed the same pipeline.
-- **One-command install** — `npx claudesec` installs a background service (launchd / systemd / Scheduled Task), starts watching, and opens the dashboard.
+- **One-command background service** — the bundled CLI (`node cli/init.mjs`) installs a launchd / systemd / Scheduled Task service, starts watching, and opens the dashboard.
 - **Four-theme switcher** — Midnight, Carbon, Daylight, Paper (saved locally).
 - **Subscription-plan awareness in the Cost view** — compare API-equivalent spend against a flat plan (API / Pro / Max 5× / Max 20×).
 - **Secret scrubbing** of known secret shapes (keys, tokens, webhook URLs, home paths, usernames, emails) before storage, broadcast, or export; honeytoken exfiltration alerts.
@@ -26,13 +24,7 @@ The zero-config relaunch: ClaudeSec now sees your agents the moment it installs,
 
 ---
 
-## Pre-1.0 history
-
-> These entries predate the 1.0 zero-config relaunch and use internal development
-> version numbers. On the npm registry, this early work shipped as `0.5.0`–`0.6.1`
-> (all published 2026-03-18).
-
-### 1.1.0 — 2026-04-18
+## [1.1.0] — 2026-04-18
 
 ### Removed
 - **Graph tab** — the ReactFlow interactive span graph has been removed from the dashboard UI for performance. With 5+ agents running, rendering thousands of nodes caused severe browser lag. The graph API endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available for programmatic access and external visualization tools.
@@ -43,7 +35,7 @@ The zero-config relaunch: ClaudeSec now sees your agents the moment it installs,
 
 ---
 
-### 1.0.0 — 2026-04-07
+## [1.0.0] — 2026-04-07
 
 First production-ready release. Complete local AI agent observatory with multi-harness
 OTLP ingestion, real-time threat detection, and interactive visualization.
@@ -205,7 +197,7 @@ Key endpoint groups — see `openapi.yaml` for the full specification:
 
 ---
 
-### 0.3.0 — 2026-03-15
+## [0.3.0] — 2026-03-15
 
 ### Added
 - Session isolation with traceId grouping
@@ -213,7 +205,7 @@ Key endpoint groups — see `openapi.yaml` for the full specification:
 - Span search with attribute `key=value` filter syntax
 - Custom rules UI and `rules.json` persistence
 
-### 0.2.0 — 2026-03-08
+## [0.2.0] — 2026-03-08
 
 ### Added
 - Multi-harness detection registry (`src/harnesses.ts`)
@@ -222,7 +214,7 @@ Key endpoint groups — see `openapi.yaml` for the full specification:
 - Alert log (SQLite `alerts` table)
 - Desktop notifications via Web Notifications API
 
-### 0.1.0 — 2026-03-01
+## [0.1.0] — 2026-03-01
 
 ### Added
 - Initial MVP: Express OTLP ingestion, SQLite persistence, ReactFlow graph

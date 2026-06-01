@@ -17,13 +17,16 @@ No environment variables. No restarting your terminal. Nothing ever leaves your 
 
 ## Install
 
-One command installs a tiny background service, starts watching every agent on your machine, and opens the dashboard already full of real activity:
+Clone the repo, install dependencies, and start the dashboard — it begins watching every agent on your machine right away:
 
 ```bash
-npx claudesec
+git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
+cd ClaudeSec
+npm install
+npm run dev
 ```
 
-That's it. See the [Quickstart](/quickstart) for what happens next, or [stop and remove](/quickstart#stopping) the service anytime with `claudesec stop`.
+That's it — open **http://localhost:3000**. See the [Quickstart](/quickstart) for what happens next, including how to run it as a background service.
 
 ---
 

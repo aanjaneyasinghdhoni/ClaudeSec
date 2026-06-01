@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml/badge.svg)](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![npm version](https://img.shields.io/npm/v/claudesec.svg)](https://www.npmjs.com/package/claudesec)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
 
 **A zero-config, fully-local security observatory for your AI coding agents.**
@@ -44,43 +43,34 @@ The watcher and the OpenTelemetry endpoint feed the **same** pipeline, so local 
 
 ## Quick Start
 
-One command installs a tiny background service, starts watching every agent on your machine, and opens the dashboard — streaming real activity the moment any agent does something:
-
-```bash
-npx claudesec
-```
-
-Requires Node ≥ 18. No environment variables, no shell edits, no agent restart.
-
-```mermaid
-flowchart TD
-    A["npx claudesec"] --> B["remove any legacy OTEL env config"]
-    B --> C["install a user-level background service<br/>launchd · systemd · Scheduled Task"]
-    C --> D["watch every Claude Code, Copilot CLI &amp; Codex session, computer-wide"]
-    D --> E["open the dashboard — already streaming real tool calls"]
-```
-
-Stop and remove the service at any time:
-
-```bash
-claudesec stop
-```
-
-### From source
+ClaudeSec runs entirely from this repository. Clone it, install, and start watching every agent on your machine:
 
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
 cd ClaudeSec
 npm install
-npm run dev          # foreground dev server — open http://localhost:3000
+npm run dev          # dashboard at http://localhost:3000
 ```
 
-`npm run dev` needs no build step (Vite serves the dashboard directly). To install the **same background service** that `npx claudesec` uses, build the dashboard first — the service runs in production mode and serves the compiled `dist/`:
+Requires Node ≥ 18. No environment variables, no shell edits, no agent restart — the watcher tails your agents' on-disk transcripts the moment any of them does something.
+
+```mermaid
+flowchart LR
+    A["npm run dev"] --> B["watch every Claude Code,<br/>Copilot CLI &amp; Codex session, computer-wide"]
+    B --> C["open the dashboard —<br/>streaming real tool calls"]
+```
+
+### Run it as a background service (optional)
+
+To keep ClaudeSec running across reboots, install the user-level background service (launchd · systemd · Scheduled Task). Build the dashboard once, then manage it through the bundled CLI:
 
 ```bash
 npm run build
-npx claudesec
+node cli/init.mjs            # install + start the service, open the dashboard
+node cli/init.mjs stop       # stop and remove the service
 ```
+
+Installing the service also removes any legacy ClaudeSec OTEL environment config — the watcher needs none.
 
 ### Platform support
 
@@ -237,6 +227,8 @@ All configuration is optional — see `.env.example`. Highlights:
 ---
 
 ## CLI
+
+From this repo, invoke the CLI as `node cli/init.mjs <command>` (the names below are shown without the prefix):
 
 ```bash
 claudesec                 # install + start the background watcher, open the dashboard
