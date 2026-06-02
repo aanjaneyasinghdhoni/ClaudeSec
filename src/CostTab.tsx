@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { DollarSign, TrendingUp, Cpu, HelpCircle, Webhook, CheckCircle, XCircle, AlertTriangle, Database, Trash2, RefreshCw } from 'lucide-react';
+import { DollarSign, TrendingUp, Cpu, HelpCircle, Webhook, CheckCircle, XCircle, AlertTriangle, Database, Trash2, RefreshCw, Info } from 'lucide-react';
 import { socket } from './socket';
 import { ExperimentalBadge } from './ExperimentalBadge';
 
@@ -13,6 +13,8 @@ interface SessionCost {
   modelLabel:  string;
   tokensIn:    number;
   tokensOut:   number;
+  cacheReadTokens:  number;
+  cacheWriteTokens: number;
   costUsd:     number;
   knownPrice:  boolean;
 }
@@ -22,6 +24,8 @@ interface ModelSummary {
   label:      string;
   tokensIn:   number;
   tokensOut:  number;
+  cacheReadTokens:  number;
+  cacheWriteTokens: number;
   costUsd:    number;
   knownPrice: boolean;
 }
@@ -32,6 +36,8 @@ interface CostData {
   totalCostUsd:   number;
   totalTokensIn:  number;
   totalTokensOut: number;
+  totalCacheReadTokens:  number;
+  totalCacheWriteTokens: number;
 }
 
 interface WebhookStatus {
@@ -435,7 +441,7 @@ export function CostTab() {
         <p className="text-[11px] mb-3" style={{ color: 'var(--cs-text-faint)' }}>
           What this usage would cost on the pay-per-token API — estimate, not a bill.
         </p>
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-5 gap-3">
           {([
             {
               label: 'API-Equivalent Cost',
@@ -445,13 +451,20 @@ export function CostTab() {
               bg:    'bg-green-500/10',
             },
             {
-              label: 'Input Tokens',
+              label: 'Input (fresh)',
               value: formatTokens(data?.totalTokensIn ?? 0),
               icon: <TrendingUp className="w-3.5 h-3.5" />,
               color: '',
               bg:    '',
               inlineColor: 'var(--cs-accent)',
               inlineBg: 'rgba(var(--cs-accent-rgb),0.1)',
+            },
+            {
+              label: 'Cache Reads',
+              value: formatTokens(data?.totalCacheReadTokens ?? 0),
+              icon: <Database className="w-3.5 h-3.5" />,
+              color: 'text-cyan-400',
+              bg:    'bg-cyan-500/10',
             },
             {
               label: 'Output Tokens',
@@ -475,6 +488,13 @@ export function CostTab() {
             </div>
           ))}
         </div>
+        <p className="text-[11px] mt-2.5 flex items-start gap-1.5 leading-relaxed" style={{ color: 'var(--cs-text-faint)' }}>
+          <Info className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>
+            Input dwarfs output by design — every turn re-sends the whole context (system prompt, tool schemas, prior messages, file reads) as input, while the model emits only a small response. Most of that volume is{' '}
+            <strong style={{ color: 'var(--cs-text-muted)' }}>cache reads</strong>: re-sent context billed at ~10% of fresh input, not new spend. A high input number is normal and mostly cheap.
+          </span>
+        </p>
       </div>
 
       {!hasData ? (
@@ -590,13 +610,15 @@ export function CostTab() {
 
           {/* Models view */}
           {view === 'models' && (
-            <div className="rounded-xl overflow-hidden" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+            <div className="rounded-xl overflow-hidden shrink-0" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-xs text-slate-500 uppercase tracking-wider" style={{ borderBottom: '1px solid var(--cs-border)' }}>
                     <th className="px-4 py-2.5 text-left">Model</th>
                     <th className="px-4 py-2.5 text-right">Input</th>
                     <th className="px-4 py-2.5 text-right">Output</th>
+                    <th className="px-4 py-2.5 text-right" title="Cache reads — re-sent context, billed at ~10% of fresh input">Cache R</th>
+                    <th className="px-4 py-2.5 text-right" title="Cache writes — context written to cache, billed at ~125% of fresh input">Cache W</th>
                     <th className="px-4 py-2.5 text-right">Cost</th>
                     <th className="px-4 py-2.5 w-24"></th>
                   </tr>
@@ -625,6 +647,12 @@ export function CostTab() {
                       <td className="px-4 py-2.5 text-right font-mono text-slate-400 text-[11px]">
                         {formatTokens(m.tokensOut)}
                       </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-cyan-400/80 text-[11px]">
+                        {formatTokens(m.cacheReadTokens)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-slate-500 text-[11px]">
+                        {formatTokens(m.cacheWriteTokens)}
+                      </td>
                       <td className="px-4 py-2.5 text-right font-mono font-medium text-green-300 text-[11px]">
                         {formatCost(m.costUsd)}
                       </td>
@@ -641,6 +669,12 @@ export function CostTab() {
                     <td className="px-4 py-2.5 text-right font-mono text-slate-300 text-[11px]">
                       {formatTokens(data.totalTokensOut)}
                     </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-cyan-300 text-[11px]">
+                      {formatTokens(data.totalCacheReadTokens)}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-400 text-[11px]">
+                      {formatTokens(data.totalCacheWriteTokens)}
+                    </td>
                     <td className="px-4 py-2.5 text-right font-mono font-bold text-green-300 text-[11px]">
                       {formatCost(data.totalCostUsd)}
                     </td>
@@ -653,7 +687,7 @@ export function CostTab() {
 
           {/* Sessions view */}
           {view === 'sessions' && (
-            <div className="rounded-xl overflow-hidden" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+            <div className="rounded-xl overflow-hidden shrink-0" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-xs text-slate-500 uppercase tracking-wider" style={{ borderBottom: '1px solid var(--cs-border)' }}>
@@ -661,6 +695,8 @@ export function CostTab() {
                     <th className="px-4 py-2.5 text-left">Model</th>
                     <th className="px-4 py-2.5 text-right">Input</th>
                     <th className="px-4 py-2.5 text-right">Output</th>
+                    <th className="px-4 py-2.5 text-right" title="Cache reads — re-sent context, billed at ~10% of fresh input">Cache R</th>
+                    <th className="px-4 py-2.5 text-right" title="Cache writes — context written to cache, billed at ~125% of fresh input">Cache W</th>
                     <th className="px-4 py-2.5 text-right">Cost</th>
                     <th className="px-4 py-2.5 w-20"></th>
                   </tr>
@@ -692,6 +728,12 @@ export function CostTab() {
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono text-slate-400 text-[11px]">
                           {formatTokens(s.tokensOut)}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-cyan-400/80 text-[11px]">
+                          {formatTokens(s.cacheReadTokens)}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-slate-500 text-[11px]">
+                          {formatTokens(s.cacheWriteTokens)}
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono font-medium text-green-300 text-[11px]">
                           {formatCost(s.costUsd)}
