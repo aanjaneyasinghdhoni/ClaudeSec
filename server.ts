@@ -107,12 +107,15 @@ interface SpanRecord {
 // SQLite setup
 // ---------------------------------------------------------------------------
 
-const db = new Database('spans.db');
+// DB path is configurable via CLAUDESEC_DB so test/throwaway server instances
+// can point at an isolated database and NEVER touch the live spans.db.
+const DB_PATH = process.env.CLAUDESEC_DB ?? 'spans.db';
+const db = new Database(DB_PATH);
 
 // SECURITY: WAL mode allows concurrent reads during writes — prevents blocking under load
 db.pragma('journal_mode = WAL');
 
-for (const dbFile of ['spans.db', 'spans.db-wal', 'spans.db-shm']) {
+for (const dbFile of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
   try { fs.chmodSync(dbFile, 0o600); } catch {}
 }
 
@@ -2379,7 +2382,7 @@ async function startServer() {
               const alertCount2  = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c;
               const threatCount  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c;
               let dbSizeBytes = 0;
-              try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
+              try { dbSizeBytes = fs.statSync(DB_PATH).size; } catch {}
               ok({ content: [{ type: 'text', text: JSON.stringify({ status: 'ok', version: '1.0.0', uptime: Date.now() - SERVER_START_MS, spanCount, sessionCount, alertCount: alertCount2, threatCount, dbSizeBytes }) }] });
               break;
             }
@@ -2776,6 +2779,12 @@ service:
 
   // ── Reset ────────────────────────────────────────────────────────────────
   app.post('/api/reset', (_req, res) => {
+    // SAFETY: data wipe is DISABLED by default — prevents accidental destruction
+    // of the spans database. Set CLAUDESEC_ALLOW_RESET=1 to explicitly permit it.
+    if (process.env.CLAUDESEC_ALLOW_RESET !== '1') {
+      res.status(403).json({ error: 'reset disabled', hint: 'Set CLAUDESEC_ALLOW_RESET=1 to enable /api/reset' });
+      return;
+    }
     deleteAllSpans.run();
     deleteAllSessions.run();
     deleteAllAlerts.run();
@@ -3110,7 +3119,7 @@ service:
     const oldestSession = (db.prepare('SELECT MIN(createdAt) as d FROM sessions').get() as any).d as string | null;
     const newestSession = (db.prepare('SELECT MAX(createdAt) as d FROM sessions').get() as any).d as string | null;
     let dbSizeBytes = 0;
-    try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
+    try { dbSizeBytes = fs.statSync(DB_PATH).size; } catch {}
 
     res.json({
       spansTotal,
@@ -3463,7 +3472,7 @@ ${alerts.length > 0 ? `
     const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
     const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
     let dbSizeBytes = 0;
-    try { dbSizeBytes = fs.statSync('spans.db').size; } catch {}
+    try { dbSizeBytes = fs.statSync(DB_PATH).size; } catch {}
     const annotationsTotal = (db.prepare('SELECT COUNT(*) as c FROM annotations').get() as any).c as number;
     res.json({
       status:      'ok',
