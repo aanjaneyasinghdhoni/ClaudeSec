@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { EXTRA_SEVERITY_RULES } from '../severityRulesExtra.js';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,94 @@ export function detectReDoS(source: string): string | null {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// (b2) ReDoS EXECUTION gate — actually run each pattern under a hard timeout
+// ---------------------------------------------------------------------------
+// The shape heuristic above only inspects the regex *source string*; it misses
+// catastrophic forms whose structure it can't parse (e.g. `^(([a-z])+)+$` — the
+// nested ')' defeats the heuristic's [^)]* spans). This gate is the real test:
+// it EXECUTES every pattern against adversarial "pump" strings inside a worker
+// thread the parent can kill. Catastrophic backtracking blocks synchronously,
+// so a same-thread Promise.race timeout would never fire — the timer never runs
+// while the regex spins. A worker isolates the spin; worker.terminate() kills it.
+
+/** Adversarial inputs that detonate common catastrophic-backtracking shapes. */
+const PUMP_STRINGS: string[] = [
+  // Exponential blowup for nested-quantifier shapes — detonates around n≈40.
+  'a'.repeat(40) + '!',
+  'a'.repeat(50) + '!',
+  '1'.repeat(48) + '!',
+  // Polynomial blowup for adjacent-quantifier / overlapping-alternation shapes.
+  'a'.repeat(5000),
+  '1'.repeat(5000),
+  ('ab').repeat(2500),
+  ' '.repeat(5000) + 'X',
+  ('a=').repeat(2500),
+];
+
+// Per-pattern execution budget. Catastrophic patterns blow far past this on the
+// pump strings above; well-formed linear patterns finish in microseconds, so the
+// full 600+ rule sweep stays well under a second.
+const EXEC_TIMEOUT_MS = 250;
+
+// Worker body (plain JS, run via { eval: true } — NOT a .ts file, so it needs no
+// tsx transform). It reconstructs the RegExp from {source, flags}, runs it against
+// every pump string, and reports done. If the regex hangs, the parent terminates
+// this worker before it ever posts back.
+const WORKER_SRC = `
+  const { parentPort, workerData } = require('node:worker_threads');
+  try {
+    const re = new RegExp(workerData.source, workerData.flags);
+    for (const s of workerData.inputs) {
+      // .test() is enough to trigger backtracking; result is irrelevant.
+      re.test(s);
+    }
+    parentPort.postMessage({ ok: true });
+  } catch (err) {
+    // A pattern that throws at construction/exec is reported, not treated as a hang.
+    parentPort.postMessage({ ok: false, error: String(err && err.message || err) });
+  }
+`;
+
+/**
+ * Execute one pattern against the pump battery inside a killable worker.
+ * Returns null if it completed within the budget, or a description string if it
+ * timed out (catastrophic backtracking) or threw.
+ */
+function executePatternSafely(re: RegExp): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    const worker = new Worker(WORKER_SRC, {
+      eval: true,
+      workerData: { source: re.source, flags: re.flags, inputs: PUMP_STRINGS },
+    });
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      worker.terminate().finally(() => {
+        resolve(`pattern exceeded ${EXEC_TIMEOUT_MS}ms on adversarial input (catastrophic backtracking)`);
+      });
+    }, EXEC_TIMEOUT_MS);
+
+    worker.on('message', (msg: { ok: boolean; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().finally(() => {
+        resolve(msg.ok ? null : `pattern threw at execution: ${msg.error}`);
+      });
+    });
+
+    worker.on('error', (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(`worker error: ${err.message}`);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -296,12 +385,12 @@ const BENIGN: string[] = [
 // Check runner
 // ---------------------------------------------------------------------------
 
-function checkRule(
+async function checkRule(
   rule: unknown,
   ruleIndex: number,
   extraSources: Map<number, string>,
   builtinSources: Set<string>,
-): Failure | null {
+): Promise<Failure | null> {
   const reasons: FailureReason[] = [];
 
   // ── (a) Structural validity ────────────────────────────────────────────
@@ -344,10 +433,22 @@ function checkRule(
   const re = r.pattern as RegExp;
   const src = re.source;
 
-  // ── (b) ReDoS heuristic ────────────────────────────────────────────────
+  // ── (b) ReDoS heuristic (cheap, source-shape only) ─────────────────────
   const redosDesc = detectReDoS(src);
   if (redosDesc !== null) {
     reasons.push({ kind: 'redos', detail: redosDesc });
+  }
+
+  // ── (b2) ReDoS EXECUTION gate (authoritative) ──────────────────────────
+  // Actually runs the pattern against adversarial pump strings under a hard
+  // timeout in a killable worker. Catches catastrophic patterns the heuristic
+  // can't see. Skipped only if the heuristic already flagged it (no need to
+  // detonate a pattern we've already rejected).
+  if (redosDesc === null) {
+    const execFail = await executePatternSafely(re);
+    if (execFail !== null) {
+      reasons.push({ kind: 'redos', detail: execFail });
+    }
   }
 
   // ── (c) Deduplication ─────────────────────────────────────────────────
@@ -373,11 +474,17 @@ function checkRule(
   }
 
   // ── (d) False-positive check ──────────────────────────────────────────
-  for (const benignStr of BENIGN) {
-    if (re.test(benignStr)) {
-      reasons.push({ kind: 'false-positive', offendingString: benignStr });
-      // Report the first match only — the author will iterate
-      break;
+  // This runs un-timed on the main thread, so only reach it once the pattern
+  // has cleared the execution gate above — otherwise a pattern that backtracks
+  // catastrophically on a short BENIGN string could hang the gate it's meant to
+  // protect. If a ReDoS reason is already recorded, skip the FP probe entirely.
+  if (!reasons.some(r => r.kind === 'redos')) {
+    for (const benignStr of BENIGN) {
+      if (re.test(benignStr)) {
+        reasons.push({ kind: 'false-positive', offendingString: benignStr });
+        // Report the first match only — the author will iterate
+        break;
+      }
     }
   }
 
@@ -388,7 +495,7 @@ function checkRule(
 // Main
 // ---------------------------------------------------------------------------
 
-function main(): void {
+async function main(): Promise<void> {
   console.log('═══════════════════════════════════════════════════════════════');
   console.log('  ClaudeSec — ruleSelfTest.ts  (EXTRA_SEVERITY_RULES gate)');
   console.log('═══════════════════════════════════════════════════════════════');
@@ -423,10 +530,11 @@ function main(): void {
   console.log(`  → found ${builtinSources.size} built-in pattern(s).`);
   console.log();
 
-  // Run all checks
+  // Run all checks. Each rule's execution gate spins up a short-lived worker;
+  // run sequentially so a hung pattern is isolated and the timeouts don't pile up.
   const failures: Failure[] = [];
   for (let i = 0; i < rules.length; i++) {
-    const failure = checkRule(rules[i], i, extraSources, builtinSources);
+    const failure = await checkRule(rules[i], i, extraSources, builtinSources);
     if (failure !== null) {
       failures.push(failure);
     }
@@ -490,5 +598,8 @@ const isEntryPoint =
   _argv1.replace(/\.ts$/, '') === _self.replace(/\.ts$/, '');
 
 if (isEntryPoint) {
-  main();
+  main().catch((err) => {
+    console.error('[ruleSelfTest] fatal:', err);
+    process.exit(1);
+  });
 }

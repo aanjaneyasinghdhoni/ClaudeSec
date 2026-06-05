@@ -12,6 +12,8 @@ import RE2 from 're2';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import dns from 'node:dns';
+import ipaddr from 'ipaddr.js';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
@@ -500,6 +502,17 @@ interface HealthBreakdown {
   alertCount:   number;
 }
 
+// Pure health formula — the SINGLE source of truth for session health scoring.
+// Both the per-session endpoint (computeHealthScore → /api/sessions/:id/health,
+// used by the CLI `report` command) and the session list (/api/sessions) call
+// this so the two paths can never diverge again.
+function healthFromCounts(h: number, m: number, l: number, alertCount: number): HealthBreakdown {
+  const raw   = 100 - h * 15 - m * 8 - l * 3 - Math.min(alertCount * 10, 30);
+  const score = Math.max(0, raw);
+  const grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
+  return { score, grade, threatHigh: h, threatMedium: m, threatLow: l, alertCount };
+}
+
 function computeHealthScore(traceId: string): HealthBreakdown {
   const sev = db.prepare(`
     SELECT
@@ -511,15 +524,7 @@ function computeHealthScore(traceId: string): HealthBreakdown {
 
   const alertCount = (db.prepare('SELECT COUNT(*) as c FROM alerts WHERE traceId = ?').get(traceId) as any).c as number;
 
-  const h = sev?.h ?? 0;
-  const m = sev?.m ?? 0;
-  const l = sev?.l ?? 0;
-
-  const raw   = 100 - h * 15 - m * 8 - l * 3 - Math.min(alertCount * 10, 30);
-  const score = Math.max(0, raw);
-  const grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
-
-  return { score, grade, threatHigh: h, threatMedium: m, threatLow: l, alertCount };
+  return healthFromCounts(sev?.h ?? 0, sev?.m ?? 0, sev?.l ?? 0, alertCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -727,8 +732,11 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
       if (attrs['gen_ai.tool.name'] || attrs['tool.name']) toolCallCount++;
     } catch {}
   }
-  if (toolCallCount > 100 && toolCallCount % 50 === 1) {
-    // Flag once per 50 excess tool calls to avoid flooding
+  // The old `toolCallCount % 50 === 1` guard almost never matched: OTLP arrives
+  // in batches, so the running total skips the exact trigger values and the
+  // alert silently never fired. Fire on any count > 100 and rely solely on the
+  // 30-minute dedup window below to prevent flooding.
+  if (toolCallCount > 100) {
     const alreadyFlagged = db.prepare(
       `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Excessive tool calls' AND ts > datetime('now', '-30 minutes')`
     ).get(traceId);
@@ -835,6 +843,106 @@ function maskWebhookUrl(url: string): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// SSRF guard — shared by every outbound-fetch sink (webhook sender, webhook
+// retry, OTLP forward).  A string/regex hostname check is trivially bypassable
+// (http://2130706433/ == 127.0.0.1, hex/octal forms, DNS rebinding where a
+// public name resolves to a private IP, IPv6 forms like [::ffff:127.0.0.1]).
+//
+// Instead we (1) require http/https, (2) actually DNS-resolve the host — which
+// also normalises decimal/hex/octal integer literals to dotted-quad — and
+// (3) classify EVERY resolved address with ipaddr.js, allowing only globally
+// routable `unicast` addresses.  That single allowlist transparently rejects
+// loopback / private / link-local (incl. 169.254.169.254 metadata) / CGNAT /
+// unique-local / multicast / reserved without enumerating each range.
+//
+// Because resolution happens at call time (not just at config time), this also
+// defeats DNS rebinding: a host that was public when configured is re-resolved
+// on every delivery and blocked the moment it points inward.
+// ---------------------------------------------------------------------------
+
+class SsrfBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SsrfBlockedError';
+  }
+}
+
+const dnsLookupAll = (host: string): Promise<{ address: string; family: number }[]> =>
+  new Promise((resolve, reject) => {
+    dns.lookup(host, { all: true }, (err, addresses) => {
+      if (err) reject(err);
+      else resolve(addresses as { address: string; family: number }[]);
+    });
+  });
+
+/**
+ * Classify a single resolved IP literal. Returns true only for globally
+ * routable unicast addresses. IPv4-mapped IPv6 (::ffff:127.0.0.1) is unwrapped
+ * to its embedded IPv4 before classification so a wrapped loopback is caught.
+ */
+function isPublicAddress(addr: string): boolean {
+  let parsed;
+  try {
+    parsed = ipaddr.parse(addr);
+  } catch {
+    return false; // unparseable → treat as unsafe
+  }
+  // Unwrap IPv4-mapped IPv6 so ::ffff:10.0.0.1 is classified as the v4 range.
+  if (parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
+    parsed = (parsed as ipaddr.IPv6).toIPv4Address();
+  }
+  return parsed.range() === 'unicast';
+}
+
+/**
+ * Validate that a URL is safe to fetch (no SSRF to internal/metadata hosts).
+ * Throws SsrfBlockedError on any violation. Resolves the host every call so it
+ * must be invoked at fetch time to defeat DNS rebinding.
+ */
+async function assertSafeFetchUrl(rawUrl: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new SsrfBlockedError('invalid URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new SsrfBlockedError('URL must use http or https');
+  }
+  // new URL() keeps the brackets on IPv6 hosts ("[::1]"); dns.lookup rejects
+  // that form, so strip them before resolving / direct-parsing.
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!host) throw new SsrfBlockedError('URL has no host');
+
+  // If the host is already an IP literal, classify it directly — no DNS needed
+  // (and dns.lookup on some literals can behave inconsistently).
+  if (ipaddr.isValid(host)) {
+    if (!isPublicAddress(host)) {
+      throw new SsrfBlockedError('URL resolves to a private/internal/reserved address');
+    }
+    return;
+  }
+
+  // Otherwise resolve the hostname. dns.lookup also normalises integer literals
+  // (decimal 2130706433, hex 0x7f000001) to dotted-quad, so those are classified
+  // correctly here even though ipaddr.isValid() rejected them above.
+  let addresses: { address: string; family: number }[];
+  try {
+    addresses = await dnsLookupAll(host);
+  } catch {
+    throw new SsrfBlockedError('could not resolve host');
+  }
+  if (addresses.length === 0) {
+    throw new SsrfBlockedError('host did not resolve to any address');
+  }
+  for (const { address } of addresses) {
+    if (!isPublicAddress(address)) {
+      throw new SsrfBlockedError('URL resolves to a private/internal/reserved address');
+    }
+  }
+}
+
 const SEV_RANK_MAP: Record<Severity, number> = { none: 0, low: 1, medium: 2, high: 3 };
 
 async function fireWebhook(alert: {
@@ -919,6 +1027,16 @@ async function fireWebhook(alert: {
   async function attempt(maxRetries: number, delayMs = 0): Promise<void> {
     if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
     const t0 = Date.now();
+    // Re-resolve and SSRF-check on EVERY attempt so DNS rebinding can't slip a
+    // host inward between retries. A blocked host is terminal — never retried.
+    try {
+      await assertSafeFetchUrl(url);
+    } catch (err) {
+      const errMsg = (err as Error).message;
+      updateDelivery.run('failed', null, Date.now() - t0, errMsg, new Date().toISOString(), deliveryId);
+      console.error('[ClaudeSec] Webhook blocked (SSRF guard):', errMsg);
+      return;
+    }
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -1944,23 +2062,37 @@ async function startServer() {
     if (alertsChanged) io.emit('alerts-update');
 
     // ── OTLP Trace Forwarding (Phase 16 / s72) ──
+    // Shares the same DNS-resolving SSRF guard as the webhook sender so the
+    // forward target can't be pointed at loopback/metadata/private ranges via
+    // integer/hex literals, IPv6 forms, or DNS rebinding. Runs in a detached
+    // async IIFE so the resolution does not block the ingest response.
     const forwardUrl = process.env.OTEL_FORWARD_URL ?? getConfig.get('otel.forward.url')?.value ?? '';
-    const BLOCKED_FORWARD = /^https?:\/\/(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.0\.0\.0|\[::1\])/i;
-    if (forwardUrl && !BLOCKED_FORWARD.test(forwardUrl)) {
-      fetch(forwardUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(traceData),
-        signal: AbortSignal.timeout(5000),
-      }).then(r => {
-        forwardStats.total++;
-        if (r.ok) { forwardStats.success++; forwardStats.lastSuccessAt = new Date().toISOString(); }
-        else      { forwardStats.failed++; forwardStats.lastError = `HTTP ${r.status}`; }
-      }).catch(err => {
-        forwardStats.total++;
-        forwardStats.failed++;
-        forwardStats.lastError = (err as Error).message;
-      });
+    if (forwardUrl) {
+      void (async () => {
+        try {
+          await assertSafeFetchUrl(forwardUrl);
+        } catch (err) {
+          forwardStats.total++;
+          forwardStats.failed++;
+          forwardStats.lastError = `blocked (SSRF guard): ${(err as Error).message}`;
+          return;
+        }
+        try {
+          const r = await fetch(forwardUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(traceData),
+            signal: AbortSignal.timeout(5000),
+          });
+          forwardStats.total++;
+          if (r.ok) { forwardStats.success++; forwardStats.lastSuccessAt = new Date().toISOString(); }
+          else      { forwardStats.failed++; forwardStats.lastError = `HTTP ${r.status}`; }
+        } catch (err) {
+          forwardStats.total++;
+          forwardStats.failed++;
+          forwardStats.lastError = (err as Error).message;
+        }
+      })();
     }
 
     res.status(200).json({ status: 'ok' });
@@ -2157,17 +2289,16 @@ async function startServer() {
       ORDER BY se.pinned DESC, (threatCount > 0) DESC, threatCount DESC, se.createdAt DESC
     `).all() as any[];
 
-    // Compute per-session risk score (0-100, higher = riskier) and health score
+    // Compute per-session health using the SHARED healthFromCounts() formula —
+    // the same one behind /api/sessions/:id/health (and the CLI report), so the
+    // two paths can no longer diverge. The list query already SELECTs every input
+    // the formula needs, so this adds zero extra DB round-trips (no N+1).
     let sessions = rows.map(r => {
-      const highW = (r.threatHigh ?? 0) * 25;
-      const medW  = (r.threatMedium ?? 0) * 12;
-      const lowW  = (r.threatLow ?? 0) * 4;
-      const alertW = Math.min((r.alertCount ?? 0) * 8, 30);
-      const spanCount = r.spanCount ?? 1;
-      const threatDensity = spanCount > 0 ? ((r.threatCount ?? 0) / spanCount) * 20 : 0;
-      const riskScore = Math.min(100, Math.round(highW + medW + lowW + alertW + threatDensity));
-      const healthScore = Math.max(0, 100 - riskScore);
-      return { ...r, healthScore, riskScore };
+      const health = healthFromCounts(r.threatHigh ?? 0, r.threatMedium ?? 0, r.threatLow ?? 0, r.alertCount ?? 0);
+      const healthScore = health.score;
+      // riskScore retained as the inverse for any consumer expecting it.
+      const riskScore = 100 - healthScore;
+      return { ...r, healthScore, riskScore, grade: health.grade };
     });
 
     if (labelFilter) {
@@ -3323,22 +3454,28 @@ service:
       sessionName: string;
       spanCount: number;
       threatCount: number;
+      // true when this node's parentage was INFERRED by the fallback heuristic
+      // (no real cross-trace spawn edges existed) rather than OBSERVED from
+      // actual span parentage. The UI renders these distinctly so a viewer can
+      // never mistake a guessed grouping for a measured one.
+      synthetic: boolean;
       children: SpawnTreeNode[];
     }
 
-    function buildSpawnNode(traceId: string, visited = new Set<string>()): SpawnTreeNode {
+    function buildSpawnNode(traceId: string, synthetic: boolean, visited = new Set<string>()): SpawnTreeNode {
       if (visited.has(traceId)) {
-        return { traceId, harness: 'unknown', sessionName: traceId.slice(0, 8), spanCount: 0, threatCount: 0, children: [] };
+        return { traceId, harness: 'unknown', sessionName: traceId.slice(0, 8), spanCount: 0, threatCount: 0, synthetic, children: [] };
       }
       visited.add(traceId);
       const stats = traceStatMap.get(traceId);
-      const children = [...(spawnChildMap.get(traceId) ?? [])].map(c => buildSpawnNode(c, visited));
+      const children = [...(spawnChildMap.get(traceId) ?? [])].map(c => buildSpawnNode(c, synthetic, visited));
       return {
         traceId,
         harness:     stats?.harness     ?? 'unknown',
         sessionName: sessionNames.get(traceId) ?? traceId.slice(0, 8),
         spanCount:   stats?.spanCount   ?? 0,
         threatCount: stats?.threatCount ?? 0,
+        synthetic,
         children,
       };
     }
@@ -3348,9 +3485,15 @@ service:
       spawnChildMap.has(id) && !hasSpawnParent.has(id)
     );
 
+    // Track whether the tree below was built from real spawn edges or fabricated
+    // by the fallback. The fallback only runs when NO real edges exist, so when
+    // it fires the ENTIRE tree is inferred.
+    let spawnTreeIsSynthetic = false;
+
     // Fallback heuristic: if no cross-trace spawns detected, group sessions by harness
     // so the spawn tree always shows something useful
     if (rootSpawnTraces.length === 0 && traceStatMap.size > 0) {
+      spawnTreeIsSynthetic = true;
       const harnessTraces = new Map<string, string[]>();
       for (const [traceId, stats] of traceStatMap) {
         if (!harnessTraces.has(stats.harness)) harnessTraces.set(stats.harness, []);
@@ -3376,7 +3519,7 @@ service:
       );
     }
 
-    const spawnTree = rootSpawnTraces.map(id => buildSpawnNode(id));
+    const spawnTree = rootSpawnTraces.map(id => buildSpawnNode(id, spawnTreeIsSynthetic));
 
     res.json({ agents, edges, tools, spawnTree });
   });
@@ -3862,24 +4005,21 @@ ${alerts.length > 0 ? `
     });
   });
 
-  app.post('/api/webhook', (req, res) => {
+  app.post('/api/webhook', async (req, res) => {
     if (process.env.CLAUDESEC_WEBHOOK_URL) {
       return res.status(409).json({ error: 'CLAUDESEC_WEBHOOK_URL env var is set — remove it to manage via API' }) as any;
     }
     const { url, threshold } = req.body as { url?: string; threshold?: string };
     if (!url?.trim()) return res.status(400).json({ error: 'url is required' }) as any;
-    let parsed: URL;
-    try { parsed = new URL(url); } catch {
-      return res.status(400).json({ error: 'invalid URL' }) as any;
-    }
-    // SECURITY: Block SSRF to private/internal networks
-    const host = parsed.hostname.toLowerCase();
-    const BLOCKED_HOSTS = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.|::1|fc00|fe80|metadata\.google|169\.254\.169\.254)/;
-    if (BLOCKED_HOSTS.test(host)) {
-      return res.status(400).json({ error: 'Webhook URL must not point to private/internal networks' }) as any;
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return res.status(400).json({ error: 'Webhook URL must use http or https' }) as any;
+    // SECURITY: Block SSRF to private/internal networks. Uses the same
+    // DNS-resolving guard as the delivery path (defeats integer/hex/IPv6
+    // literals and public-name→private-IP tricks) so config-time validation
+    // matches delivery-time enforcement. The guard re-runs at every send, so
+    // this is an early-rejection convenience, not the only line of defence.
+    try {
+      await assertSafeFetchUrl(url.trim());
+    } catch (err) {
+      return res.status(400).json({ error: `Webhook URL rejected: ${(err as Error).message}` }) as any;
     }
     setConfig.run('webhook.url', url.trim());
     if (threshold && ['low', 'medium', 'high'].includes(threshold)) {
@@ -4264,6 +4404,15 @@ ${alerts.length > 0 ? `
 
     const url = getWebhookUrl();
     if (!url) return res.status(503).json({ error: 'No webhook URL configured' }) as any;
+
+    // Re-resolve + SSRF-check the configured URL on retry too (it may have been
+    // changed to an internal target, or its DNS rebound, since first delivery).
+    try {
+      await assertSafeFetchUrl(url);
+    } catch (err: any) {
+      updateDelivery.run('failed', null, 0, `blocked (SSRF guard): ${err.message}`, new Date().toISOString(), delivery.id);
+      return res.status(400).json({ status: 'failed', error: `blocked: ${err.message}` }) as any;
+    }
 
     const t0 = Date.now();
     try {

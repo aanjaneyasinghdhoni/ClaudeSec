@@ -34,6 +34,10 @@ interface SpawnTreeNode {
   sessionName: string;
   spanCount: number;
   threatCount: number;
+  // true → parentage was INFERRED by the server's fallback heuristic (no real
+  // cross-trace spawn edges existed). Rendered visually distinct so a viewer
+  // can't mistake a guessed grouping for an observed spawn edge.
+  synthetic?: boolean;
   children: SpawnTreeNode[];
 }
 
@@ -93,13 +97,20 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
   const [expanded, setExpanded] = useState(depth < 2);
   const color = HARNESS_COLORS[node.harness] ?? '#64748b';
   const hasChildren = node.children.length > 0;
+  const synthetic = node.synthetic === true;
 
   return (
     <div>
       <div
-        className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-800/50 cursor-pointer transition-colors select-none"
-        style={{ paddingLeft: `${8 + depth * 20}px` }}
+        className={`flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-800/50 cursor-pointer transition-colors select-none${synthetic ? ' opacity-60' : ''}`}
+        style={{
+          paddingLeft: `${8 + depth * 20}px`,
+          // Inferred (synthetic) nodes get a dashed left accent so they read as
+          // "not an observed edge" at a glance.
+          ...(synthetic ? { borderLeft: '2px dashed #475569' } : {}),
+        }}
         onClick={() => hasChildren && setExpanded(e => !e)}
+        title={synthetic ? 'Inferred grouping — no observed cross-trace spawn edge' : undefined}
       >
         {/* Expand/collapse icon */}
         <span className="w-4 h-4 shrink-0 text-slate-600">
@@ -108,11 +119,16 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
             : <span className="w-3 h-3 block" />}
         </span>
 
-        {/* Agent color dot */}
-        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+        {/* Agent color dot — hollow ring when inferred, solid when observed */}
+        <span
+          className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={synthetic
+            ? { border: `1.5px dashed ${color}`, background: 'transparent' }
+            : { background: color }}
+        />
 
         {/* Agent name */}
-        <span className="text-xs font-medium text-slate-200 shrink-0">
+        <span className={`text-xs font-medium shrink-0${synthetic ? ' text-slate-400 italic' : ' text-slate-200'}`}>
           {HARNESS_NAMES[node.harness] ?? node.harness}
         </span>
 
@@ -120,6 +136,13 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
         <span className="text-xs text-slate-500 font-mono truncate max-w-[160px]" title={node.sessionName}>
           {node.sessionName}
         </span>
+
+        {/* Inferred marker */}
+        {synthetic && (
+          <span className="text-[10px] uppercase tracking-wide font-mono text-slate-500 bg-slate-800/60 border border-dashed border-slate-600 px-1.5 py-0.5 rounded shrink-0">
+            inferred
+          </span>
+        )}
 
         {/* Stats pills */}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
@@ -384,6 +407,15 @@ export function OrchestrationTab() {
           </div>
         ) : (
           <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
+            {spawnTree.some(r => r.synthetic) && (
+              <div className="flex items-start gap-2 px-3 py-2 text-[11px] text-amber-300/90 bg-amber-950/20 border-b border-dashed border-amber-800/40">
+                <span className="font-mono uppercase tracking-wide shrink-0">inferred</span>
+                <span>
+                  No observed cross-trace spawn edges — this tree is an inferred grouping of
+                  related sessions, not measured parentage. Dashed/greyed rows are not real spawn edges.
+                </span>
+              </div>
+            )}
             {spawnTree.map(root => (
               <SpawnTreeItem key={root.traceId} node={root} depth={0} />
             ))}
