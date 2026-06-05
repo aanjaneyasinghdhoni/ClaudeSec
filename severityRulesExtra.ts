@@ -491,7 +491,7 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // cat of /etc/os-release for OS fingerprinting
   { pattern: /cat\s+\/etc\/(os-release|issue|debian_version|redhat-release)/i, severity: 'low', label: 'OS version fingerprinting via /etc/os-release' },
   // last / lastlog for login history
-  { pattern: /\b(last|lastlog|lastb)\b\s*(-a|-i|-F|\d+)?/i, severity: 'medium', label: 'login history enumeration (last/lastlog)' },
+  { pattern: /\blastlog\b|\blastb\b|\blast\s+-[aiFnxwR]\b|\blast\s+\d/i, severity: 'medium', label: 'login history enumeration (last/lastlog)' },
   // lsb_release -a for distro info
   { pattern: /lsb_release\s+-[asd]/i, severity: 'low', label: 'distribution info enumeration (lsb_release)' },
   // find home directories with SSH keys
