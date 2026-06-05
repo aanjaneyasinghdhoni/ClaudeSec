@@ -1262,6 +1262,22 @@ interface DetectHit {
   ruleKey:    string;
 }
 
+// ── Enforcement event log (PreToolUse hook → /api/enforce-log) ──────────────
+// In-memory ring buffer of the last N enforcement decisions reported by the
+// opt-in claudesec-enforce.cjs PreToolUse hook. Lets the dashboard show
+// "what would be / was blocked". Intentionally NOT persisted to SQLite — this
+// is ephemeral observability data, cleared on restart.
+interface EnforceLogEvent {
+  ts:         number;
+  mode:       string;   // 'monitor' | 'enforce'
+  label:      string;
+  severity:   string;
+  command:    string;   // already redacted/truncated by the hook
+  wouldBlock: boolean;
+}
+const ENFORCE_LOG_MAX = 500;
+const enforceLog: EnforceLogEvent[] = [];
+
 function detectSeverity(text: string): DetectHit {
   // SECURITY: batch the suppression lookup — cached for ~2s, so ingest never
   // round-trips SQLite per rule per span under load.
@@ -2733,6 +2749,7 @@ service:
       { key: 'CLAUDESEC_WEBHOOK_THRESHOLD',  description: 'Minimum severity to trigger webhook',      default: 'high',   category: 'Alerts' },
       { key: 'CLAUDESEC_CORS_ORIGINS',       description: 'Comma-separated allowed CORS origins',     default: 'localhost', category: 'Security' },
       { key: 'CLAUDESEC_TOKEN',              description: 'Bearer token required for non-loopback API/MCP access; required to bind a non-loopback host', default: '', category: 'Security', sensitive: true },
+      { key: 'CLAUDESEC_MODE',               description: 'Enforcement mode for the opt-in PreToolUse hook: "monitor" logs would-block events (default), "enforce" actually blocks high-severity matches', default: 'monitor', category: 'Security' },
       { key: 'CLAUDESEC_TRUST_PROXY',        description: 'Trust X-Forwarded-For headers (set to 1)', default: '',       category: 'Security' },
       { key: 'CLAUDESEC_HONEYTOKENS',        description: 'Comma-separated canary strings for exfiltration detection', default: '', category: 'Security', sensitive: true },
       { key: 'CLAUDESEC_AUTO_EXPORT_DIR',    description: 'Directory for hourly auto-export JSON snapshots',           default: './exports', category: 'Export' },
@@ -2797,6 +2814,35 @@ service:
     io.emit('sessions-update');
     io.emit('alerts-update');
     res.json({ status: 'ok' });
+  });
+
+  // ── Enforcement event log (PreToolUse hook feed) ──────────────────────────
+  // The opt-in claudesec-enforce.cjs hook POSTs "would-block" / "blocked"
+  // events here so the dashboard can show enforcement activity. Stored in an
+  // in-memory ring buffer (no DB writes); broadcast live via socket.
+  app.post('/api/enforce-log', (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const evt: EnforceLogEvent = {
+      ts:         Date.now(),
+      mode:       typeof b.mode === 'string' ? b.mode.slice(0, 32) : 'monitor',
+      label:      typeof b.label === 'string' ? b.label.slice(0, 256) : '(unlabeled)',
+      severity:   typeof b.severity === 'string' ? b.severity.slice(0, 16) : 'high',
+      command:    typeof b.command === 'string' ? b.command.slice(0, 1000) : '',
+      wouldBlock: b.wouldBlock !== false,
+    };
+    enforceLog.push(evt);
+    if (enforceLog.length > ENFORCE_LOG_MAX) {
+      enforceLog.splice(0, enforceLog.length - ENFORCE_LOG_MAX);
+    }
+    io.emit('enforce-log', evt);
+    res.json({ status: 'ok' });
+  });
+
+  app.get('/api/enforce-log', (req, res) => {
+    const raw = Number(req.query.limit);
+    const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), ENFORCE_LOG_MAX) : 100;
+    const events = enforceLog.slice(-limit).reverse(); // most-recent first
+    res.json({ events, total: enforceLog.length });
   });
 
   // ── Rules CRUD ───────────────────────────────────────────────────────────
