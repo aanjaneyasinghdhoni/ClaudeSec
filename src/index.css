@@ -1,6 +1,15 @@
 @import "@xyflow/react/dist/style.css";
 @import "tailwindcss";
 
+/* Self-hosted fonts — no external CDN, so the strict CSP (style-src/font-src 'self')
+   stays intact and the dashboard works fully offline / air-gapped.
+   All three are SIL Open Font License 1.1 (see node_modules/@fontsource-variable/<pkg>/LICENSE).
+   DM Sans uses the optical-size (opsz) axis to match the prior Google Fonts request. */
+@import "@fontsource-variable/dm-sans/opsz.css";
+@import "@fontsource-variable/dm-sans/opsz-italic.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+@import "@fontsource-variable/space-grotesk/wght.css";
+
 /* ── Theme tokens ────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
@@ -28,9 +37,9 @@
   --cs-svg-track:    #0e1017;
   --cs-svg-selected: #1c1e2a;
 
-  --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
-  --font-display: 'Space Grotesk', 'DM Sans', system-ui, sans-serif;
+  --font-sans: 'DM Sans Variable', 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
+  --font-display: 'Space Grotesk Variable', 'Space Grotesk', 'DM Sans Variable', 'DM Sans', system-ui, sans-serif;
 }
 
 html.light {

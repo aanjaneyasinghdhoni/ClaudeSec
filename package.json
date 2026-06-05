@@ -38,6 +38,7 @@
     "CHANGELOG.md",
     "Dockerfile",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "SECURITY.md",
     "openapi.yaml",
@@ -63,6 +64,9 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
+    "@fontsource-variable/dm-sans": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@fontsource-variable/space-grotesk": "^5.2.10",
     "@mdx-js/react": "^3.1.1",
     "@mdx-js/rollup": "^3.1.1",
     "@tailwindcss/vite": "^4.1.14",
