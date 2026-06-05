@@ -37,7 +37,7 @@ AI agent → POST /v1/traces (OTLP JSON) → server.ts
 
 - **SQLite via `better-sqlite3`** persists spans across server restarts (`spans.db` is gitignored but created automatically).
 - **Dagre** computes graph layout on the server side (via `/api/graph`) for the headless graph API. There is no graph UI tab in the dashboard.
-- **Threat detection** lives in `server.ts` as `SEVERITY_RULES` (183 built-in regex rules: prompt injection, credential theft, reverse shells, supply-chain, exfiltration, recon) evaluated against every incoming span.
+- **Threat detection** lives in `server.ts` as `SEVERITY_RULES` (183 core regex rules) concatenated with `EXTRA_SEVERITY_RULES` from `severityRulesExtra.ts` (447 gated rules) for ~630 total: prompt injection, credential/secret theft, reverse shells & C2, supply-chain, exfiltration, recon, cloud-metadata SSRF, container escape, crypto-mining, privilege escalation. Evaluated against every incoming span. New rules go in `severityRulesExtra.ts` and must pass `scripts/ruleSelfTest.ts` (ReDoS + dedup + false-positive gate).
 - **Path alias** `@/*` resolves to the repo root (not `src/`). Configured in both `vite.config.ts` and `tsconfig.json`.
 
 ### Connecting Claude Code to the dashboard
@@ -55,7 +55,7 @@ The `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` flag enables `claude_code.llm_request`
 ### Key features
 
 - **Welcome screen** with auto-setup (`npx claudesec init`) — first-run UX
-- **183 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration
+- **~630 built-in security rules** — prompt injection, secrets, shells, supply-chain, exfiltration, cloud-metadata SSRF, container escape, crypto-mining, privilege escalation
 - **Claude Code focused** — purpose-built for Claude Code telemetry and security monitoring
 - **Process scanner** — detects running Claude Code processes via `ps aux`, kill switch via `DELETE /api/processes/:pid`
 - **OTLP forwarding** — transparent proxy to upstream collectors (set `OTEL_FORWARD_URL`)

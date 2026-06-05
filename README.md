@@ -31,7 +31,7 @@ flowchart LR
     TC --> W
     REMOTE["Remote / CI agents"] -->|"OTLP POST /v1/traces"| ING
     W --> ING["ingestSpan()"]
-    ING --> RULES["183 threat rules<br/>+ secret scrub"]
+    ING --> RULES["630 threat rules<br/>+ secret scrub"]
     RULES --> DB[("SQLite · spans.db<br/>0600 · local only")]
     DB --> IO["Socket.io live push"]
     IO --> UI["Dashboard<br/>127.0.0.1:3000"]
@@ -135,7 +135,7 @@ Scrubbing catches known secret *shapes*; it does not sanitize arbitrary source c
 - **Live activity feed & Timeline** — real tool calls streaming in as they happen, with nanosecond-precision durations.
 - **Orchestration** — per-agent tool inventory, command-audit trail, and a file-access panel that flags sensitive paths.
 - **Heatmap** — tool-usage intensity across harnesses and sessions.
-- **Threat detection** — 183 built-in regex rules (HIGH / MEDIUM / LOW) plus honeytoken canaries and behavioral-anomaly checks, evaluated on every span.
+- **Threat detection** — 630 built-in regex rules (HIGH / MEDIUM / LOW) plus honeytoken canaries and behavioral-anomaly checks, evaluated on every span.
 - **Alerts** — deduplicated, triageable detection log (dismiss / false-positive) with JSON export.
 - **Custom rules** — CRUD UI with a live tester; user patterns compiled with RE2 (linear-time, ReDoS-safe).
 - **Cost view** — token usage and API-equivalent cost per session and per model, plus subscription-plan awareness (API / Pro / Max 5× / Max 20×) so flat-rate users see value-vs-plan instead of a misleading bill.
@@ -157,7 +157,7 @@ Every span is evaluated against the built-in rule engine before storage.
 
 ```mermaid
 flowchart LR
-    SPAN["incoming span<br/>(name + command + args)"] --> RULES{"183 regex rules<br/>RE2-compiled"}
+    SPAN["incoming span<br/>(name + command + args)"] --> RULES{"630 regex rules<br/>RE2-compiled"}
     SPAN --> HT{"honeytoken<br/>match?"}
     RULES -->|match| SEV["severity:<br/>HIGH / MED / LOW"]
     HT -->|yes| HIGH["force HIGH:<br/>exfiltration alert"]
@@ -214,6 +214,9 @@ All configuration is optional — see `.env.example`. Highlights:
 |---|---|---|
 | `CLAUDESEC_PORT` | `3000` | Dashboard + OTLP listen port |
 | `CLAUDESEC_HOST` | `127.0.0.1` | Bind address (loopback by default) |
+| `CLAUDESEC_TOKEN` | — | Bearer token required for **non-loopback** API/MCP access; required to bind a non-loopback host |
+| `CLAUDESEC_DB` | `spans.db` | SQLite database path (point throwaway/test instances elsewhere) |
+| `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the data wipe is disabled by default |
 | `CLAUDESEC_WATCH` | `1` | Local transcript watcher (`0` to disable) |
 | `CLAUDESEC_BACKFILL` | `0` | Import historical transcripts on first run |
 | `CLAUDESEC_DISABLE_SCRUB` | — | Forward raw, unscrubbed attributes |
