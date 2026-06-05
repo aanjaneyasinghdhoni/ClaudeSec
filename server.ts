@@ -1767,6 +1767,7 @@ async function startServer() {
       req.path === '/api' ||
       req.path.startsWith('/api/') ||
       req.path === '/mcp' ||
+      req.path.startsWith('/mcp/') ||
       req.path.startsWith('/v1/traces');
     if (!isGated) { next(); return; }
 
@@ -1777,8 +1778,8 @@ async function startServer() {
 
     const bearer = req.headers['authorization'];
     const fromBearer =
-      typeof bearer === 'string' && bearer.startsWith('Bearer ')
-        ? bearer.slice('Bearer '.length).trim()
+      typeof bearer === 'string' && /^bearer\s+/i.test(bearer)
+        ? bearer.replace(/^bearer\s+/i, '').trim()
         : undefined;
     const apiKeyHeader = req.headers['x-api-key'];
     const fromApiKey = typeof apiKeyHeader === 'string' ? apiKeyHeader.trim() : undefined;
