@@ -7,9 +7,13 @@ coverage/
 *.log
 .env*
 !.env.example
-spans.db
-spans.db-shm
-spans.db-wal
+# Databases, WAL/SHM, and ANY backup/snapshot — user telemetry data, NEVER commit
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
 exports/
 .playwright-mcp/
 .claude/
