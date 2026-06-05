@@ -9,6 +9,7 @@ import rateLimit from 'express-rate-limit';
 // linear-time regex engine) rather than the native RegExp, so an operator
 // cannot inject a catastrophic-backtracking pattern (ReDoS / regex injection).
 import RE2 from 're2';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -21,6 +22,37 @@ import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInp
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Loopback-exempt auth helpers
+// ═══════════════════════════════════════════════════════════════════════════
+// These back the API/MCP/OTLP auth gate, the Socket.io handshake check, and the
+// startup bind guard.  Factored into one place so all three agree on what
+// "loopback" means and how the token is compared.
+
+/** Strip the IPv4-mapped IPv6 prefix (`::ffff:127.0.0.1` → `127.0.0.1`). */
+function normalizeAddr(addr: string | undefined | null): string {
+  let a = String(addr ?? '').trim();
+  if (a.startsWith('::ffff:')) a = a.slice('::ffff:'.length);
+  return a;
+}
+
+/** True for loopback addresses (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`). */
+function isLoopbackAddr(addr: string | undefined | null): boolean {
+  const a = normalizeAddr(addr);
+  return a === '127.0.0.1' || a === '::1';
+}
+
+/** Constant-time token comparison with a length guard (timingSafeEqual throws
+ *  on unequal lengths, and the mismatched-length case is the attacker path). */
+function tokenMatches(presented: string | undefined | null, expected: string): boolean {
+  if (!expected) return false;            // fail closed: no server token configured
+  if (!presented) return false;
+  const a = Buffer.from(String(presented));
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1559,6 +1591,23 @@ async function startServer() {
 
   const io = new Server(httpServer, { cors: { origin: corsOrigins } });
 
+  // SECURITY: Loopback-exempt Socket.io handshake gate (mirrors the HTTP auth
+  // middleware below).  Local clients (the dashboard) connect untouched; a
+  // non-loopback client must present CLAUDESEC_TOKEN via handshake auth or
+  // ?token=.  Uses the raw connection address, not spoofable proxy headers.
+  io.use((socket, next) => {
+    const addr = socket.conn?.remoteAddress ?? socket.handshake.address;
+    if (isLoopbackAddr(addr)) { next(); return; }
+    const token =
+      (socket.handshake.auth && (socket.handshake.auth as any).token) ??
+      (socket.handshake.query && (socket.handshake.query as any).token);
+    if (tokenMatches(typeof token === 'string' ? token : undefined, process.env.CLAUDESEC_TOKEN ?? '')) {
+      next();
+      return;
+    }
+    next(new Error('unauthorized'));
+  });
+
   function ingestSpan(input: IngestInput): { newSession: boolean; alertChanged: boolean } {
     const rawAttrs: Record<string, any> = { ...input.rawAttrs };
     const searchText = JSON.stringify(rawAttrs) + ' ' + input.name;
@@ -1670,6 +1719,75 @@ async function startServer() {
     legacyHeaders: false,
     skip: (req) => req.path === '/v1/traces',
   }));
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ROUTE EXPOSURE AUDIT
+  // ═══════════════════════════════════════════════════════════════════════════
+  // The auth middleware below enforces a LOOPBACK-EXEMPT token gate. Protection
+  // status of every route group:
+  //
+  //   DATA routes — GATED (loopback-open + token-required-for-remote):
+  //     • /api/*    — all dashboard data, config, search, exports, mutations
+  //     • /mcp      — POST /mcp AI-to-AI tool surface (esp. `search_spans`,
+  //                   which can read arbitrary span content)
+  //     • /v1/traces — OTLP ingest. STAYS LOOPBACK-REACHABLE: local Claude Code
+  //                   agents POST here with no token; only remote ingest needs one.
+  //
+  //   STATIC / SPA — OPEN (no data in the app shell):
+  //     • Vite middleware (dev) and express.static + app.get('*') (prod) are
+  //       registered AFTER this middleware and are NOT gated. A remote attacker
+  //       may load the empty HTML/JS shell but receives 401 on every data call,
+  //       so no span data leaks. Gating the shell would create a bootstrap
+  //       chicken-and-egg for the legitimate local dashboard.
+  //
+  //   OPERATIONAL — OPEN (no span data):
+  //     • GET /metrics — Prometheus counters only (no span content). Not gated.
+  //
+  //   Mutating / sensitive routes to be aware of (all under the GATED /api or
+  //   /mcp prefix above, so all loopback-only or token-protected):
+  //     • POST   /api/import                       (bulk span ingest)
+  //     • POST   /api/reset                        (wipe all data)
+  //     • POST/PATCH/DELETE /api/threshold-rules*  (threshold rule mutation)
+  //     • POST/DELETE       /api/rules*            (custom rule mutation)
+  //     • DELETE /api/processes/:pid               (kill a process)
+  //     • POST   /api/processes/kill-all|pause-all|resume-all
+  //     • GET    /api/export, /api/export/csv, /api/alerts/export,
+  //              /api/search/export                (data exfil surface)
+  //     • POST   /mcp                              (esp. tool `search_spans`)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // SECURITY: Loopback-exempt auth gate for sensitive routes. The dashboard SPA
+  // and the Socket.io client call /api/* from the SAME origin over loopback, so
+  // a blanket token gate would break local use. Loopback → allow (no token).
+  // Non-loopback → require CLAUDESEC_TOKEN. The real client address comes from
+  // req.socket.remoteAddress (NOT X-Forwarded-For, which is spoofable). Fail
+  // closed: if CLAUDESEC_TOKEN is unset, all non-loopback data requests are 401.
+  app.use((req, res, next) => {
+    const isGated =
+      req.path === '/api' ||
+      req.path.startsWith('/api/') ||
+      req.path === '/mcp' ||
+      req.path.startsWith('/v1/traces');
+    if (!isGated) { next(); return; }
+
+    if (isLoopbackAddr(req.socket.remoteAddress)) { next(); return; }
+
+    const expected = process.env.CLAUDESEC_TOKEN ?? '';
+    if (!expected) { res.status(401).json({ error: 'unauthorized' }); return; }
+
+    const bearer = req.headers['authorization'];
+    const fromBearer =
+      typeof bearer === 'string' && bearer.startsWith('Bearer ')
+        ? bearer.slice('Bearer '.length).trim()
+        : undefined;
+    const apiKeyHeader = req.headers['x-api-key'];
+    const fromApiKey = typeof apiKeyHeader === 'string' ? apiKeyHeader.trim() : undefined;
+    const queryToken = typeof req.query.token === 'string' ? req.query.token : undefined;
+    const presented = fromBearer || fromApiKey || queryToken;
+
+    if (tokenMatches(presented, expected)) { next(); return; }
+    res.status(401).json({ error: 'unauthorized' });
+  });
 
   // ── Graph-broadcast throttle ────────────────────────────────────────────
   // Coalesce full-graph broadcasts to at most one every 250ms.  High-volume
@@ -2606,6 +2724,7 @@ service:
       { key: 'CLAUDESEC_WEBHOOK_URL',        description: 'Webhook endpoint for alert delivery',      default: '',       category: 'Alerts',   sensitive: true },
       { key: 'CLAUDESEC_WEBHOOK_THRESHOLD',  description: 'Minimum severity to trigger webhook',      default: 'high',   category: 'Alerts' },
       { key: 'CLAUDESEC_CORS_ORIGINS',       description: 'Comma-separated allowed CORS origins',     default: 'localhost', category: 'Security' },
+      { key: 'CLAUDESEC_TOKEN',              description: 'Bearer token required for non-loopback API/MCP access; required to bind a non-loopback host', default: '', category: 'Security', sensitive: true },
       { key: 'CLAUDESEC_TRUST_PROXY',        description: 'Trust X-Forwarded-For headers (set to 1)', default: '',       category: 'Security' },
       { key: 'CLAUDESEC_HONEYTOKENS',        description: 'Comma-separated canary strings for exfiltration detection', default: '', category: 'Security', sensitive: true },
       { key: 'CLAUDESEC_AUTO_EXPORT_DIR',    description: 'Directory for hourly auto-export JSON snapshots',           default: './exports', category: 'Export' },
@@ -4350,6 +4469,22 @@ ${alerts.length > 0 ? `
 
   // SECURITY: Bind to localhost by default — set CLAUDESEC_HOST=0.0.0.0 to expose to network
   const HOST = process.env.CLAUDESEC_HOST ?? '127.0.0.1';
+
+  // SECURITY: Bind guard. Refuse to listen on a non-loopback host unless a token
+  // is configured — otherwise spans.db would be exposed to the network with the
+  // /api, /mcp, and /v1/traces routes unauthenticated.
+  const hostIsLoopback = HOST === 'localhost' || isLoopbackAddr(HOST);
+  if (!hostIsLoopback && !(process.env.CLAUDESEC_TOKEN ?? '')) {
+    console.error(
+      `\n  [ClaudeSec] SECURITY: refusing to bind to non-loopback host "${HOST}" ` +
+      `without CLAUDESEC_TOKEN set.\n` +
+      `  Binding a non-loopback host exposes spans.db to the network with the\n` +
+      `  /api, /mcp and /v1/traces routes unauthenticated. Set CLAUDESEC_TOKEN to\n` +
+      `  a strong secret, or bind to 127.0.0.1 (the default).\n`
+    );
+    process.exit(1);
+  }
+
   httpServer.listen(PORT, HOST, () => {
     console.log(`\n  ClaudeSec  http://localhost:${PORT}`);
     console.log(`  OTLP       http://localhost:${PORT}/v1/traces`);
