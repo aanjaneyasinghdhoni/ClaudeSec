@@ -2767,6 +2767,230 @@ service:
     res.json({ envVars: enriched });
   });
 
+  // ── Live config / enablement status ───────────────────────────────────────
+  // Reports the RUNTIME state of each setting — not just whether the env var is
+  // present, but whether the feature it controls is actually active vs. its
+  // default/off state, plus a UI-friendly state label. Computed server-side
+  // from process.env + derived signals (recent enforce events, token-bearing
+  // telemetry spans). Secrets are masked. Poll this to live-refresh the UI.
+  app.get('/api/config/status', (_req, res) => {
+    type StateLabel = 'active' | 'default' | 'off' | 'caution';
+    interface SettingStatus {
+      key: string;
+      category: string;
+      description: string;
+      isSet: boolean;          // env var present
+      effectiveValue: string;  // actual runtime value or default (secrets masked)
+      enabled: boolean;        // feature active vs default/off
+      state: StateLabel;       // active | default | off | caution
+      detail?: string;         // extra human-readable context
+    }
+    const settings: SettingStatus[] = [];
+
+    // — Enforcement —
+    const mode = (process.env.CLAUDESEC_MODE ?? 'monitor').toLowerCase();
+    const isEnforce = mode === 'enforce';
+    settings.push({
+      key: 'CLAUDESEC_MODE',
+      category: 'Enforcement',
+      description: 'PreToolUse hook mode: "enforce" actively blocks high-severity tool calls; "monitor" (default) only logs would-block events.',
+      isSet: !!process.env.CLAUDESEC_MODE,
+      effectiveValue: isEnforce ? 'enforce' : 'monitor',
+      enabled: isEnforce,
+      state: isEnforce ? 'active' : 'default',
+      detail: isEnforce ? 'High-severity tool calls are blocked.' : 'Logging only — nothing is blocked.',
+    });
+
+    // Recent enforcement activity (in-memory ring buffer; ephemeral)
+    const ENFORCE_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const recentEnforce = enforceLog.filter(e => Date.now() - e.ts < ENFORCE_WINDOW_MS).length;
+    settings.push({
+      key: 'enforce-log',
+      category: 'Enforcement',
+      description: 'Enforcement events reported by the PreToolUse hook in the last 24h (in-memory; cleared on restart).',
+      isSet: enforceLog.length > 0,
+      effectiveValue: recentEnforce > 0 ? `${recentEnforce} event${recentEnforce === 1 ? '' : 's'} (24h)` : 'no recent events',
+      enabled: recentEnforce > 0,
+      state: recentEnforce > 0 ? 'active' : 'off',
+      detail: enforceLog.length > 0 ? `${enforceLog.length} total buffered.` : 'No hook events received yet.',
+    });
+
+    // — Security —
+    const token = process.env.CLAUDESEC_TOKEN ?? '';
+    const tokenSet = !!token;
+    const host = process.env.CLAUDESEC_HOST ?? '127.0.0.1';
+    const hostLoopback = host === 'localhost' || isLoopbackAddr(host);
+    // Token: set → remote auth required (active). Unset + non-loopback host →
+    // caution (data exposed). Unset + loopback → default (safe local-only).
+    settings.push({
+      key: 'CLAUDESEC_TOKEN',
+      category: 'Security',
+      description: 'Bearer token required for non-loopback API/MCP access. When set, remote requests must authenticate.',
+      isSet: tokenSet,
+      effectiveValue: tokenSet ? '••• (set)' : 'unset',
+      enabled: tokenSet,
+      state: tokenSet ? 'active' : (hostLoopback ? 'default' : 'caution'),
+      detail: tokenSet
+        ? 'Remote API/MCP requests require this token.'
+        : (hostLoopback ? 'Not needed — server is loopback-only.' : 'Host is non-loopback but no token is set — data is exposed.'),
+    });
+
+    const resetEnabled = process.env.CLAUDESEC_ALLOW_RESET === '1';
+    settings.push({
+      key: 'CLAUDESEC_ALLOW_RESET',
+      category: 'Security',
+      description: 'When "1", POST /api/reset can wipe the entire spans database. Disabled by default to prevent accidental data loss.',
+      isSet: !!process.env.CLAUDESEC_ALLOW_RESET,
+      effectiveValue: resetEnabled ? '1 (reset enabled)' : 'disabled',
+      enabled: resetEnabled,
+      state: resetEnabled ? 'caution' : 'off',
+      detail: resetEnabled ? 'Destructive reset endpoint is ENABLED.' : 'Data-wipe endpoint is disabled (safe).',
+    });
+
+    settings.push({
+      key: 'CLAUDESEC_HOST',
+      category: 'Security',
+      description: 'Network interface the server binds to. 127.0.0.1 (default) is local-only; 0.0.0.0 exposes the dashboard to the network.',
+      isSet: !!process.env.CLAUDESEC_HOST,
+      effectiveValue: host,
+      enabled: !hostLoopback,
+      state: hostLoopback ? 'default' : 'caution',
+      detail: hostLoopback ? 'Loopback-only — not reachable from the network.' : 'Bound to a non-loopback interface — reachable from the network.',
+    });
+
+    const scrubEnabled = scrubOptions.enabled;
+    const scrubDisabledByEnv = process.env.CLAUDESEC_DISABLE_SCRUB === '1';
+    settings.push({
+      key: 'CLAUDESEC_DISABLE_SCRUB',
+      category: 'Security',
+      description: 'Report scrubbing redacts home paths, usernames, emails and sensitive attribute keys from captured spans. "1" turns it OFF.',
+      isSet: !!process.env.CLAUDESEC_DISABLE_SCRUB,
+      effectiveValue: scrubEnabled ? 'scrubbing ON' : 'scrubbing OFF',
+      enabled: scrubEnabled,
+      state: scrubEnabled ? 'active' : 'caution',
+      detail: scrubDisabledByEnv ? 'Scrubbing disabled via env — raw PII may be stored.' : (scrubEnabled ? 'PII is redacted from captured spans.' : 'Scrubbing is off.'),
+    });
+
+    // — Telemetry —
+    // Enhanced telemetry (CLAUDE_CODE_ENHANCED_TELEMETRY_BETA) lives in the
+    // agent's process — we can't read its env. Derive it from the data: if any
+    // recent span carries token-usage attributes, enhanced llm_request spans are
+    // arriving. Bounded query (most recent 200 spans) so this stays cheap; an
+    // empty DB simply yields "off".
+    let enhancedActive = false;
+    try {
+      const recentSpans = db.prepare(
+        `SELECT attributes FROM spans ORDER BY CAST(startNano AS INTEGER) DESC LIMIT 200`
+      ).all() as { attributes: string }[];
+      for (const row of recentSpans) {
+        let a: Record<string, unknown> = {};
+        try { a = JSON.parse(row.attributes); } catch { continue; }
+        const ti = Number(a['gen_ai.usage.input_tokens'] ?? a['llm.usage.input_tokens'] ?? 0);
+        const to = Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
+        if (ti > 0 || to > 0) { enhancedActive = true; break; }
+      }
+    } catch { enhancedActive = false; }
+    settings.push({
+      key: 'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA',
+      category: 'Telemetry',
+      description: 'Enables llm_request spans with model name + token counts on the connected agent. Derived from incoming data (token-bearing spans), not this process’s env.',
+      isSet: enhancedActive,
+      effectiveValue: enhancedActive ? 'active (token spans arriving)' : 'no token spans seen',
+      enabled: enhancedActive,
+      state: enhancedActive ? 'active' : 'off',
+      detail: enhancedActive ? 'Recent spans include token counts — enhanced telemetry is on.' : 'No recent spans carry token counts.',
+    });
+
+    const watchEnabled = process.env.CLAUDESEC_WATCH !== '0';
+    settings.push({
+      key: 'CLAUDESEC_WATCH',
+      category: 'Telemetry',
+      description: 'Zero-config filesystem watcher that auto-captures Claude Code & Codex transcripts. On by default; set "0" to disable.',
+      isSet: !!process.env.CLAUDESEC_WATCH,
+      effectiveValue: watchEnabled ? 'on' : 'off (CLAUDESEC_WATCH=0)',
+      enabled: watchEnabled,
+      state: watchEnabled ? 'active' : 'off',
+      detail: watchEnabled ? 'Auto-capturing local agent transcripts.' : 'Filesystem watcher disabled.',
+    });
+
+    const forwardUrl = process.env.OTEL_FORWARD_URL ?? (getConfig.get('otel.forward.url')?.value ?? '');
+    const forwardSet = !!forwardUrl;
+    settings.push({
+      key: 'OTEL_FORWARD_URL',
+      category: 'Telemetry',
+      description: 'Transparently forwards every received OTLP batch to an upstream collector.',
+      isSet: !!process.env.OTEL_FORWARD_URL,
+      effectiveValue: forwardSet ? maskWebhookUrl(forwardUrl) : 'not configured',
+      enabled: forwardSet,
+      state: forwardSet ? 'active' : 'off',
+      detail: forwardSet ? 'OTLP traces are forwarded upstream.' : 'No upstream forwarding.',
+    });
+
+    // — Retention —
+    const maxSpansEnv = Number(process.env.CLAUDESEC_MAX_SPANS) > 0;
+    const maxSpans = getMaxSpans();
+    settings.push({
+      key: 'CLAUDESEC_MAX_SPANS',
+      category: 'Retention',
+      description: 'Total span capacity before the oldest spans are pruned.',
+      isSet: maxSpansEnv,
+      effectiveValue: `${maxSpans.toLocaleString()} spans`,
+      enabled: true,
+      state: 'active',
+      detail: maxSpansEnv ? 'Limit set via env.' : 'Using configured/default limit.',
+    });
+
+    const retentionEnv = Number(process.env.CLAUDESEC_RETENTION_DAYS) > 0;
+    const retentionDays = getRetentionDays();
+    settings.push({
+      key: 'CLAUDESEC_RETENTION_DAYS',
+      category: 'Retention',
+      description: 'Age-based pruning — spans older than this many days are removed.',
+      isSet: retentionEnv,
+      effectiveValue: `${retentionDays} day${retentionDays === 1 ? '' : 's'}`,
+      enabled: true,
+      state: 'active',
+      detail: retentionEnv ? 'Window set via env.' : 'Using configured/default window.',
+    });
+
+    // — Integrations —
+    const webhookUrl = getWebhookUrl();
+    const webhookSet = !!webhookUrl;
+    settings.push({
+      key: 'CLAUDESEC_WEBHOOK_URL',
+      category: 'Integrations',
+      description: 'Webhook endpoint that receives alert deliveries (Slack, Discord, or generic JSON).',
+      isSet: !!process.env.CLAUDESEC_WEBHOOK_URL,
+      effectiveValue: webhookSet ? maskWebhookUrl(webhookUrl) : 'not configured',
+      enabled: webhookSet,
+      state: webhookSet ? 'active' : 'off',
+      detail: webhookSet ? `Alerts ≥ ${getWebhookThreshold()} are delivered.` : 'No webhook configured.',
+    });
+
+    const honeytokenCount = loadHoneytokens().length;
+    settings.push({
+      key: 'CLAUDESEC_HONEYTOKENS',
+      category: 'Integrations',
+      description: 'Canary strings that raise a high-severity alert if they ever appear in captured agent output (exfiltration tripwire).',
+      isSet: honeytokenCount > 0,
+      effectiveValue: honeytokenCount > 0 ? `${honeytokenCount} token${honeytokenCount === 1 ? '' : 's'} • •••` : 'none set',
+      enabled: honeytokenCount > 0,
+      state: honeytokenCount > 0 ? 'active' : 'off',
+      detail: honeytokenCount > 0 ? 'Exfiltration tripwire armed.' : 'No honeytokens configured.',
+    });
+
+    // Summary counts for header chips
+    const summary = {
+      active:  settings.filter(s => s.state === 'active').length,
+      caution: settings.filter(s => s.state === 'caution').length,
+      off:     settings.filter(s => s.state === 'off').length,
+      default: settings.filter(s => s.state === 'default').length,
+    };
+
+    const categoryOrder = ['Enforcement', 'Security', 'Telemetry', 'Retention', 'Integrations'];
+    res.json({ settings, summary, categoryOrder, generatedAt: new Date().toISOString() });
+  });
+
   // ── Annotations ──────────────────────────────────────────────────────────
   app.get('/api/spans/:spanId/annotations', (req, res) => {
     const rows = getAnnotationsBySpan.all(req.params.spanId);

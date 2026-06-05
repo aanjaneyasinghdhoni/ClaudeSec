@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing, History, Copy, Terminal } from 'lucide-react';
+import {
+  Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing,
+  History, Copy, Terminal, ShieldCheck, AlertTriangle, CircleSlash, CheckCircle2, Activity,
+} from 'lucide-react';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
 import { WebhookDeliverySection } from './WebhookDeliverySection';
 
@@ -456,7 +459,127 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Env Reference section
+// 5. Config / enablement status section
+// ---------------------------------------------------------------------------
+
+type StatusState = 'active' | 'default' | 'off' | 'caution';
+
+interface SettingStatus {
+  key: string;
+  category: string;
+  description: string;
+  isSet: boolean;
+  effectiveValue: string;
+  enabled: boolean;
+  state: StatusState;
+  detail?: string;
+}
+
+interface ConfigStatusResponse {
+  settings: SettingStatus[];
+  summary: { active: number; caution: number; off: number; default: number };
+  categoryOrder: string[];
+  generatedAt: string;
+}
+
+/** Icon + text + color per state — a11y: never color alone. */
+function StatusBadge({ state }: { state: StatusState }) {
+  const map: Record<StatusState, { label: string; icon: React.ReactNode; bg: string; fg: string; border: string }> = {
+    active:  { label: 'ACTIVE',  icon: <CheckCircle2 className="w-3 h-3" />,   bg: 'rgba(0,212,170,0.12)', fg: 'var(--cs-accent)', border: 'var(--cs-accent-dim)' },
+    caution: { label: 'CAUTION', icon: <AlertTriangle className="w-3 h-3" />,  bg: 'rgba(255,178,36,0.12)', fg: 'var(--cs-warn)',   border: 'rgba(255,178,36,0.30)' },
+    off:     { label: 'OFF',     icon: <CircleSlash className="w-3 h-3" />,    bg: 'rgba(139,144,160,0.10)', fg: 'var(--cs-text-muted)', border: 'var(--cs-border-soft)' },
+    default: { label: 'DEFAULT', icon: <CircleSlash className="w-3 h-3" />,    bg: 'rgba(139,144,160,0.10)', fg: 'var(--cs-text-muted)', border: 'var(--cs-border-soft)' },
+  };
+  const s = map[state];
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold tracking-wide shrink-0"
+      style={{ background: s.bg, color: s.fg, border: `1px solid ${s.border}` }}
+    >
+      {s.icon}{s.label}
+    </span>
+  );
+}
+
+function ConfigStatusSection() {
+  const [data,  setData]  = useState<ConfigStatusResponse | null>(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    fetch('/api/config/status')
+      .then(r => r.json())
+      .then((d: ConfigStatusResponse) => { setData(d); setError(''); })
+      .catch(() => setError('Failed to load config status'));
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 5000); // live-refresh derived signals
+    return () => clearInterval(id);
+  }, [load]);
+
+  if (error) return <p className="text-[11px] text-red-400 font-mono mt-3">{error}</p>;
+  if (!data) return <p className="text-[11px] text-slate-500 font-mono mt-3">Loading runtime status…</p>;
+
+  const cats = data.categoryOrder.filter(c => data.settings.some(s => s.category === c));
+
+  return (
+    <div className="space-y-4 mt-3">
+      {/* Summary chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono"
+          style={{ background: 'rgba(0,212,170,0.12)', color: 'var(--cs-accent)', border: '1px solid var(--cs-accent-dim)' }}>
+          <CheckCircle2 className="w-3 h-3" /> {data.summary.active} active
+        </span>
+        {data.summary.caution > 0 && (
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono"
+            style={{ background: 'rgba(255,178,36,0.12)', color: 'var(--cs-warn)', border: '1px solid rgba(255,178,36,0.30)' }}>
+            <AlertTriangle className="w-3 h-3" /> {data.summary.caution} need attention
+          </span>
+        )}
+        <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono"
+          style={{ background: 'rgba(139,144,160,0.10)', color: 'var(--cs-text-muted)', border: '1px solid var(--cs-border-soft)' }}>
+          <CircleSlash className="w-3 h-3" /> {data.summary.off + data.summary.default} default/off
+        </span>
+        <span className="inline-flex items-center gap-1 text-[10px] text-slate-600 font-mono ml-auto">
+          <Activity className="w-3 h-3" /> live
+        </span>
+      </div>
+
+      {cats.map(cat => (
+        <div key={cat}>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">{cat}</p>
+          <div className="space-y-2">
+            {data.settings.filter(s => s.category === cat).map(s => (
+              <div
+                key={s.key}
+                className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-3 px-3 py-2.5 bg-slate-800/50 rounded-lg border border-slate-800"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <code className="text-[11px] font-mono text-slate-200 break-all">{s.key}</code>
+                    <StatusBadge state={s.state} />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{s.description}</p>
+                  {s.detail && (
+                    <p className="text-[10px] text-slate-600 mt-0.5 italic">{s.detail}</p>
+                  )}
+                </div>
+                <div className="shrink-0 sm:text-right sm:max-w-[42%] sm:pl-2">
+                  <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-0.5">Effective</p>
+                  <code className="text-[11px] font-mono text-slate-300 break-all">{s.effectiveValue}</code>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Env Reference section
 // ---------------------------------------------------------------------------
 
 function EnvCopyButton({ text }: { text: string }) {
@@ -545,6 +668,17 @@ export function SettingsTab(): React.ReactElement {
           <Settings className="w-5 h-5" style={{ color: 'var(--cs-accent)' }} />
           <h2 className="text-sm font-bold text-slate-200">Settings</h2>
         </div>
+
+        <Section icon={<ShieldCheck className="w-4 h-4" />} title="Configuration Status">
+          <p className="text-xs text-slate-500 mb-1 leading-relaxed">
+            Live runtime state of each setting — whether the feature is actually
+            <span className="text-slate-300"> active</span>, at its
+            <span className="text-slate-300"> default</span>, or needs
+            <span style={{ color: 'var(--cs-warn)' }}> attention</span>. Secrets are masked.
+            Refreshes automatically.
+          </p>
+          <ConfigStatusSection />
+        </Section>
 
         <Section icon={<Database className="w-4 h-4" />} title="Retention">
           <RetentionSection />
