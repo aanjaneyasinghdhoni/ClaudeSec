@@ -355,7 +355,8 @@ export function SearchTab() {
       {/* Table area */}
       <div className="flex-1 overflow-auto p-4">
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
-        <table className="w-full text-sm border-collapse">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse min-w-[640px]">
           <thead className="sticky top-0 z-10" style={{ background: 'var(--cs-bg-elevated)' }}>
             <tr>
               {['Span Name', 'Harness', 'Severity', 'Protocol', 'Duration', 'Time'].map(h => (
@@ -414,6 +415,7 @@ export function SearchTab() {
             )}
           </tbody>
         </table>
+        </div>{/* overflow-x-auto */}
         </div>
       </div>
 

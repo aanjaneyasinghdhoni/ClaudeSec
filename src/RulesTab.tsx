@@ -256,7 +256,8 @@ export function RulesTab() {
 
         {/* Rules table */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[640px]">
             <thead>
               <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                 <th className="px-4 py-2.5 text-left">Label</th>
@@ -356,6 +357,7 @@ export function RulesTab() {
               })}
             </tbody>
           </table>
+          </div>{/* overflow-x-auto */}
         </div>
       </div>
     </div>

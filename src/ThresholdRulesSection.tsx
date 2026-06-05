@@ -280,7 +280,7 @@ export function ThresholdRulesSection(): React.ReactElement {
         </div>
 
         {/* Metric + Operator + Value */}
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           <div>
             <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Metric</label>
             <select

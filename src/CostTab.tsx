@@ -316,7 +316,7 @@ function DBHealthPanel() {
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mb-3 text-center">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3 text-center">
         {([
           { val: stats.spansTotal.toLocaleString(),    label: 'Spans',    color: '', inlineColor: 'var(--cs-accent)' },
           { val: stats.sessionsTotal.toLocaleString(),  label: 'Sessions', color: 'text-purple-400' },
@@ -441,7 +441,7 @@ export function CostTab() {
         <p className="text-[11px] mb-3" style={{ color: 'var(--cs-text-faint)' }}>
           What this usage would cost on the pay-per-token API — estimate, not a bill.
         </p>
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {([
             {
               label: 'API-Equivalent Cost',
@@ -557,7 +557,7 @@ export function CostTab() {
                     {selectedPlan.label}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-3 mb-3">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
                   <div className="rounded-lg p-3" style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}>
                     <div className="text-lg font-bold font-mono" style={{ color: 'var(--cs-text-base)' }}>${monthly}</div>
                     <div className="text-[11px] uppercase tracking-wider mt-0.5" style={{ color: 'var(--cs-text-faint)' }}>Flat / month</div>
@@ -611,7 +611,8 @@ export function CostTab() {
           {/* Models view */}
           {view === 'models' && (
             <div className="rounded-xl overflow-hidden shrink-0" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
-              <table className="w-full text-xs">
+              <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
                 <thead>
                   <tr className="text-xs text-slate-500 uppercase tracking-wider" style={{ borderBottom: '1px solid var(--cs-border)' }}>
                     <th className="px-4 py-2.5 text-left">Model</th>
@@ -682,13 +683,15 @@ export function CostTab() {
                   </tr>
                 </tbody>
               </table>
+              </div>{/* overflow-x-auto */}
             </div>
           )}
 
           {/* Sessions view */}
           {view === 'sessions' && (
             <div className="rounded-xl overflow-hidden shrink-0" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
-              <table className="w-full text-xs">
+              <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
                 <thead>
                   <tr className="text-xs text-slate-500 uppercase tracking-wider" style={{ borderBottom: '1px solid var(--cs-border)' }}>
                     <th className="px-4 py-2.5 text-left">Session</th>
@@ -746,6 +749,7 @@ export function CostTab() {
                   })}
                 </tbody>
               </table>
+              </div>{/* overflow-x-auto */}
             </div>
           )}
 

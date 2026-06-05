@@ -198,7 +198,8 @@ export function AlertsTab() {
           </div>
         ) : (
           <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[640px]">
             <thead className="sticky top-0 z-10" style={{ background: 'var(--cs-bg-elevated)' }}>
               <tr className="text-xs uppercase tracking-wider" style={{ color: 'var(--cs-text-muted)', borderBottom: '1px solid var(--cs-border)' }}>
                 <th className="px-4 py-2.5 text-left">Time</th>
@@ -310,6 +311,7 @@ export function AlertsTab() {
               })}
             </tbody>
           </table>
+          </div>{/* overflow-x-auto */}
           </div>
         )}
       </div>

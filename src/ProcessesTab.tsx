@@ -292,7 +292,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
           <div className="space-y-3 max-w-5xl">
 
             {/* Summary cards */}
-            <div className="grid grid-cols-3 gap-3 mb-5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
                 <div className="text-2xl font-bold font-mono" style={{ color: 'var(--cs-accent)' }}>{procs.length}</div>
                 <div className="text-xs text-slate-500 uppercase tracking-wider mt-1">Processes</div>
@@ -313,7 +313,8 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
 
             {/* Process table */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-              <table className="w-full text-xs">
+              <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
                 <thead>
                   <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                     <th className="px-4 py-2.5 text-left">Agent</th>
@@ -399,6 +400,7 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
                   ))}
                 </tbody>
               </table>
+              </div>{/* overflow-x-auto */}
             </div>
 
             {data?.scannedAt && (
