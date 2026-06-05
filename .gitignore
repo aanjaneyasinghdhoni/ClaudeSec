@@ -17,6 +17,9 @@ coverage/
 exports/
 # Generated enforcement snapshot (built by scripts/build-enforcement-rules.cjs)
 rules-enforcement.json
+# Server-written effective enforcement config (mode + per-rule overrides) — read
+# by the PreToolUse hook. Generated artifact, never commit.
+enforce-config.json
 .playwright-mcp/
 .claude/
 .remember/
@@ -39,3 +42,4 @@ specs/
 plans/
 *.audit.md
 *.spec.local.md
+.gstack/

@@ -611,6 +611,69 @@ function saveCustomRules() {
 loadCustomRules();
 
 // ---------------------------------------------------------------------------
+// Enforcement config (server-controlled mode + per-rule action overrides)
+//
+// The PreToolUse hook (.claude/hooks/claudesec-enforce.cjs) reads the effective
+// mode from a LOCAL FILE (enforce-config.json) — no per-call network. The
+// server is the source of truth: mode + overrides live in the `config` SQLite
+// table and are mirrored to that file whenever they change (and once at start).
+//
+// SAFETY: the hook fails OPEN / monitor-by-default if this file is missing or
+// unreadable, so a write failure here NEVER blocks the user. We only ever write
+// a strictly-validated 'monitor' | 'enforce' string.
+// ---------------------------------------------------------------------------
+
+type EnforceMode = 'monitor' | 'enforce';
+// Per-rule action override: rule label → 'alert' | 'block'. Lets the operator
+// promote/demote individual rules without rebuilding the snapshot.
+type EnforceAction = 'alert' | 'block';
+
+const ENFORCE_CONFIG_FILE =
+  process.env.CLAUDESEC_ENFORCE_CONFIG
+    ? path.resolve(process.env.CLAUDESEC_ENFORCE_CONFIG)
+    : path.join(__dirname, 'enforce-config.json');
+
+function getEnforceMode(): EnforceMode {
+  const v = getConfig.get('enforce.mode')?.value;
+  return v === 'enforce' ? 'enforce' : 'monitor'; // default + sanitize
+}
+
+function getEnforceOverrides(): Record<string, EnforceAction> {
+  try {
+    const raw = getConfig.get('enforce.overrides')?.value;
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, EnforceAction> = {};
+    for (const [k, val] of Object.entries(parsed)) {
+      if (val === 'alert' || val === 'block') out[k] = val;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+// Mirror the effective config to enforce-config.json so the hook can read it.
+// Best-effort: never throws (a failed write just leaves the hook on its prior
+// file / env / monitor default — all fail-open).
+function writeEnforceConfigFile(): void {
+  try {
+    const payload = {
+      mode: getEnforceMode(),
+      overrides: getEnforceOverrides(),
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(ENFORCE_CONFIG_FILE, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  } catch (err) {
+    console.warn('[enforce] could not write enforce-config.json:', (err as Error)?.message);
+  }
+}
+
+// Derive the file from the DB once at startup so the hook is in sync even if the
+// mode was changed in a previous run (or the file was deleted).
+writeEnforceConfigFile();
+
+// ---------------------------------------------------------------------------
 // Retention policy + DB health
 // ---------------------------------------------------------------------------
 
@@ -3198,6 +3261,60 @@ service:
     const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), ENFORCE_LOG_MAX) : 100;
     const events = enforceLog.slice(-limit).reverse(); // most-recent first
     res.json({ events, total: enforceLog.length });
+  });
+
+  // ── Enforcement config (server-controlled mode + per-rule overrides) ───────
+  // Source of truth for what the PreToolUse hook does. The hook reads the
+  // mirrored enforce-config.json file (fail-open). Changing it here re-writes
+  // that file and broadcasts so the dashboard stays in sync.
+  app.get('/api/enforce/config', (_req, res) => {
+    res.json({
+      mode:          getEnforceMode(),
+      overrides:     getEnforceOverrides(),
+      configFile:    ENFORCE_CONFIG_FILE,
+      envMode:       process.env.CLAUDESEC_MODE ?? null,
+      bypassEnabled: process.env.CLAUDESEC_HOOKS_BYPASS === '1',
+    });
+  });
+
+  app.put('/api/enforce/config', (req, res) => {
+    const b = (req.body ?? {}) as { mode?: unknown; overrides?: unknown };
+
+    // Validate mode (only if provided) — STRICT: anything else is a 400, never
+    // silently coerced to 'enforce'.
+    if (b.mode !== undefined) {
+      if (b.mode !== 'monitor' && b.mode !== 'enforce') {
+        return res.status(400).json({ error: "mode must be 'monitor' or 'enforce'" }) as any;
+      }
+      setConfig.run('enforce.mode', b.mode);
+    }
+
+    // Validate overrides (only if provided): a flat { ruleLabel: 'alert'|'block' }
+    // map. Bad entries are rejected wholesale so we never persist garbage that
+    // the hook would have to defend against.
+    if (b.overrides !== undefined) {
+      if (b.overrides === null || typeof b.overrides !== 'object' || Array.isArray(b.overrides)) {
+        return res.status(400).json({ error: 'overrides must be an object map of ruleLabel → "alert"|"block"' }) as any;
+      }
+      const clean: Record<string, EnforceAction> = {};
+      for (const [k, v] of Object.entries(b.overrides as Record<string, unknown>)) {
+        if (typeof k !== 'string' || !k) continue;
+        if (v !== 'alert' && v !== 'block') {
+          return res.status(400).json({ error: `override for "${k}" must be "alert" or "block"` }) as any;
+        }
+        clean[k.slice(0, 256)] = v;
+      }
+      setConfig.run('enforce.overrides', JSON.stringify(clean));
+    }
+
+    // Mirror to the local file the hook reads, then broadcast.
+    writeEnforceConfigFile();
+    const effective = {
+      mode:      getEnforceMode(),
+      overrides: getEnforceOverrides(),
+    };
+    io.emit('enforce-config', effective);
+    res.json(effective);
   });
 
   // ── Rules CRUD ───────────────────────────────────────────────────────────
