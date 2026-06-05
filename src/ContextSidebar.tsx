@@ -74,12 +74,43 @@ const TIME_RANGES: { label: string; range: TimeRange }[] = [
   { label: 'All time',      range: 'all' },
 ];
 
-// ── Detect Sidebar ─────────────────────────────────────────────────────────
-function DetectSidebar({ alertCount, timeRange, onTimeRangeChange }: {
-  alertCount: number;
+// ── Quick Filters (time range) ──────────────────────────────────────────────
+// Lives in the OBSERVE sidebar, next to the Timeline it actually filters
+// (timeRange drives visibleWorkflows). It used to sit in the Detect sidebar,
+// which only shows Alerts/Search — so the buttons appeared to do nothing.
+function QuickFilters({ timeRange, onTimeRangeChange }: {
   timeRange: TimeRange;
   onTimeRangeChange: (range: TimeRange) => void;
 }) {
+  return (
+    <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+      <p className="sidebar-section-label mb-2">
+        <Search className="w-3 h-3" /> Quick Filters
+      </p>
+      <div className="space-y-1">
+        {TIME_RANGES.map(({ label, range }) => {
+          const isActive = timeRange === range;
+          return (
+            <button
+              key={range}
+              onClick={() => onTimeRangeChange(range)}
+              className="w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+              style={{
+                background: isActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
+                color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-muted)',
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Detect Sidebar ─────────────────────────────────────────────────────────
+function DetectSidebar({ alertCount }: { alertCount: number }) {
   const { highTotal } = useAlertCounts();
   return (
     <div className="flex flex-col h-full">
@@ -96,29 +127,6 @@ function DetectSidebar({ alertCount, timeRange, onTimeRangeChange }: {
             <p className="text-lg font-bold font-mono" style={{ color: '#ff3b5c' }}>{highTotal ?? '…'}</p>
             <p className="text-[9px] uppercase tracking-wider font-mono" style={{ color: '#ff3b5c' }}>High</p>
           </div>
-        </div>
-      </div>
-      <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
-        <p className="sidebar-section-label mb-2">
-          <Search className="w-3 h-3" /> Quick Filters
-        </p>
-        <div className="space-y-1">
-          {TIME_RANGES.map(({ label, range }) => {
-            const isActive = timeRange === range;
-            return (
-              <button
-                key={range}
-                onClick={() => onTimeRangeChange(range)}
-                className="w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
-                style={{
-                  background: isActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
-                  color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-muted)',
-                }}
-              >
-                {label}
-              </button>
-            );
-          })}
         </div>
       </div>
       <div className="flex-1 flex items-center justify-center p-4">
@@ -239,8 +247,13 @@ export interface ContextSidebarProps {
 export function ContextSidebar({ category, alertCount, activeTab, onTabChange, timeRange, onTimeRangeChange, observeContent }: ContextSidebarProps) {
   return (
     <aside className="w-64 flex flex-col overflow-hidden shrink-0" style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
-      {category === 'observe' && observeContent}
-      {category === 'detect' && <DetectSidebar alertCount={alertCount} timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />}
+      {category === 'observe' && (
+        <>
+          <QuickFilters timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
+          {observeContent}
+        </>
+      )}
+      {category === 'detect' && <DetectSidebar alertCount={alertCount} />}
       {category === 'protect' && <ProtectSidebar />}
       {category === 'review' && <ReviewSidebar />}
       {category === 'manage' && <ManageSidebar activeTab={activeTab} onTabChange={onTabChange} />}
