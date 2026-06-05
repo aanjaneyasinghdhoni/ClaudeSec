@@ -9,7 +9,7 @@ import {
   CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star, ShieldAlert,
-  Server, GitCompare, Monitor, Bookmark,
+  Server, GitCompare, Monitor, Bookmark, ScanLine,
   ChevronDown, MoreHorizontal, HelpCircle, Menu,
 } from 'lucide-react';
 import { socket } from './socket';
@@ -20,6 +20,7 @@ import { ContextSidebar } from './ContextSidebar';
 import type { TimeRange } from './ContextSidebar';
 import { RulesTab } from './RulesTab';
 import { EnforceTab } from './EnforceTab';
+import { McpScanTab } from './McpScanTab';
 import { AlertsTab } from './AlertsTab';
 import { OrchestrationTab } from './OrchestrationTab';
 import { CostTab } from './CostTab';
@@ -245,7 +246,7 @@ function formatDuration(startNano: string, endNano: string): string {
 
 type Severity  = 'none' | 'low' | 'medium' | 'high';
 type FilterMode = 'all' | 'normal' | 'malicious';
-type Tab        = 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'enforce' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
+type Tab        = 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'enforce' | 'mcpscan' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
 
 // Category → Tab mapping for the navigation rail
 const CATEGORY_TABS: Record<Category, { id: Tab; icon: React.ReactNode; label: string; badge?: number }[]> = {
@@ -262,6 +263,7 @@ const CATEGORY_TABS: Record<Category, { id: Tab; icon: React.ReactNode; label: s
   protect: [
     { id: 'rules',   icon: null, label: 'Rules' },
     { id: 'enforce', icon: null, label: 'Enforce' },
+    { id: 'mcpscan', icon: null, label: 'MCP Scan' },
   ],
   review: [
     { id: 'bookmarks', icon: null, label: 'Bookmarks' },
@@ -282,6 +284,7 @@ const TAB_ICONS: Record<Tab, React.ReactNode> = {
   search:        <Search className="w-3.5 h-3.5" />,
   rules:         <Shield className="w-3.5 h-3.5" />,
   enforce:       <ShieldAlert className="w-3.5 h-3.5" />,
+  mcpscan:       <ScanLine className="w-3.5 h-3.5" />,
   bookmarks:     <Bookmark className="w-3.5 h-3.5" />,
   harnesses:     <Cpu className="w-3.5 h-3.5" />,
   costs:         <Zap className="w-3.5 h-3.5" />,
@@ -1843,6 +1846,9 @@ export default function App() {
 
           {/* Enforcement view */}
           {activeTab === 'enforce' && <EnforceTab />}
+
+          {/* MCP / skill static scanner view */}
+          {activeTab === 'mcpscan' && <McpScanTab />}
 
           {/* Costs + Webhook view */}
           {activeTab === 'costs' && <CostTab />}

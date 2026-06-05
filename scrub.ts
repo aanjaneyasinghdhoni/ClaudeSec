@@ -194,3 +194,76 @@ export function scrubText(s: string, opts: ScrubOptions): string {
   if (!opts.enabled) return s;
   return redactString(s, opts);
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Secret detection (read-only) — used by the MCP/skill static scanner.
+//
+// scrubAttributes/redactString REPLACE secrets with placeholders, which is the
+// wrong primitive for a scanner that needs to *report* a finding (kind +
+// masked excerpt). This exposes the same credential-format catalogue used by
+// the scrubber as a detection-only pass so the two never drift apart.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface SecretFinding {
+  kind:   string;  // e.g. 'github-token', 'aws-akia', 'private-key'
+  match:  string;  // the raw matched substring
+  masked: string;  // safe-to-display excerpt (most of the secret elided)
+  index:  number;  // offset of the match within the scanned string
+}
+
+// Credential formats with a human-readable kind. Kept deliberately close to
+// SECRET_PATTERNS above; new formats should be added to both.
+const SECRET_DETECT_PATTERNS: { kind: string; re: RegExp }[] = [
+  { kind: 'private-key',      re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  { kind: 'jwt',             re: /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
+  { kind: 'slack-webhook',   re: /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/-]{16,}/g },
+  { kind: 'discord-webhook', re: /https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/[0-9]{6,}\/[A-Za-z0-9_-]{16,}/g },
+  { kind: 'telegram-token',  re: /(?:api\.telegram\.org\/)?bot[0-9]{6,}:[A-Za-z0-9_-]{30,}/g },
+  { kind: 'anthropic-key',   re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
+  { kind: 'openai-key',      re: /(?<![A-Za-z0-9_])sk-(?:proj-)?[A-Za-z0-9]{20,}/g },
+  { kind: 'aws-akia',        re: /A(?:KIA|SIA|GPA|IDA|ROA)[0-9A-Z]{16}/g },
+  { kind: 'github-token',    re: /gh[posru]_[A-Za-z0-9]{36,}/g },
+  { kind: 'gitlab-token',    re: /glpat-[A-Za-z0-9_-]{20,}/g },
+  { kind: 'slack-token',     re: /xox[baprs]-[A-Za-z0-9-]{10,}/g },
+  { kind: 'google-api-key',  re: /AIza[0-9A-Za-z_-]{35}/g },
+  { kind: 'google-oauth',    re: /ya29\.[0-9A-Za-z_-]{20,}/g },
+  { kind: 'stripe-key',      re: /(?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{20,}/g },
+  { kind: 'twilio-key',      re: /SK[0-9a-fA-F]{32}/g },
+  { kind: 'sendgrid-key',    re: /SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/g },
+  { kind: 'npm-token',       re: /npm_[A-Za-z0-9]{36}/g },
+  { kind: 'pypi-token',      re: /pypi-[A-Za-z0-9_-]{16,}/g },
+  { kind: 'digitalocean',    re: /dop_v1_[a-f0-9]{64}/g },
+];
+
+/** Mask a secret for display: keep a short visible prefix, elide the rest. */
+export function maskSecret(s: string): string {
+  if (s.length <= 8) return s.slice(0, 2) + '…';
+  const head = s.slice(0, 6);
+  return `${head}…[${s.length} chars]`;
+}
+
+/**
+ * Find hardcoded credentials in a free-form string. Read-only — never mutates.
+ * Returns every distinct match (so a config with three secrets yields three
+ * findings, unlike detectSeverity which returns first-match only).
+ */
+export function detectSecrets(text: string): SecretFinding[] {
+  if (typeof text !== 'string' || text.length === 0) return [];
+  const out: SecretFinding[] = [];
+  const seen = new Set<string>();
+  for (const { kind, re } of SECRET_DETECT_PATTERNS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    let guard = 0;
+    while ((m = re.exec(text)) !== null && guard++ < 50) {
+      const match = m[0];
+      const dedupe = `${kind}:${match}`;
+      if (!seen.has(dedupe)) {
+        seen.add(dedupe);
+        out.push({ kind, match, masked: maskSecret(match), index: m.index });
+      }
+      if (m.index === re.lastIndex) re.lastIndex++; // avoid zero-width loop
+    }
+  }
+  return out;
+}

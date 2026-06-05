@@ -22,6 +22,7 @@ import { detectHarness, HARNESSES } from './src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 import { EXTRA_SEVERITY_RULES } from './severityRulesExtra.js';
+import { scanMcpAndSkills, type ScanResult } from './mcpScan.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3315,6 +3316,29 @@ service:
     };
     io.emit('enforce-config', effective);
     res.json(effective);
+  });
+
+  // ── MCP / skill static scanner ───────────────────────────────────────────
+  // Scans installed MCP server configs and Claude skills for prompt-injection,
+  // tool poisoning, hardcoded secrets, and suspicious launch commands. The scan
+  // is READ-ONLY (never launches a server, never writes a scanned file) and
+  // bounded (file/size/finding caps in mcpScan.ts). Results are cached briefly
+  // so repeated dashboard polls don't re-walk the filesystem; ?force=1 bypasses.
+  let mcpScanCache: { at: number; result: ScanResult } | null = null;
+  const MCP_SCAN_TTL_MS = 30_000;
+  app.get('/api/mcp-scan', (req, res) => {
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const now = Date.now();
+    if (!force && mcpScanCache && now - mcpScanCache.at < MCP_SCAN_TTL_MS) {
+      return res.json({ ...mcpScanCache.result, cached: true }) as any;
+    }
+    try {
+      const result = scanMcpAndSkills(detectSeverity);
+      mcpScanCache = { at: now, result };
+      res.json({ ...result, cached: false });
+    } catch (err) {
+      res.status(500).json({ error: 'scan failed', detail: String((err as Error)?.message ?? err) });
+    }
   });
 
   // ── Rules CRUD ───────────────────────────────────────────────────────────
