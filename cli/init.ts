@@ -591,6 +591,12 @@ function printHelp() {
   \x1b[33mclaudesec top\x1b[0m [--by spans|threats|health] [--limit N]
   \x1b[33mclaudesec report\x1b[0m <sessionId|latest> [--out file.md]
 
+\x1b[1mEnforcement (cross-agent):\x1b[0m
+  \x1b[33mclaudesec mcp-proxy\x1b[0m -- <mcp-server-cmd> [args...]   Gate any MCP server's
+                                       tool calls against ClaudeSec rules (stdio).
+                                       Point an agent's mcpServers config here instead
+                                       of the real server. Respects CLAUDESEC_MODE.
+
 \x1b[1mSeverity levels:\x1b[0m  \x1b[31mhigh\x1b[0m  \x1b[33mmedium\x1b[0m  \x1b[34mlow\x1b[0m  \x1b[32mnone\x1b[0m
 \x1b[90mDashboard: ${BASE_URL}\x1b[0m
 `);

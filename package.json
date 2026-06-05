@@ -46,8 +46,12 @@
     "severityRulesExtra.ts",
     "scrub.ts",
     "transcriptWatcher.ts",
+    "enforceEval.ts",
+    "mcpProxy.ts",
+    "rules-enforcement.json",
     "cli/init.ts",
     "cli/init.mjs",
+    "cli/mcp-proxy.ts",
     "cli/service.ts",
     "src/harnesses.ts",
     "dist"
