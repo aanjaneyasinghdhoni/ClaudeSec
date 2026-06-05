@@ -19,6 +19,7 @@ import { execSync } from 'child_process';
 import { detectHarness, HARNESSES } from './src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
+import { EXTRA_SEVERITY_RULES } from './severityRulesExtra.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1244,6 +1245,9 @@ const SEVERITY_RULES: { pattern: RegExp; severity: Severity; label: string }[] =
   { pattern: /gpg\s+/i,                                          severity: 'low', label: 'GPG encryption usage' },
   { pattern: /tar\s+(czf|xzf|cf)/i,                              severity: 'low', label: 'Archive creation/extraction' },
   { pattern: /zip\s+/i,                                          severity: 'low', label: 'Zip archive operation' },
+
+  // Bulk expansion rules (ReDoS-safe, deduped) — populated by tooling
+  ...EXTRA_SEVERITY_RULES,
 ];
 
 interface DetectHit {

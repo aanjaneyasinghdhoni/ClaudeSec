@@ -43,6 +43,7 @@
     "SECURITY.md",
     "openapi.yaml",
     "server.ts",
+    "severityRulesExtra.ts",
     "scrub.ts",
     "transcriptWatcher.ts",
     "cli/init.ts",
