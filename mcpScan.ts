@@ -127,6 +127,13 @@ function homeRel(p: string): string {
 }
 
 function clampExcerpt(s: string, around?: { start: number; len: number }): string {
+  // Redact full secrets BEFORE slicing the window — otherwise a window clipping
+  // into a token's tail could leave an (unmasked) fragment that addFinding's
+  // full-token redaction can no longer recognise. Masking first means no
+  // fragment can ever form. The `around` indices are computed on the original
+  // text; after masking the window may shift slightly (mask is shorter than the
+  // secret) — that is purely cosmetic, the content is always safe.
+  for (const f of detectSecrets(s)) s = s.split(f.match).join(f.masked);
   let text = s.replace(/\s+/g, ' ').trim();
   if (around && around.len > 0) {
     const ctx = 40;
@@ -319,8 +326,21 @@ export function scanMcpAndSkills(detect: DetectFn, rootsArg?: string[]): ScanRes
   let filesScanned = 0;
   let truncated = false;
 
+  // Redact any credential that happens to sit inside a finding's excerpt before
+  // it leaves the scanner. Secret-kind excerpts are already masked at emit time,
+  // but suspicious-command / injection / poisoning excerpts are raw slices of
+  // command+args/env/prose that may legitimately contain a token (e.g. a
+  // `--token ghp_…` arg). A security tool must never surface live credentials in
+  // its own output, the API response, or a screenshot — so we mask at the choke
+  // point, covering every kind, present and future.
+  const redactSecretsInText = (s: string): string => {
+    for (const f of detectSecrets(s)) s = s.split(f.match).join(f.masked);
+    return s;
+  };
+
   const addFinding = (f: ScanFinding) => {
     if (findings.length >= MAX_FINDINGS) { truncated = true; return; }
+    f.excerpt = redactSecretsInText(f.excerpt);
     findings.push(f);
   };
 
