@@ -8,7 +8,7 @@ description: "Understand ClaudeSec's built-in threat detection library and learn
 Every span — whether tailed from a local transcript or sent via OTLP to `POST /v1/traces` — is evaluated against the security rule engine. The engine concatenates the span name and all attributes into a single string and tests it against each rule's regular expression in priority order:
 
 1. **Custom rules** are checked first (most recently added = highest priority).
-2. **183 built-in rules** are checked if no custom rule matches.
+2. **~630 built-in rules** are checked if no custom rule matches.
 
 The first matching rule determines the span's severity level (first-match-wins). If no rule matches, the severity is `none` and the span is treated as benign.
 

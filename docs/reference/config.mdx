@@ -11,9 +11,33 @@ All configuration is **optional** — ClaudeSec runs with sensible defaults and 
 |----------|---------|---------|
 | `CLAUDESEC_PORT` / `PORT` | `3000` | Dashboard + OTLP listen port |
 | `CLAUDESEC_HOST` | `127.0.0.1` | Bind address. Set `0.0.0.0` only for deliberate LAN access |
+| `CLAUDESEC_TOKEN` | — | Bearer token required for **non-loopback** API/MCP access; **required** to bind a non-loopback host (the server refuses to start otherwise). Loopback access is exempt |
 | `CLAUDESEC_CORS_ORIGINS` | `localhost` | Comma-separated allowed CORS origins |
 | `CLAUDESEC_TRUST_PROXY` | — | Set `1` to trust `X-Forwarded-For` (behind a reverse proxy) |
 | `NODE_ENV` | — | `production` serves the built `dist/`; otherwise Vite dev mode |
+
+## Storage & data safety
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_DB` | `spans.db` | SQLite database path. Point throwaway / test instances elsewhere to isolate them |
+| `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the destructive data-wipe is disabled by default |
+
+## Enforcement
+
+These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook. The mode is normally set from the **Enforce** dashboard tab (which the server mirrors to `enforce-config.json`); the env vars are the fallback.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_MODE` | `monitor` | Hook mode: `monitor` logs would-blocks (default), `enforce` blocks high-severity tool calls |
+| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
+| `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (fail-open if absent) |
+
+## MCP / skill scanner
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_MCP_SCAN_ROOTS` | `~/.claude` | Colon/comma-separated roots for the [MCP & skill scanner](/security/mcp-scan). **Replaces** the defaults (does not append) |
 
 ## Local watcher
 

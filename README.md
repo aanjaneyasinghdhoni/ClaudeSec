@@ -136,6 +136,8 @@ Scrubbing catches known secret *shapes*; it does not sanitize arbitrary source c
 - **Orchestration** — per-agent tool inventory, command-audit trail, and a file-access panel that flags sensitive paths.
 - **Heatmap** — tool-usage intensity across harnesses and sessions.
 - **Threat detection** — 630 built-in regex rules (HIGH / MEDIUM / LOW) plus honeytoken canaries and behavioral-anomaly checks, evaluated on every span.
+- **Enforcement** — an opt-in Claude Code **PreToolUse hook** can block a tool call *before it runs*, driven by the same rule set. Defaults to **monitor** (logs would-blocks); flip to **enforce** from the dashboard. See [Enforcement](#enforcement).
+- **MCP & skill scanner** — static scan of installed MCP servers and Claude skills for tool-poisoning, prompt-injection in descriptions, hardcoded secrets, and suspicious launch commands (**Protect → MCP Scan**, `GET /api/mcp-scan`).
 - **Alerts** — deduplicated, triageable detection log (dismiss / false-positive) with JSON export.
 - **Custom rules** — CRUD UI with a live tester; user patterns compiled with RE2 (linear-time, ReDoS-safe).
 - **Cost view** — token usage and API-equivalent cost per session and per model, plus subscription-plan awareness (API / Pro / Max 5× / Max 20×) so flat-rate users see value-vs-plan instead of a misleading bill.
@@ -148,6 +150,7 @@ Scrubbing catches known secret *shapes*; it does not sanitize arbitrary source c
 - **OTLP forwarding** — transparent proxy to an upstream collector (`OTEL_FORWARD_URL`).
 - **Auto-export** — hourly JSON snapshots to `exports/` (last 24 retained).
 - **Bookmarks, tags, annotations, session labels & notes** — organize and review.
+- **Responsive UI** — the dashboard adapts to mobile and tablet: an off-canvas drawer sidebar below `lg`, a bottom tab bar below `md`, and accessible navigation (`aria-label` / `aria-current`, safe-area insets).
 
 ---
 
@@ -172,6 +175,41 @@ flowchart LR
 | **HIGH** | Destructive commands, credential reads, piped remote code, SQL destruction, exfiltration, prompt injection, reverse shells, supply-chain attacks, container escape |
 | **MEDIUM** | Env-var access, dotenv reads, SSH-key manipulation, sensitive system files, base64 decode, network recon |
 | **LOW** | Full table scans, world-executable permissions, sudo usage, global installs, broad globs |
+
+---
+
+## Enforcement
+
+Detection tells you what an agent *did*. **Enforcement** can stop a tool call *before it runs* — using the same rule set, wired into Claude Code as a **PreToolUse hook** (`.claude/hooks/claudesec-enforce.cjs`). The hook reads the proposed `Bash` / `Edit` / `Write` payload on stdin and, if a high-severity rule matches, can deny it (exit 2).
+
+Two modes, **monitor by default**:
+
+| Mode | Behavior |
+|---|---|
+| `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the always-on *catastrophic-6* floor (`rm -rf /`, fork bombs, `curl … \| sh`, `/dev/tcp` reverse shells, `mkfs`, `dd of=/dev/…`). |
+| `enforce` | Actually denies high-severity command / file tool calls, in addition to the catastrophic floor. |
+
+The server is the source of truth. Set the mode from the **Enforce** dashboard tab (or `PUT /api/enforce/config`); the server mirrors it to `enforce-config.json`, which the hook reads on each call. You can also set `CLAUDESEC_MODE=enforce` in the hook's environment. Would-block / block events stream to the **Enforce** tab and `GET /api/enforce-log`.
+
+```bash
+# Per-invocation escape hatch — allow everything for one run:
+CLAUDESEC_HOOKS_BYPASS=1 claude ...
+```
+
+> **Honest scope.** This is the **Claude Code hook layer** — agent-specific and bypassable (`CLAUDESEC_HOOKS_BYPASS=1`, or simply not registering the hook). It is **not** an OS sandbox. The hook **fails open**: any error, missing config, or unparseable input results in *allow*, so a broken enforcement config can never lock you out. Cross-agent and MCP-level enforcement are future work.
+
+---
+
+## MCP & skill scanning
+
+AI agents implicitly trust their installed MCP servers and skills — a poisoned tool description or a malicious launch command runs with the agent's privileges. **Protect → MCP Scan** (`GET /api/mcp-scan`) statically scans those surfaces, **read-only** (it never launches a server or modifies a file), for:
+
+- **Tool poisoning / shadowing** — descriptions that instruct the agent to perform hidden side-effects.
+- **Prompt injection** — hidden instructions in MCP/skill descriptions or skill bodies.
+- **Hardcoded secrets** — keys/tokens in configs, env, or args (reusing the secret-scrub patterns).
+- **Suspicious launch commands** — e.g. `npx` of an untrusted remote, `curl … | sh` (scored by the same detection engine).
+
+It walks `~/.claude` (MCP configs in `settings.json` / `.mcp.json` / `~/.claude.json`, and `SKILL.md` skills) by default. Override the roots with `CLAUDESEC_MCP_SCAN_ROOTS` (colon/comma-separated; **replaces** the defaults — useful for scanning a fixture).
 
 ---
 
@@ -217,6 +255,10 @@ All configuration is optional — see `.env.example`. Highlights:
 | `CLAUDESEC_TOKEN` | — | Bearer token required for **non-loopback** API/MCP access; required to bind a non-loopback host |
 | `CLAUDESEC_DB` | `spans.db` | SQLite database path (point throwaway/test instances elsewhere) |
 | `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the data wipe is disabled by default |
+| `CLAUDESEC_MODE` | `monitor` | Enforcement hook mode: `monitor` logs would-blocks (default), `enforce` blocks high-severity tool calls. Usually set from the **Enforce** tab instead |
+| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
+| `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (server-written; fail-open) |
+| `CLAUDESEC_MCP_SCAN_ROOTS` | `~/.claude` | Colon/comma-separated roots for the MCP/skill scanner; **replaces** the defaults |
 | `CLAUDESEC_WATCH` | `1` | Local transcript watcher (`0` to disable) |
 | `CLAUDESEC_BACKFILL` | `0` | Import historical transcripts on first run |
 | `CLAUDESEC_DISABLE_SCRUB` | — | Forward raw, unscrubbed attributes |

@@ -13,6 +13,10 @@ Set **Max Spans** and **Retention Days** — the two limits that drive automatic
 
 A live reference of every configuration env var, grouped by category, showing each one's description, default, and whether it's currently set (sensitive values masked). See the full [Configuration reference](/reference/config).
 
+## Configuration Status
+
+A live view of each setting's *effective* state — not just whether an env var is present, but whether the feature it controls is actually active. Backed by `GET /api/config/status`, each setting shows an **ACTIVE** / **CAUTION** / **DEFAULT** / **OFF** label and its effective (secret-masked) value — for example, the [enforcement](/security/enforcement) mode (`monitor` vs `enforce`), recent enforcement activity, whether a `CLAUDESEC_TOKEN` is set, and whether the destructive reset endpoint is enabled. Poll it to confirm a change took effect.
+
 ## Rate Limiting
 
 Read-only display of the OTLP intake limits (requests/second, burst, max spans per batch). Configure these via environment variables before starting the server.

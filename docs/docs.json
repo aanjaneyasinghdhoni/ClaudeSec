@@ -45,6 +45,8 @@
         "group": "Protect",
         "pages": [
           "security/rules",
+          "security/enforcement",
+          "security/mcp-scan",
           "security/suppressions"
         ]
       },
