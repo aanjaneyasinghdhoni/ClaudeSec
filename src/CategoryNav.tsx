@@ -34,7 +34,7 @@ export function CategoryNav({ active, onChange, alertCount = 0, onOpenDocs, docs
 
   return (
     <div
-      className={`shrink-0 flex flex-col py-3 px-2 gap-1 transition-[width] duration-200 ease-out overflow-hidden ${collapsed ? 'w-[56px] items-center' : 'w-[180px]'}`}
+      className={`hidden md:flex shrink-0 flex-col py-3 px-2 gap-1 transition-[width] duration-200 ease-out overflow-hidden ${collapsed ? 'w-[56px] items-center' : 'w-[180px]'}`}
       style={{
         borderRight: '1px solid var(--cs-border)',
         background: 'var(--cs-bg-surface)',

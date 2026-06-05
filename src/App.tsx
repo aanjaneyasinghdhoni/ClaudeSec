@@ -10,7 +10,7 @@ import {
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star,
   Server, GitCompare, Monitor, Bookmark,
-  ChevronDown, MoreHorizontal, HelpCircle,
+  ChevronDown, MoreHorizontal, HelpCircle, Menu,
 } from 'lucide-react';
 import { socket } from './socket';
 import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
@@ -632,6 +632,8 @@ export default function App() {
 
   // ── Theme (s53) ───────────────────────────────────────────────────────────
   const [liveActivityOpen, setLiveActivityOpen] = useState(false);
+  // Off-canvas sidebar drawer (below lg). Static in-row sidebar at >=lg.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeId>(() => {
     try {
       const saved = localStorage.getItem('claudesec.theme');
@@ -1133,7 +1135,7 @@ export default function App() {
   }, [sessions.length]);
 
   return (
-    <div className="w-screen h-screen flex flex-col overflow-hidden" style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-base)' }}>
+    <div className="w-full lg:w-screen min-h-dvh lg:h-screen flex flex-col overflow-x-hidden lg:overflow-hidden" style={{ background: 'var(--cs-bg-primary)', color: 'var(--cs-text-base)' }}>
 
       {/* ── Header ── */}
       <header className="h-11 flex items-center justify-between px-4 z-10 shrink-0" style={{
@@ -1142,6 +1144,16 @@ export default function App() {
       }}>
         {/* Left cluster: logo + sparkline */}
         <div className="flex items-center gap-3">
+          {/* Hamburger — opens contextual sidebar drawer (below lg only) */}
+          <button
+            onClick={() => { setDocsOpen(false); setSidebarOpen(true); }}
+            className="lg:hidden -ml-1 inline-flex items-center justify-center w-11 h-11 rounded-lg transition-all"
+            style={{ color: 'var(--cs-text-muted)' }}
+            aria-label="Open sidebar"
+            aria-expanded={sidebarOpen}
+          >
+            <Menu className="w-5 h-5" />
+          </button>
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, var(--cs-accent), #009e7f)' }}>
               <Shield className="w-3.5 h-3.5 text-white" />
@@ -1280,16 +1292,25 @@ export default function App() {
         }}
       />
 
-      <div className="flex-1 flex overflow-hidden min-h-0">
+      <div className="flex-1 flex lg:overflow-hidden min-h-0 relative">
 
-        {/* ── Category Rail ── */}
+        {/* ── Category Rail (hidden below md — replaced by bottom tab bar) ── */}
         <CategoryNav active={activeCategory} onChange={handleCategoryChange} alertCount={alertCount} onOpenDocs={() => setDocsOpen(true)} docsActive={docsOpen} />
+
+        {/* Drawer scrim — tap to close (below lg only) */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/50 z-30 lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
 
         {docsOpen ? (
           <DocsView onClose={() => setDocsOpen(false)} />
         ) : (
         <>
-        {/* ── Contextual Sidebar ── */}
+        {/* ── Contextual Sidebar (static in-row at >=lg, off-canvas drawer below) ── */}
         <ContextSidebar
           category={activeCategory}
           alertCount={alertCount}
@@ -1297,6 +1318,8 @@ export default function App() {
           onTabChange={(tab) => handleTabChange(tab as Tab)}
           timeRange={timeRange}
           onTimeRangeChange={setTimeRange}
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
           observeContent={<>
 
           {/* Connection Status */}
@@ -1706,10 +1729,10 @@ export default function App() {
         />
 
         {/* ── Main Area ── */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0">
 
           {/* Sub-tab strip — filtered by active category */}
-          <div className="flex items-center gap-0.5 px-3 shrink-0 overflow-x-auto" style={{
+          <div className="flex items-center gap-0.5 px-3 shrink-0 overflow-x-auto flex-nowrap cs-scroll-x" style={{
             borderBottom: '1px solid var(--cs-border)',
             background: 'var(--cs-bg-surface)',
           }}>
@@ -1859,8 +1882,8 @@ export default function App() {
         )}
       </div>
 
-      {/* ── Footer ── */}
-      <footer className="h-7 px-4 flex items-center justify-between z-10 shrink-0 gap-3 overflow-hidden" style={{
+      {/* ── Footer (hidden below md — replaced by bottom tab bar) ── */}
+      <footer className="h-7 px-4 hidden md:flex items-center justify-between z-10 shrink-0 gap-3 overflow-hidden" style={{
         borderTop: '1px solid var(--cs-border)',
         background: 'var(--cs-bg-surface)',
       }}>
@@ -1917,6 +1940,37 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      {/* ── Bottom tab bar (below md only) — 5 categories ── */}
+      <nav
+        className="md:hidden fixed bottom-0 inset-x-0 z-20 flex items-stretch pb-[env(safe-area-inset-bottom)]"
+        style={{ borderTop: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}
+        aria-label="Primary"
+      >
+        {CATEGORIES.map(cat => {
+          const isActive = !docsOpen && activeCategory === cat.id;
+          return (
+            <button
+              key={cat.id}
+              onClick={() => { setDocsOpen(false); setSidebarOpen(false); handleCategoryChange(cat.id); }}
+              className="category-btn relative flex-1 flex flex-col items-center justify-center gap-0.5 min-h-[56px] py-1.5"
+              style={{ color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}
+              aria-current={isActive ? 'page' : undefined}
+            >
+              {isActive && (
+                <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-[2px] rounded-b-full" style={{ background: 'var(--cs-accent)' }} />
+              )}
+              {cat.icon}
+              <span className="text-[10px] font-medium tracking-wide leading-none">{cat.label}</span>
+              {cat.id === 'detect' && alertCount > 0 && (
+                <span className="absolute top-1.5 right-[calc(50%-1.25rem)] min-w-[15px] h-[15px] px-1 text-[9px] font-bold rounded-full flex items-center justify-center leading-none bg-rose-500 text-white">
+                  {alertCount > 99 ? '99+' : alertCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }

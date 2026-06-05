@@ -21,7 +21,7 @@
   --cs-border-soft:  #2a2d3e;
   --cs-text-base:    #e8eaf0;
   --cs-text-muted:   #8b90a0;
-  --cs-text-faint:   #4a4e60;
+  --cs-text-faint:   #7d8294;  /* >=4.5:1 on dark surfaces (primary/surface/elevated) for WCAG AA */
   --cs-accent:       #00d4aa;
   --cs-accent-dim:   #00d4aa33;
   --cs-accent-rgb:   0,212,170;
@@ -31,7 +31,7 @@
   /* SVG theme tokens */
   --cs-svg-grid:     #1c1e2a;
   --cs-svg-axis:     #2a2d3e;
-  --cs-svg-text:     #4a4e60;
+  --cs-svg-text:     #7d8294;  /* >=4.5:1 on dark surfaces for WCAG AA */
   --cs-svg-label:    #e2e8f0;
   --cs-svg-label-muted: #8b90a0;
   --cs-svg-track:    #0e1017;
@@ -297,6 +297,28 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Below lg (1024px): allow the page to scroll vertically; never horizontally.
+   The desktop layout keeps overflow:hidden so its inner panes scroll instead. */
+@media (max-width: 1023px) {
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+}
+
+/* ── Global keyboard focus ring (a11y) ───────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--cs-accent);
+  outline-offset: 2px;
+}
+
+/* ── Horizontally-scrollable strip (hidden scrollbar, still scrollable) ── */
+.cs-scroll-x {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.cs-scroll-x::-webkit-scrollbar { height: 0; width: 0; }
+
 /* ── Typography utilities ────────────────────────────────────────────── */
 .font-display { font-family: var(--font-display); }
 .font-mono    { font-family: var(--font-mono) !important; }
@@ -324,6 +346,15 @@ input[type="datetime-local"],
 input[type="date"],
 input[type="time"] {
   color-scheme: dark;
+}
+
+/* ── Mobile: 16px form fields to stop iOS auto-zoom on focus ──────────── */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
 
 html.light input[type="datetime-local"],
@@ -533,6 +564,11 @@ select option {
   background: var(--cs-bg-elevated);
   color: var(--cs-text-muted);
 }
+.category-btn:focus-visible {
+  outline: 2px solid var(--cs-accent);
+  outline-offset: 2px;
+  color: var(--cs-text-muted);
+}
 
 /* ── Sub-tab button hover ────────────────────────────────────────────── */
 .sub-tab-btn {
@@ -542,6 +578,10 @@ select option {
 .sub-tab-btn:hover:not(.tab-active) {
   background: var(--cs-bg-elevated);
   color: var(--cs-text-muted);
+}
+.sub-tab-btn:focus-visible {
+  outline: 2px solid var(--cs-accent);
+  outline-offset: 2px;
 }
 
 /* ── Sidebar section header ──────────────────────────────────────────── */

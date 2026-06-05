@@ -56,7 +56,7 @@ export function LiveActivityPanel({ open, onClose }: { open: boolean; onClose: (
         initial={{ opacity: 0, x: 20 }}
         animate={{ opacity: 1, x: 0 }}
         exit={{ opacity: 0, x: 20 }}
-        className="fixed top-16 right-4 z-50 w-80 bg-slate-900/95 backdrop-blur-md border border-slate-800 rounded-2xl shadow-2xl overflow-hidden"
+        className="fixed top-16 right-4 z-50 w-[calc(100vw-2rem)] sm:w-80 bg-slate-900/95 backdrop-blur-md border border-slate-800 rounded-2xl shadow-2xl overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-800">

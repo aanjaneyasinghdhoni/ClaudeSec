@@ -9,7 +9,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle, Shield, Search, Bookmark, Settings,
-  Cpu, Zap, Database, Bell, ChevronRight,
+  Cpu, Zap, Database, Bell, ChevronRight, X,
 } from 'lucide-react';
 import type { Category } from './CategoryNav';
 import { socket } from './socket';
@@ -242,11 +242,28 @@ export interface ContextSidebarProps {
   onTimeRangeChange: (range: TimeRange) => void;
   /** Observe sidebar is rendered inline in App.tsx (too much state to extract cleanly) */
   observeContent?: React.ReactNode;
+  /** Drawer state (below lg). At >=lg the sidebar is always a static in-row column. */
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
-export function ContextSidebar({ category, alertCount, activeTab, onTabChange, timeRange, onTimeRangeChange, observeContent }: ContextSidebarProps) {
+export function ContextSidebar({ category, alertCount, activeTab, onTabChange, timeRange, onTimeRangeChange, observeContent, isOpen = false, onClose }: ContextSidebarProps) {
   return (
-    <aside className="w-64 flex flex-col overflow-hidden shrink-0" style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
+    <aside
+      className={`w-64 flex flex-col overflow-hidden bg-[var(--cs-bg-surface)] fixed inset-y-0 left-0 z-40 transition-transform duration-300 ease-out motion-reduce:transition-none lg:static lg:z-auto lg:translate-x-0 lg:shrink-0 lg:transition-none ${isOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}`}
+      style={{ borderRight: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}
+    >
+      {/* Drawer close bar — below lg only */}
+      <div className="lg:hidden flex items-center justify-end px-2.5 py-2 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+        <button
+          onClick={onClose}
+          className="inline-flex items-center justify-center w-9 h-9 rounded-lg transition-colors"
+          style={{ color: 'var(--cs-text-muted)' }}
+          aria-label="Close sidebar"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
       {category === 'observe' && (
         <>
           <QuickFilters timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
