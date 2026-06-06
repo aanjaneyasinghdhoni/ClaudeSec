@@ -132,8 +132,10 @@ export async function assertSafeFetchUrl(rawUrl: string): Promise<void> {
  * SSRF guard). Used by the LLM-judge path: a LOCAL Ollama at
  * http://127.0.0.1:11434 is always allowed (no-egress), while any non-loopback
  * URL is forced through assertSafeFetchUrl so it can't be aimed at internal
- * infra. Hostnames (e.g. "localhost", "myhost.local") are NOT treated as
- * loopback here — they go through the resolving guard, which correctly rejects
+ * infra. The bare hostname "localhost" IS treated as loopback here (it resolves
+ * to 127.0.0.1, so the public-only guard would otherwise reject the recommended
+ * local-Ollama path). Any OTHER hostname (e.g. "myhost.local") is NOT treated as
+ * loopback — it goes through the resolving guard, which correctly rejects
  * anything that resolves inward.
  */
 export function isLoopbackUrlHost(rawUrl: string): boolean {

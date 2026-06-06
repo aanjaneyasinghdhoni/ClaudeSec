@@ -94,7 +94,7 @@ const POISON_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[] =
 
 // ── Prompt-injection heuristics (prose) ──────────────────────────────────────
 // A CURATED, high-precision subset for free-form prose (descriptions + skill
-// bodies). We deliberately do NOT run the full 183-rule engine over prose: rules
+// bodies). We deliberately do NOT run the full rule engine over prose: rules
 // like "Code eval injection" / "Exec injection" / "SQL injection-style" fire on
 // any skill body that shows a code example, producing heavy false positives on
 // the hundreds of legitimate skills in a real ~/.claude. The full engine IS used
