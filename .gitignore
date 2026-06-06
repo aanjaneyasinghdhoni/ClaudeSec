@@ -43,3 +43,9 @@ plans/
 *.audit.md
 *.spec.local.md
 .gstack/
+# Screenshots, scratch notes, and the local session log — developer artifacts, never commit
+*.png
+*.jpg
+*.jpeg
+session.md
+snap*.md
