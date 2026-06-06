@@ -12,8 +12,6 @@ import RE2 from 're2';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
-import dns from 'node:dns';
-import ipaddr from 'ipaddr.js';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
@@ -23,6 +21,14 @@ import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from 
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 import { EXTRA_SEVERITY_RULES } from './severityRulesExtra.js';
 import { scanMcpAndSkills, type ScanResult } from './mcpScan.js';
+import {
+  normalizeAddr,
+  isLoopbackAddr,
+  isPublicAddress,
+  assertSafeFetchUrl,
+  SsrfBlockedError,
+} from './ssrf.js';
+import { judgeContent, getJudgeConfig } from './llmJudge.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,19 +39,6 @@ const __dirname = path.dirname(__filename);
 // These back the API/MCP/OTLP auth gate, the Socket.io handshake check, and the
 // startup bind guard.  Factored into one place so all three agree on what
 // "loopback" means and how the token is compared.
-
-/** Strip the IPv4-mapped IPv6 prefix (`::ffff:127.0.0.1` → `127.0.0.1`). */
-function normalizeAddr(addr: string | undefined | null): string {
-  let a = String(addr ?? '').trim();
-  if (a.startsWith('::ffff:')) a = a.slice('::ffff:'.length);
-  return a;
-}
-
-/** True for loopback addresses (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`). */
-function isLoopbackAddr(addr: string | undefined | null): boolean {
-  const a = normalizeAddr(addr);
-  return a === '127.0.0.1' || a === '::1';
-}
 
 /** Constant-time token comparison with a length guard (timingSafeEqual throws
  *  on unequal lengths, and the mismatched-length case is the attacker path). */
@@ -907,105 +900,10 @@ function maskWebhookUrl(url: string): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// SSRF guard — shared by every outbound-fetch sink (webhook sender, webhook
-// retry, OTLP forward).  A string/regex hostname check is trivially bypassable
-// (http://2130706433/ == 127.0.0.1, hex/octal forms, DNS rebinding where a
-// public name resolves to a private IP, IPv6 forms like [::ffff:127.0.0.1]).
-//
-// Instead we (1) require http/https, (2) actually DNS-resolve the host — which
-// also normalises decimal/hex/octal integer literals to dotted-quad — and
-// (3) classify EVERY resolved address with ipaddr.js, allowing only globally
-// routable `unicast` addresses.  That single allowlist transparently rejects
-// loopback / private / link-local (incl. 169.254.169.254 metadata) / CGNAT /
-// unique-local / multicast / reserved without enumerating each range.
-//
-// Because resolution happens at call time (not just at config time), this also
-// defeats DNS rebinding: a host that was public when configured is re-resolved
-// on every delivery and blocked the moment it points inward.
-// ---------------------------------------------------------------------------
-
-class SsrfBlockedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SsrfBlockedError';
-  }
-}
-
-const dnsLookupAll = (host: string): Promise<{ address: string; family: number }[]> =>
-  new Promise((resolve, reject) => {
-    dns.lookup(host, { all: true }, (err, addresses) => {
-      if (err) reject(err);
-      else resolve(addresses as { address: string; family: number }[]);
-    });
-  });
-
-/**
- * Classify a single resolved IP literal. Returns true only for globally
- * routable unicast addresses. IPv4-mapped IPv6 (::ffff:127.0.0.1) is unwrapped
- * to its embedded IPv4 before classification so a wrapped loopback is caught.
- */
-function isPublicAddress(addr: string): boolean {
-  let parsed;
-  try {
-    parsed = ipaddr.parse(addr);
-  } catch {
-    return false; // unparseable → treat as unsafe
-  }
-  // Unwrap IPv4-mapped IPv6 so ::ffff:10.0.0.1 is classified as the v4 range.
-  if (parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
-    parsed = (parsed as ipaddr.IPv6).toIPv4Address();
-  }
-  return parsed.range() === 'unicast';
-}
-
-/**
- * Validate that a URL is safe to fetch (no SSRF to internal/metadata hosts).
- * Throws SsrfBlockedError on any violation. Resolves the host every call so it
- * must be invoked at fetch time to defeat DNS rebinding.
- */
-async function assertSafeFetchUrl(rawUrl: string): Promise<void> {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new SsrfBlockedError('invalid URL');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new SsrfBlockedError('URL must use http or https');
-  }
-  // new URL() keeps the brackets on IPv6 hosts ("[::1]"); dns.lookup rejects
-  // that form, so strip them before resolving / direct-parsing.
-  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (!host) throw new SsrfBlockedError('URL has no host');
-
-  // If the host is already an IP literal, classify it directly — no DNS needed
-  // (and dns.lookup on some literals can behave inconsistently).
-  if (ipaddr.isValid(host)) {
-    if (!isPublicAddress(host)) {
-      throw new SsrfBlockedError('URL resolves to a private/internal/reserved address');
-    }
-    return;
-  }
-
-  // Otherwise resolve the hostname. dns.lookup also normalises integer literals
-  // (decimal 2130706433, hex 0x7f000001) to dotted-quad, so those are classified
-  // correctly here even though ipaddr.isValid() rejected them above.
-  let addresses: { address: string; family: number }[];
-  try {
-    addresses = await dnsLookupAll(host);
-  } catch {
-    throw new SsrfBlockedError('could not resolve host');
-  }
-  if (addresses.length === 0) {
-    throw new SsrfBlockedError('host did not resolve to any address');
-  }
-  for (const { address } of addresses) {
-    if (!isPublicAddress(address)) {
-      throw new SsrfBlockedError('URL resolves to a private/internal/reserved address');
-    }
-  }
-}
+// SSRF guard (assertSafeFetchUrl / isPublicAddress / SsrfBlockedError) and the
+// loopback helpers (normalizeAddr / isLoopbackAddr) are imported from ./ssrf.js
+// so every outbound-fetch sink — webhook sender/retry, OTLP forward, and the
+// optional LLM-as-judge — shares ONE copy of the security control.
 
 const SEV_RANK_MAP: Record<Severity, number> = { none: 0, low: 1, medium: 2, high: 3 };
 
@@ -2949,6 +2847,10 @@ service:
       { key: 'CLAUDESEC_HONEYTOKENS',        description: 'Comma-separated canary strings for exfiltration detection', default: '', category: 'Security', sensitive: true },
       { key: 'CLAUDESEC_AUTO_EXPORT_DIR',    description: 'Directory for hourly auto-export JSON snapshots',           default: './exports', category: 'Export' },
       { key: 'OTEL_FORWARD_URL',             description: 'Forward OTLP traces to upstream collector', default: '',      category: 'Integration' },
+      // Optional LLM-as-judge semantic detection (OFF by default — no URL = no egress)
+      { key: 'CLAUDESEC_JUDGE_URL',          description: 'Optional LLM-as-judge endpoint (OpenAI-compatible /chat/completions; recommended: local Ollama http://localhost:11434/v1). OFF by default.', default: '', category: 'Detection' },
+      { key: 'CLAUDESEC_JUDGE_MODEL',        description: 'Model name for the LLM-as-judge (e.g. llama3.1)',           default: 'llama3.1', category: 'Detection' },
+      { key: 'CLAUDESEC_JUDGE_KEY',          description: 'Optional bearer key for the judge endpoint (not needed for local Ollama)', default: '', category: 'Detection', sensitive: true },
     ];
 
     const enriched = envVars.map(v => ({
@@ -3121,6 +3023,28 @@ service:
       detail: forwardSet ? 'OTLP traces are forwarded upstream.' : 'No upstream forwarding.',
     });
 
+    // — Detection: optional LLM-as-judge —
+    // OFF by default. Reports whether a semantic judge endpoint is configured.
+    // The endpoint is masked (origin only) and the API key is NEVER echoed.
+    const judgeCfg = getJudgeConfig();
+    const judgeOn = judgeCfg !== null;
+    const judgeLoopback = judgeOn ? isLoopbackAddr(
+      (() => { try { return new URL(judgeCfg!.url).hostname.replace(/^\[|\]$/g, ''); } catch { return ''; } })()
+    ) || (() => { try { return new URL(judgeCfg!.url).hostname.toLowerCase() === 'localhost'; } catch { return false; } })()
+      : false;
+    settings.push({
+      key: 'CLAUDESEC_JUDGE_URL',
+      category: 'Detection',
+      description: 'Optional LLM-as-judge semantic detector. When set to an OpenAI-compatible /chat/completions endpoint (recommended: a LOCAL Ollama), spans can be classified as prompt-injection / jailbreak / exfiltration on demand. OFF by default — no judge URL means no outbound calls.',
+      isSet: !!process.env.CLAUDESEC_JUDGE_URL,
+      effectiveValue: judgeOn ? maskWebhookUrl(judgeCfg!.url) : 'not configured',
+      enabled: judgeOn,
+      state: judgeOn ? 'active' : 'off',
+      detail: judgeOn
+        ? `Judge active (model: ${judgeCfg!.model}${judgeCfg!.key ? ', key set' : ''})${judgeLoopback ? ' — loopback/no-egress.' : ' — non-loopback, SSRF-guarded.'}`
+        : 'No semantic judge — regex rules only. Set CLAUDESEC_JUDGE_URL (e.g. a local Ollama) to enable.',
+    });
+
     // — Retention —
     const maxSpansEnv = Number(process.env.CLAUDESEC_MAX_SPANS) > 0;
     const maxSpans = getMaxSpans();
@@ -3182,7 +3106,7 @@ service:
       default: settings.filter(s => s.state === 'default').length,
     };
 
-    const categoryOrder = ['Enforcement', 'Security', 'Telemetry', 'Retention', 'Integrations'];
+    const categoryOrder = ['Enforcement', 'Security', 'Detection', 'Telemetry', 'Retention', 'Integrations'];
     res.json({ settings, summary, categoryOrder, generatedAt: new Date().toISOString() });
   });
 
@@ -4476,6 +4400,42 @@ ${alerts.length > 0 ? `
       matchEnd:     hit.matchEnd,
       ruleKey:      hit.ruleKey,
     });
+  });
+
+  // ── LLM-as-judge (optional, opt-in, local-first) ─────────────────────────
+  // Semantic detection layer that augments the regex rules. OFF by default:
+  // unless CLAUDESEC_JUDGE_URL is configured this endpoint reports
+  // {enabled:false} and makes ZERO outbound calls (no-egress preserved). When
+  // enabled, it classifies the given text (or a span's content) as
+  // prompt-injection / jailbreak / data-exfiltration / benign via a configured
+  // OpenAI-compatible chat endpoint — recommended: a LOCAL Ollama. Fail-open:
+  // any error returns {enabled:true, error} and never blocks anything.
+  app.post('/api/judge', async (req, res) => {
+    const body = (req.body ?? {}) as { text?: string; spanId?: string };
+    let text = typeof body.text === 'string' ? body.text : '';
+    let spanId: string | undefined;
+
+    // If a spanId is given, build the judged text from that span's content
+    // (mirrors /api/spans/:spanId/match: attributes + name).
+    if (!text && body.spanId) {
+      const row = db.prepare('SELECT * FROM spans WHERE spanId = ?').get(body.spanId) as SpanRecord | undefined;
+      if (!row) {
+        res.status(404).json({ error: 'span not found' });
+        return;
+      }
+      spanId = row.spanId;
+      text = row.attributes + ' ' + row.name;
+    }
+
+    if (!text.trim()) {
+      res.status(400).json({ error: 'text or spanId is required' });
+      return;
+    }
+
+    // judgeContent never throws and never blocks — it returns {enabled:false}
+    // when no judge is configured (no network call) or {enabled:true,...}.
+    const result = await judgeContent(text);
+    res.json({ ...result, spanId });
   });
 
   // ── Honeytokens ────────────────────────────────────────────────────────

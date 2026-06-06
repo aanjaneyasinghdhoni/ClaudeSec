@@ -117,7 +117,8 @@ Both intakes converge on the same detection-and-storage pipeline. Any OTLP/HTTP-
 ClaudeSec reads sensitive material (your agents' commands, prompts, and code), so it is built local-first by construction:
 
 - **Loopback only** — the server binds `127.0.0.1` by default. Set `CLAUDESEC_HOST=0.0.0.0` only if you deliberately want LAN access.
-- **No egress** — nothing is sent anywhere. The single optional outbound path is `OTEL_FORWARD_URL`, off unless you set it (and SSRF-blocked for private ranges).
+- **No egress** — nothing is sent anywhere. The only optional outbound paths are `OTEL_FORWARD_URL` and the opt-in LLM-as-judge (`CLAUDESEC_JUDGE_URL`) — both off unless you set them, and SSRF-blocked for private ranges. The judge's **recommended** target is a local Ollama (`http://localhost:11434/v1`), which keeps semantic detection fully on-device; a loopback URL is the one address always allowed.
+- **Optional semantic detection (LLM-as-judge)** — off by default. When you point `CLAUDESEC_JUDGE_URL` at an OpenAI-compatible `/chat/completions` endpoint, the **Detect → Alerts** tab gains an "Analyze" action that classifies a flagged span as prompt-injection / jailbreak / data-exfiltration / benign. On-demand only (never run automatically on every span) and fail-open (any error/timeout is ignored — detection is unaffected); a non-loopback endpoint is forced through the SSRF guard so it can't be aimed at internal infra.
 - **Owner-only database** — `spans.db` is created with `0600` permissions.
 - **Secret scrubbing (on by default)** — known secret shapes (keys, tokens, credentials), home paths, usernames, and emails are redacted before anything is persisted, broadcast, or exported. The attribute *shape* is preserved so downstream collectors keep working. Disable with `CLAUDESEC_DISABLE_SCRUB=1`.
 - **Honeytokens** — plant canary strings; any span containing one fires a HIGH-severity `Honeytoken exfiltration` alert.
@@ -268,6 +269,9 @@ All configuration is optional — see `.env.example`. Highlights:
 | `OTEL_FORWARD_URL` | — | Transparent OTLP proxy target (SSRF-blocked for private ranges) |
 | `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / generic JSON endpoint |
 | `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to webhook |
+| `CLAUDESEC_JUDGE_URL` | — | **Optional** LLM-as-judge endpoint (OpenAI-compatible `/chat/completions`). OFF by default — unset = zero outbound. Recommended no-egress: a local Ollama `http://localhost:11434/v1` |
+| `CLAUDESEC_JUDGE_MODEL` | `llama3.1` | Model name for the judge |
+| `CLAUDESEC_JUDGE_KEY` | — | Optional bearer key for the judge endpoint (not needed for local Ollama) |
 
 ---
 

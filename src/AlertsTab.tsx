@@ -1,9 +1,30 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers } from 'lucide-react';
+import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers, Sparkles, Loader2 } from 'lucide-react';
 import { socket } from './socket';
 
 type Severity = 'none' | 'low' | 'medium' | 'high';
 type SeverityFilter = 'all' | 'high' | 'medium' | 'low';
+
+type JudgeVerdict = 'malicious' | 'suspicious' | 'benign';
+interface JudgeResult {
+  enabled: boolean;
+  verdict?: JudgeVerdict;
+  category?: string;
+  confidence?: number;
+  reason?: string;
+  error?: string;
+  model?: string;
+}
+type JudgeState =
+  | { status: 'loading' }
+  | { status: 'done'; result: JudgeResult }
+  | { status: 'error'; message: string };
+
+const JUDGE_VERDICT_STYLE: Record<JudgeVerdict, string> = {
+  malicious:  'bg-red-900/40 text-red-300 border border-red-700/50',
+  suspicious: 'bg-orange-900/40 text-orange-300 border border-orange-700/50',
+  benign:     'bg-emerald-900/30 text-emerald-300 border border-emerald-700/40',
+};
 
 interface AlertRow {
   id: number;
@@ -63,6 +84,10 @@ export function AlertsTab() {
   const [showDismissed,   setShowDismissed]   = useState(false);
   const [groupByRule,     setGroupByRule]     = useState(false);
   const [triaging,        setTriaging]        = useState<Set<number>>(new Set());
+  // LLM-as-judge: off unless a judge URL is configured. judgeStates is keyed by
+  // alert id so each row tracks its own on-demand verdict.
+  const [judgeEnabled,    setJudgeEnabled]    = useState(false);
+  const [judgeStates,     setJudgeStates]     = useState<Record<number, JudgeState>>({});
 
   const fetchAlerts = (
     sev: SeverityFilter = severityFilter,
@@ -108,6 +133,35 @@ export function AlertsTab() {
   const handleClear = async () => {
     if (!window.confirm('Clear all alerts? This cannot be undone.')) return;
     await fetch('/api/alerts', { method: 'DELETE' });
+  };
+
+  // Detect whether the optional LLM-as-judge is configured (so the "Analyze"
+  // action only shows when it can actually do something). Off by default.
+  useEffect(() => {
+    fetch('/api/config/status')
+      .then(r => r.json())
+      .then((data: { settings?: { key: string; enabled: boolean }[] }) => {
+        const j = (data.settings ?? []).find(s => s.key === 'CLAUDESEC_JUDGE_URL');
+        setJudgeEnabled(!!j?.enabled);
+      })
+      .catch(() => setJudgeEnabled(false));
+  }, []);
+
+  // On-demand semantic analysis of a single alert via POST /api/judge {spanId}.
+  // Fail-open on the server; the UI shows whatever verdict / error comes back.
+  const analyze = async (alert: AlertRow) => {
+    setJudgeStates(prev => ({ ...prev, [alert.id]: { status: 'loading' } }));
+    try {
+      const r = await fetch('/api/judge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(alert.spanId ? { spanId: alert.spanId } : { text: alert.matchedText }),
+      });
+      const result = (await r.json()) as JudgeResult;
+      setJudgeStates(prev => ({ ...prev, [alert.id]: { status: 'done', result } }));
+    } catch {
+      setJudgeStates(prev => ({ ...prev, [alert.id]: { status: 'error', message: 'Request failed' } }));
+    }
   };
 
   const formatTime = (ts: string) => {
@@ -217,15 +271,16 @@ export function AlertsTab() {
                 const isFP        = !!alert.fp;
                 const isTriaging  = triaging.has(alert.id);
                 const hitCount    = alert.count ?? 1;
+                const judgeState  = judgeStates[alert.id];
                 return (
+                  <React.Fragment key={alert.id}>
                   <tr
-                    key={alert.id}
                     className={`transition-colors ${
                       isDismissed
                         ? 'opacity-40 bg-slate-900/30'
                         : 'hover:bg-slate-800/30'
                     }`}
-                    style={{ borderBottom: '1px solid var(--cs-border)' }}
+                    style={{ borderBottom: judgeState ? 'none' : '1px solid var(--cs-border)' }}
                   >
                     <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
                       {formatTime(alert.ts)}
@@ -278,6 +333,19 @@ export function AlertsTab() {
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">
+                        {/* Analyze with LLM (only when the optional judge is configured) */}
+                        {judgeEnabled && (
+                          <button
+                            disabled={judgeState?.status === 'loading'}
+                            onClick={() => analyze(alert)}
+                            className="p-1 rounded transition-colors text-violet-400 hover:bg-violet-900/30 hover:text-violet-300 disabled:opacity-50"
+                            title="Analyze with LLM judge (semantic verdict)"
+                          >
+                            {judgeState?.status === 'loading'
+                              ? <Loader2 className="w-3 h-3 animate-spin" />
+                              : <Sparkles className="w-3 h-3" />}
+                          </button>
+                        )}
                         {/* Dismiss toggle */}
                         <button
                           disabled={isTriaging}
@@ -307,6 +375,53 @@ export function AlertsTab() {
                       </div>
                     </td>
                   </tr>
+                  {judgeState && (
+                    <tr style={{ borderBottom: '1px solid var(--cs-border)' }}>
+                      <td colSpan={7} className="px-4 pb-3 pt-0">
+                        <div
+                          className="rounded-lg px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1.5"
+                          style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}
+                        >
+                          <span className="inline-flex items-center gap-1 text-violet-300 font-semibold shrink-0">
+                            <Sparkles className="w-3 h-3" /> LLM judge
+                          </span>
+                          {judgeState.status === 'loading' && (
+                            <span className="inline-flex items-center gap-1.5 text-slate-400">
+                              <Loader2 className="w-3 h-3 animate-spin" /> Analyzing…
+                            </span>
+                          )}
+                          {judgeState.status === 'error' && (
+                            <span className="text-red-400">Request failed — {judgeState.message}</span>
+                          )}
+                          {judgeState.status === 'done' && (() => {
+                            const r = judgeState.result;
+                            if (!r.enabled) return <span className="text-slate-500">Judge not configured (set <code className="font-mono">CLAUDESEC_JUDGE_URL</code>).</span>;
+                            if (!r.verdict) return <span className="text-amber-400">Judge unavailable — {r.error ?? 'no verdict'} <span className="text-slate-600">(fail-open: detection unaffected)</span></span>;
+                            return (
+                              <>
+                                <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold uppercase ${JUDGE_VERDICT_STYLE[r.verdict]}`}>
+                                  {r.verdict}
+                                </span>
+                                {r.category && (
+                                  <span className="font-mono text-slate-300">{r.category}</span>
+                                )}
+                                {typeof r.confidence === 'number' && (
+                                  <span className="text-slate-500">conf {(r.confidence * 100).toFixed(0)}%</span>
+                                )}
+                                {r.reason && (
+                                  <span className="text-slate-400 italic basis-full sm:basis-auto">“{r.reason}”</span>
+                                )}
+                                {r.model && (
+                                  <span className="text-slate-600 ml-auto shrink-0">{r.model}</span>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
