@@ -92,7 +92,7 @@
     "motion": "^12.23.24",
     "re2": "^1.24.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react-dom": "^19.2.7",
     "react-router-dom": "^7.14.1",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
