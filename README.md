@@ -127,10 +127,12 @@ The dashboard is then at **http://localhost:3000**.
 
 **Ingestion in Docker is via OTLP only.** The container has no access to your machine's
 transcripts, so it does **not** auto-discover your local Claude Code / Copilot CLI / Codex
-sessions the way the pnpm path does. Point remote or CI agents at
-`http://<host>:3000/v1/traces` (see [Connecting an agent via OTLP](#connecting-an-agent-via-otlp-remote--ci)).
-Docker suits headless or server deployments; to watch local sessions with zero config, use
-the pnpm path above.
+sessions the way the pnpm path does. Same-host agents and CI can post to
+`http://localhost:3000/v1/traces` as-is; because the default `docker compose up` publishes
+only on `127.0.0.1`, reaching the container from **another machine** first requires the
+reconfiguration above (bind the port off loopback and set `CLAUDESEC_TOKEN`). See
+[Connecting an agent via OTLP](#connecting-an-agent-via-otlp-remote--ci). To watch local
+sessions with zero config, use the pnpm path above.
 
 ---
 
