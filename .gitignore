@@ -26,6 +26,14 @@ rules-enforcement.json
 enforce-config.json
 rules.json
 
+# Images and screenshots — keep them out of the repository
+*.png
+*.jpg
+*.jpeg
+*.gif
+.screenshots/
+screenshots/
+
 # OS / editor noise
 .DS_Store
 *.log
