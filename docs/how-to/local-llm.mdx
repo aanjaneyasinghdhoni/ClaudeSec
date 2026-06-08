@@ -1,0 +1,66 @@
+---
+title: "Use a local LLM as judge"
+description: "Run an on-device model as an optional semantic detector — no data leaves your machine."
+---
+
+ClaudeSec's threat detection is regex-first: every span is scored against the built-in rule library with no model in the loop. The **LLM-as-judge** is an optional second opinion — a model that classifies a piece of agent activity as prompt injection, jailbreak, data exfiltration, or benign, *on top of* the rules.
+
+It is **off by default and on-demand**, and it is designed so you can run it entirely on-device.
+
+## How it works
+
+- **Off by default.** With no `CLAUDESEC_JUDGE_URL` set, the judge makes **zero** network calls — ClaudeSec's "nothing leaves your machine" promise is unchanged.
+- **On-demand, not automatic.** The judge never runs on every span. You invoke it from **Detect → Alerts** with the **Analyze** action on a span (or via `POST /api/judge` with a `text` or `spanId` body). The regex engine stays the only always-on detector.
+- **OpenAI-compatible.** The judge calls a standard `/chat/completions` endpoint, so any server that speaks the OpenAI chat API works — including local runtimes like Ollama and LM Studio.
+- **Loopback is the recommended path.** A loopback judge (`127.0.0.1`, `::1`, or `localhost`) is always allowed — that is the no-egress configuration. Any **non-loopback** URL is forced through the shared SSRF guard, so it cannot be aimed at private ranges or cloud-metadata addresses, even by accident.
+- **Fail-open.** Any error, timeout, bad response, or disabled state is ignored — the judge never throws into a caller and never blocks ingestion or detection.
+
+## Option A — Ollama
+
+[Ollama](https://ollama.com) runs models locally and exposes an OpenAI-compatible API at `http://localhost:11434/v1`.
+
+1. Install Ollama and pull a model:
+
+   ```bash
+   ollama pull llama3.1
+   ```
+
+2. Point ClaudeSec at it and restart the server:
+
+   ```bash
+   export CLAUDESEC_JUDGE_URL=http://localhost:11434/v1
+   export CLAUDESEC_JUDGE_MODEL=llama3.1
+   ```
+
+That is the fully local, no-egress setup: the judge URL is loopback, so it is allowed without passing the public-only SSRF guard, and nothing leaves your machine.
+
+## Option B — LM Studio
+
+[LM Studio](https://lmstudio.ai) serves a downloaded model behind an OpenAI-compatible endpoint at `http://localhost:1234/v1`.
+
+1. Load a model in LM Studio and start its local server.
+2. Point ClaudeSec at it and restart the server:
+
+   ```bash
+   export CLAUDESEC_JUDGE_URL=http://localhost:1234/v1
+   export CLAUDESEC_JUDGE_MODEL=<the-model-id-shown-in-lm-studio>
+   ```
+
+## Running it
+
+Open **Detect → Alerts**, select a span, and use the **Analyze** action. The judge returns a verdict (`malicious`, `suspicious`, or `benign`), a short category, a confidence score, and a one-line rationale. If the judge is not configured, the action reports that it is off — it never silently calls out.
+
+## Judge environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_JUDGE_URL` | — | OpenAI-compatible `/chat/completions` endpoint. **Unset = judge off, no outbound calls.** Loopback allowed; non-loopback is SSRF-guarded |
+| `CLAUDESEC_JUDGE_MODEL` | `llama3.1` | Model name passed in the request |
+| `CLAUDESEC_JUDGE_KEY` | — | Optional bearer key for the endpoint (not needed for local Ollama / LM Studio) |
+| `CLAUDESEC_JUDGE_TIMEOUT_MS` | `8000` | Per-request timeout in milliseconds (capped at 60000) |
+
+<Note>
+  A bare base URL is accepted too — `http://localhost:11434` is treated as OpenAI-compatible and resolved to `/v1/chat/completions`. A URL ending in `/v1` gets `/chat/completions` appended; a full `/chat/completions` URL is used as-is.
+</Note>
+
+The judge is a supplement, never a replacement. The regex rule library remains the source of truth; see [Security Rules](/security/rules) and [Privacy & Security](/security/privacy).

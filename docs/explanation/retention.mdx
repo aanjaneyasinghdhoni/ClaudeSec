@@ -1,0 +1,60 @@
+---
+title: "Data retention & dashboard capacity"
+description: "What ClaudeSec keeps, how pruning actually works, and how to tune capacity for heavy use."
+---
+
+ClaudeSec is built to **keep your data**. There is no aggressive auto-delete: spans, sessions, and alerts stay in the local SQLite database (`spans.db`) until they cross one of two configured limits, or you prune by hand. This page explains exactly how that works so you can reason about capacity.
+
+## The two limits
+
+| Variable | Default | What it bounds |
+|----------|---------|----------------|
+| `CLAUDESEC_MAX_SPANS` | `50000` | Total span capacity before the **oldest** spans are pruned |
+| `CLAUDESEC_RETENTION_DAYS` | `30` | Sessions (and their spans and alerts) older than this are removed |
+
+Both are generous defaults. Until you exceed them, nothing is deleted.
+
+## How pruning actually works
+
+Pruning runs as a background step **after each OTLP ingest batch** (it is scheduled with `setImmediate`, so it never blocks the ingest response). Each pass does two things:
+
+1. **Age-based pruning.** Sessions whose `createdAt` is older than `CLAUDESEC_RETENTION_DAYS` are removed, along with their spans and alerts.
+2. **Count-based pruning.** If the total span count exceeds `CLAUDESEC_MAX_SPANS`, the **oldest** spans are deleted first — ordered by `startNano` ascending — until the table is back under the limit.
+
+<Note>
+  Count-based pruning runs on the **OTLP ingest path**. The local transcript watcher feeds the same pipeline, but the periodic prune fires off the OTLP batch handler — so a purely-local instance with the watcher running and no OTLP traffic relies on the age-based window and manual pruning to reclaim space.
+</Note>
+
+### The capacity circuit breaker
+
+To protect the database from runaway growth, OTLP ingestion has a circuit breaker: when the span table reaches **90% of `CLAUDESEC_MAX_SPANS`**, new ingestion is rejected with `503 Service Unavailable` until pruning brings the count back down. This is a safety valve, not the normal path — under default settings you are very unlikely to hit it.
+
+## The graph window vs. your full history
+
+The live graph renders only the **most-recent N spans** for speed — controlled by `CLAUDESEC_GRAPH_LIMIT` (default `2000`). This is purely a rendering window: older spans are **not** deleted. They remain fully available through **Search**, **Sessions**, and the history views. Raising or lowering `CLAUDESEC_GRAPH_LIMIT` only changes how much the graph loads and tracks as client state, which is the dominant cost as the table grows.
+
+So: the graph stays fast on a large database, and none of your older data is hidden — just queried instead of drawn.
+
+## Tuning for heavy use
+
+If you run many agents or keep long histories, raise the span ceiling:
+
+```bash
+export CLAUDESEC_MAX_SPANS=200000
+```
+
+Trade-offs to weigh:
+
+- **Disk and memory.** More spans means a larger `spans.db` and a larger FTS index. SQLite handles this well, but the file grows roughly linearly with span count.
+- **Query and prune cost.** Searches and prune passes touch more rows. Day-to-day queries stay fast thanks to the FTS5 index; the periodic prune simply has more to scan.
+- **Graph rendering is unaffected.** Because the graph is bounded by `CLAUDESEC_GRAPH_LIMIT`, a bigger `CLAUDESEC_MAX_SPANS` does not slow the graph down — only Search and Sessions see the larger window.
+
+## Pruning manually
+
+You can reclaim space on demand from the **Cost** screen's Database Health panel, or:
+
+```bash
+curl -X POST http://localhost:3000/api/db-stats/prune
+```
+
+See the [Configuration reference](/reference/config) for every retention and performance variable.

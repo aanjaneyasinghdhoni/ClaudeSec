@@ -19,9 +19,17 @@ ClaudeSec is zero-config. You do not set any environment variables, edit your sh
 
 ## Step 1 — Clone and run
 
+The fastest path is the one-command starter — it installs dependencies, launches the dashboard in the foreground, and tells you which agents it can see:
+
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
 cd ClaudeSec
+./start.sh
+```
+
+Prefer to run the steps yourself? They are equivalent:
+
+```bash
 corepack enable
 pnpm install
 pnpm dev

@@ -8,7 +8,10 @@ ClaudeSec sees your agents' commands, prompts, and code. It is built so none of 
 ## Local-first guarantees
 
 - **Loopback only** — the server binds `127.0.0.1` by default. Set `CLAUDESEC_HOST=0.0.0.0` only if you deliberately want LAN access, and only on a trusted network (ClaudeSec is unauthenticated by design).
-- **No egress** — nothing is sent anywhere. The single optional outbound path is `OTEL_FORWARD_URL`, off unless you set it, and SSRF-blocked for private ranges.
+- **No egress** — nothing is sent anywhere unless you opt in. There are three optional outbound paths, all off unless set:
+  - `OTEL_FORWARD_URL` — forwards received OTLP traces to an upstream collector. SSRF-guarded (private and loopback ranges blocked).
+  - `CLAUDESEC_WEBHOOK_URL` — delivers alerts to a Slack / Discord / generic JSON endpoint. SSRF-guarded (private and loopback ranges blocked).
+  - `CLAUDESEC_JUDGE_URL` — the optional [LLM-as-judge](/how-to/local-llm). SSRF-guarded for non-loopback URLs; loopback is allowed so the judge can run fully on-device (the recommended no-egress setup).
 - **Owner-only database** — `spans.db` is created with `0600` permissions (owner read/write only).
 - **Username scrubbing** — process command lines and OS usernames are masked (`/Users/***`, `user: ***`) before being shown or exported.
 

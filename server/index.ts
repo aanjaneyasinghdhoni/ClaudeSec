@@ -2088,6 +2088,7 @@ service:
       { key: 'CLAUDESEC_RATE_LIMIT_RPS',    description: 'Max OTLP requests per second per IP',     default: '50',     category: 'Performance' },
       { key: 'CLAUDESEC_RATE_LIMIT_BURST',   description: 'Token bucket burst capacity',              default: '200',    category: 'Performance' },
       { key: 'CLAUDESEC_MAX_SPANS_BATCH',    description: 'Max spans allowed per OTLP batch',         default: '500',    category: 'Performance' },
+      { key: 'CLAUDESEC_GRAPH_LIMIT',        description: 'How many of the most-recent spans the live graph renders (older spans stay available via Search/Sessions)', default: '2000', category: 'Performance' },
       { key: 'CLAUDESEC_MAX_SPANS',          description: 'Total span capacity before pruning',       default: '50000',  category: 'Retention' },
       { key: 'CLAUDESEC_RETENTION_DAYS',     description: 'Days to keep data before age-based prune', default: '30',     category: 'Retention' },
       { key: 'CLAUDESEC_WEBHOOK_URL',        description: 'Webhook endpoint for alert delivery',      default: '',       category: 'Alerts',   sensitive: true },
@@ -2104,6 +2105,7 @@ service:
       { key: 'CLAUDESEC_JUDGE_URL',          description: 'Optional LLM-as-judge endpoint (OpenAI-compatible /chat/completions; recommended: local Ollama http://localhost:11434/v1). OFF by default.', default: '', category: 'Detection' },
       { key: 'CLAUDESEC_JUDGE_MODEL',        description: 'Model name for the LLM-as-judge (e.g. llama3.1)',           default: 'llama3.1', category: 'Detection' },
       { key: 'CLAUDESEC_JUDGE_KEY',          description: 'Optional bearer key for the judge endpoint (not needed for local Ollama)', default: '', category: 'Detection', sensitive: true },
+      { key: 'CLAUDESEC_JUDGE_TIMEOUT_MS',   description: 'Per-request LLM-as-judge timeout in milliseconds (capped at 60000)', default: '8000', category: 'Detection' },
     ];
 
     const enriched = envVars.map(v => ({

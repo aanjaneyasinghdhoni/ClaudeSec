@@ -6,6 +6,14 @@ icon: cpu
 
 ClaudeSec exposes an MCP JSON-RPC endpoint at `POST /mcp`.
 
+## Why an MCP server?
+
+The MCP server makes ClaudeSec's security data queryable **by another AI agent**. Instead of a human reading the dashboard, a triage or incident-response agent can call tools like `get_incident_summary`, `get_alerts`, and `search_spans` over the [Model Context Protocol](https://modelcontextprotocol.io) to pull exactly what it needs — building an incident summary for a trace, fetching high-severity alerts, or searching spans — and reason over it programmatically. It is AI-to-AI: your observability data becomes a tool another agent can use.
+
+<Note>
+  This is the **read/query** side of MCP. To enforce ClaudeSec's rules *on* an agent's MCP tool calls (gating `tools/call` across Codex, Copilot, and Claude Desktop), see the [cross-agent MCP enforcement proxy](/security/enforcement#cross-agent-enforcement-mcp-proxy).
+</Note>
+
 ## Endpoint
 
 ```bash

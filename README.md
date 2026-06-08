@@ -402,7 +402,7 @@ The following are planned future work — not yet shipped:
 ClaudeSec reads sensitive material (your agents' commands, prompts, and file contents), so it is local-first by construction:
 
 - **Loopback only** — the server binds `127.0.0.1` by default. Set `CLAUDESEC_HOST=0.0.0.0` (and a real `CLAUDESEC_TOKEN`) only if you deliberately want LAN/network access.
-- **No egress** — nothing is sent anywhere. The only optional outbound paths are `OTEL_FORWARD_URL` and the opt-in `CLAUDESEC_JUDGE_URL` — both off unless you set them, both SSRF-blocked for private ranges (re-checked on every retry to defeat DNS rebinding).
+- **No egress** — nothing is sent anywhere. The only optional outbound paths are `OTEL_FORWARD_URL`, `CLAUDESEC_WEBHOOK_URL`, and the opt-in `CLAUDESEC_JUDGE_URL` — all off unless you set them. `OTEL_FORWARD_URL` and `CLAUDESEC_WEBHOOK_URL` are SSRF-blocked for private and loopback ranges (re-checked on every retry to defeat DNS rebinding); `CLAUDESEC_JUDGE_URL` is SSRF-guarded for non-loopback URLs but allows loopback so the judge can run fully on-device.
 - **Owner-only database** — `spans.db` is created with `0600` permissions.
 - **Secret scrubbing on by default** — known secret shapes, home paths, usernames, and emails are redacted before anything is persisted, broadcast, or exported. Disable with `CLAUDESEC_DISABLE_SCRUB=1`.
 

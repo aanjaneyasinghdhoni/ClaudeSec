@@ -92,15 +92,15 @@ Example: `feat: add prompt-injection detection rule`
 
 ## Adding a New Threat Rule
 
-Threat-detection rules live in `server.ts` in the `SEVERITY_RULES` array. Each rule is an object with three fields:
+The core threat-detection rules live in `server/detection.ts` in the `CORE_SEVERITY_RULES` array; the extended rule set lives in `server/severityRulesExtra.ts`. Each rule is an object with three fields:
 
 ```ts
-{ pattern: /your-regex/i, severity: 'HIGH' | 'MEDIUM' | 'LOW', label: 'Short description of what this rule detects' }
+{ pattern: /your-regex/i, severity: 'high' | 'medium' | 'low', label: 'Short description of what this rule detects' }
 ```
 
 Steps:
-1. Open `server.ts` and locate `SEVERITY_RULES`.
-2. Add your entry in the appropriate severity group (HIGH first, then MEDIUM, then LOW).
+1. Open `server/detection.ts` and locate `CORE_SEVERITY_RULES` (or add to `server/severityRulesExtra.ts` for the extended set).
+2. Add your entry in the appropriate severity group (high first, then medium, then low).
 3. Include a comment explaining what the rule targets.
 4. Add a matching entry to the threat-detection table in `README.md`.
 5. Test it with a `curl` POST to `/v1/traces`, or by running a real agent whose action matches the pattern.

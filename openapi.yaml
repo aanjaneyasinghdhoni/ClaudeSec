@@ -34,6 +34,10 @@ tags:
     description: Multi-agent orchestration data
   - name: Export
     description: Data export and reset
+  - name: Health
+    description: Server health and Prometheus metrics
+  - name: MCP
+    description: Model Context Protocol JSON-RPC endpoint
 
 paths:
   /v1/traces:
@@ -539,6 +543,90 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StatusOk'
+
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Server health and counts
+      description: |
+        Returns server status, version, uptime, and aggregate counts (spans,
+        threats, sessions, alerts), plus database size, retention settings, rate
+        limiting, OTLP forwarding state, and auto-export state.
+      responses:
+        '200':
+          description: Health snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:        { type: string, example: ok }
+                  version:       { type: string, example: 1.0.0 }
+                  uptime:        { type: number, description: Uptime in seconds }
+                  spansTotal:    { type: integer }
+                  threatsTotal:  { type: integer }
+                  sessionsTotal: { type: integer }
+                  alertsTotal:   { type: integer }
+                  dbSizeBytes:   { type: integer }
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      description: |
+        Prometheus text exposition format. Exposes `spans_total`,
+        `threats_total`, `tokens_in_total` and `tokens_out_total` (by harness),
+        `sessions_total`, `alerts_total`, and `uptime_seconds`.
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP spans_total Total spans ingested
+                # TYPE spans_total counter
+                spans_total{harness="claude-code"} 128
+                uptime_seconds 3600
+
+  /mcp:
+    post:
+      tags: [MCP]
+      summary: Model Context Protocol (JSON-RPC 2.0)
+      description: |
+        JSON-RPC 2.0 endpoint for AI-to-AI access. Supports the `initialize`,
+        `tools/list`, and `tools/call` methods, exposing 11 tools (e.g.
+        `get_incident_summary`, `get_alerts`, `search_spans`) so another agent can
+        query ClaudeSec's security data for triage. See the MCP integration docs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc: { type: string, example: '2.0' }
+                id:      { type: integer, example: 1 }
+                method:  { type: string, example: tools/list }
+                params:  { type: object }
+            example:
+              jsonrpc: '2.0'
+              id: 1
+              method: tools/list
+              params: {}
+      responses:
+        '200':
+          description: JSON-RPC 2.0 response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc: { type: string, example: '2.0' }
+                  id:      { type: integer, example: 1 }
+                  result:  { type: object }
 
 components:
   schemas:
