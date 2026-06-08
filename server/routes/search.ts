@@ -26,59 +26,56 @@ function buildSearchQuery(opts: {
   const conditions: string[] = [];
   const params: unknown[]    = [];
 
-  // Tag filter — join against span_tags
-  let fromClause = 'spans';
+  // Spans are aliased `s` so a free-text query can JOIN the FTS index by spanId
+  // without column ambiguity.
   if (opts.tag) {
     const tagClean = opts.tag.trim().toLowerCase();
-    conditions.push('spanId IN (SELECT spanId FROM span_tags WHERE tag = ?)');
+    conditions.push('s.spanId IN (SELECT spanId FROM span_tags WHERE tag = ?)');
     params.push(tagClean);
   }
 
-  // FTS5 match — fall back to LIKE if query is empty
+  // Free-text query restricts to spans the FTS5 index matched. We push the MATCH
+  // as a correlated subquery instead of materializing every matching spanId up
+  // front — the latter is unbounded and gets slow as the spans table grows.
   if (opts.q) {
-    try {
-      const escaped = '"' + opts.q.replace(/"/g, '""') + '"';
-      const ftsIds  = (db.prepare('SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?').all(escaped) as { spanId: string }[]).map(r => r.spanId);
-      if (ftsIds.length === 0) return { spans: [], total: 0 };
-      const ph = ftsIds.map(() => '?').join(',');
-      conditions.push(`spanId IN (${ph})`);
-      params.push(...ftsIds);
-    } catch {
-      // FTS5 syntax error → fall back to LIKE
-      const like = `%${opts.q}%`;
-      conditions.push('(name LIKE ? OR attributes LIKE ?)');
-      params.push(like, like);
-    }
+    const escaped = '"' + opts.q.replace(/"/g, '""') + '"';
+    conditions.push('s.spanId IN (SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?)');
+    params.push(escaped);
   }
 
   if (opts.severity && opts.severity !== 'all') {
-    conditions.push('severity = ?');
+    conditions.push('s.severity = ?');
     params.push(opts.severity);
   }
   if (opts.harness) {
-    conditions.push('harness = ?');
+    conditions.push('s.harness = ?');
     params.push(opts.harness);
   }
   if (opts.from) {
     try {
       const nanoFrom = String(BigInt(new Date(opts.from).getTime()) * 1_000_000n);
-      conditions.push('startNano >= ?');
+      conditions.push('s.startNano >= ?');
       params.push(nanoFrom);
     } catch {}
   }
   if (opts.to) {
     try {
       const nanoTo = String(BigInt(new Date(opts.to).getTime()) * 1_000_000n);
-      conditions.push('startNano <= ?');
+      conditions.push('s.startNano <= ?');
       params.push(nanoTo);
     } catch {}
   }
 
   const where  = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const total  = (db.prepare(`SELECT COUNT(*) as c FROM ${fromClause} ${where}`).get(...params) as any).c as number;
-  const spans  = db.prepare(`SELECT * FROM ${fromClause} ${where} ORDER BY startNano DESC LIMIT ? OFFSET ?`)
-    .all(...params, opts.limit, opts.offset) as SpanRecord[];
-  return { spans, total };
+  try {
+    const total  = (db.prepare(`SELECT COUNT(*) as c FROM spans s ${where}`).get(...params) as any).c as number;
+    const spans  = db.prepare(`SELECT s.* FROM spans s ${where} ORDER BY s.startNano DESC LIMIT ? OFFSET ?`)
+      .all(...params, opts.limit, opts.offset) as SpanRecord[];
+    return { spans, total };
+  } catch {
+    // Malformed FTS expression → no matches rather than a 500.
+    return { spans: [], total: 0 };
+  }
 }
 
 export function registerSearchRoutes(app: Express, _ctx: RouteContext): void {

@@ -148,6 +148,27 @@ const deleteAllSpans    = db.prepare(`DELETE FROM spans`);
 const deleteAllSessions = db.prepare(`DELETE FROM sessions`);
 const getAllSpans        = db.prepare(`SELECT * FROM spans`);
 
+// How many of the most-recent spans the live graph renders. Older spans are NOT
+// deleted — they remain fully available via Search, Sessions, and history. This
+// only bounds how much the graph loads, relays out, and tracks as React node
+// state, which is the dominant cost as the spans table grows. Override with
+// CLAUDESEC_GRAPH_LIMIT (any positive integer).
+const GRAPH_LIMIT = (() => {
+  const n = parseInt(String(process.env.CLAUDESEC_GRAPH_LIMIT ?? ''), 10);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+})();
+
+// Select the most-recent N spans (by start time) but return them in ascending
+// order, so downstream node ordering matches a full-table read of the window.
+const getRecentSpans = db.prepare(`
+  SELECT * FROM (
+    SELECT * FROM spans ORDER BY startNano DESC LIMIT ?
+  ) ORDER BY startNano ASC
+`);
+
+// Total span count — used only to decide whether the graph window is truncating.
+const countSpans = db.prepare(`SELECT COUNT(*) AS c FROM spans`);
+
 const getWatchOffset = db.prepare(`SELECT offset FROM watch_offsets WHERE path = ?`);
 const setWatchOffset = db.prepare(`
   INSERT INTO watch_offsets (path, offset, updatedAt) VALUES (?, ?, ?)
@@ -1022,9 +1043,20 @@ function recordToEdge(r: SpanRecord) {
 }
 
 function buildGraph(sessionFilter?: string) {
-  const records: SpanRecord[] = sessionFilter
-    ? (db.prepare('SELECT * FROM spans WHERE traceId = ?').all(sessionFilter) as SpanRecord[])
-    : (getAllSpans.all() as SpanRecord[]);
+  // A single session is already bounded, so it loads in full. The unscoped graph
+  // loads only the most-recent N spans (see GRAPH_LIMIT) to keep both the server
+  // build and the frontend relayout fast. `windowed` tells the UI when older
+  // spans exist beyond the window — they are still searchable, never deleted.
+  let records: SpanRecord[];
+  let windowed = false;
+  let total = 0;
+  if (sessionFilter) {
+    records = db.prepare('SELECT * FROM spans WHERE traceId = ?').all(sessionFilter) as SpanRecord[];
+  } else {
+    total   = (countSpans.get() as { c: number }).c;
+    records = getRecentSpans.all(GRAPH_LIMIT) as SpanRecord[];
+    windowed = total > records.length;
+  }
 
   const presentHarnesses = [...new Set(records.map(r => r.harness))];
   let rootNodes: object[];
@@ -1044,7 +1076,15 @@ function buildGraph(sessionFilter?: string) {
     });
   }
 
-  return { nodes: [...rootNodes, ...records.map(recordToNode)], edges: records.map(recordToEdge) };
+  return {
+    nodes: [...rootNodes, ...records.map(recordToNode)],
+    edges: records.map(recordToEdge),
+    // Graph windowing metadata — backward compatible (consumers may ignore it).
+    windowed,
+    shown: records.length,
+    total: sessionFilter ? records.length : total,
+    limit: GRAPH_LIMIT,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,27 +1717,44 @@ async function startServer() {
     const session = String(req.query.session ?? '').trim();
     const offset  = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
 
-    let sql = 'SELECT * FROM spans WHERE 1=1';
+    let sql = 'SELECT s.* FROM spans s WHERE 1=1';
     const params: unknown[] = [];
 
-    if (session) { sql += ' AND traceId = ?'; params.push(session); }
+    if (session) { sql += ' AND s.traceId = ?'; params.push(session); }
 
     if (q) {
       if (q.includes('=')) {
+        // Structured key=value lookup. FTS tokenizes the JSON and loses the
+        // key↔value association, so this targeted match stays on LIKE.
         const eqIdx = q.indexOf('=');
         const key   = q.slice(0, eqIdx).trim();
         const val   = q.slice(eqIdx + 1).trim();
-        sql += ' AND (attributes LIKE ? OR name LIKE ?)';
+        sql += ' AND (s.attributes LIKE ? OR s.name LIKE ?)';
         params.push(`%"${key}":"${val}%`, `%${val}%`);
       } else {
-        sql += ' AND (name LIKE ? OR attributes LIKE ? OR reason LIKE ?)';
-        params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+        // Free-text search routes through the FTS5 index instead of a leading-
+        // wildcard LIKE (which forces a full table scan). Mirrors the proven
+        // /api/search/fts pattern: split on whitespace, prefix-match each term.
+        const terms = q.replace(/["']/g, ' ').split(/\s+/).filter(Boolean);
+        if (terms.length === 0) {
+          res.json({ spans: [], offset, hasMore: false });
+          return;
+        }
+        const ftsQuery = terms.map(t => `"${t}"*`).join(' ');
+        sql += ' AND s.spanId IN (SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?)';
+        params.push(ftsQuery);
       }
     }
 
-    sql += ' ORDER BY startNano ASC LIMIT 500 OFFSET ?';
+    sql += ' ORDER BY s.startNano ASC LIMIT 500 OFFSET ?';
     params.push(offset);
-    const spans = db.prepare(sql).all(...params) as SpanRecord[];
+    let spans: SpanRecord[];
+    try {
+      spans = db.prepare(sql).all(...params) as SpanRecord[];
+    } catch {
+      // Malformed FTS expression → return empty rather than 500.
+      spans = [];
+    }
     res.json({ spans, offset, hasMore: spans.length === 500 });
   });
 

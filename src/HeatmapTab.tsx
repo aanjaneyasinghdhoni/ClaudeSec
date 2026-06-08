@@ -5,6 +5,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Flame } from 'lucide-react';
 import { socket } from './socket';
+import { useDebouncedCallback } from './lib/useDebouncedCallback';
 
 interface Cell { spans: number; threats: number }
 interface HeatmapData {
@@ -70,11 +71,16 @@ export function HeatmapTab() {
       .catch(() => setLoading(false));
   }, [view]);
 
+  // Recomputing the heatmap scans every span. Debounce the socket-driven
+  // refresh so a burst of `graph-update` events collapses into one refetch;
+  // the initial load below stays immediate so first paint isn't delayed.
+  const debouncedFetch = useDebouncedCallback(fetchHeatmap);
+
   useEffect(() => {
     fetchHeatmap();
-    socket.on('graph-update', fetchHeatmap);
-    return () => { socket.off('graph-update', fetchHeatmap); };
-  }, [fetchHeatmap]);
+    socket.on('graph-update', debouncedFetch);
+    return () => { socket.off('graph-update', debouncedFetch); };
+  }, [fetchHeatmap, debouncedFetch]);
 
   if (loading) {
     return (

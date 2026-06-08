@@ -5,6 +5,7 @@ import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
 import { ExperimentalBadge } from './ExperimentalBadge';
 import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
+import { useDebouncedCallback } from './lib/useDebouncedCallback';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -262,11 +263,16 @@ export function OrchestrationTab() {
       .then((d: OrchData) => setData(d))
       .catch(() => {});
 
+  // `/api/orchestration` aggregates across all spans. Debounce the socket-driven
+  // refresh so a burst of `graph-update` events triggers one refetch, not many;
+  // the initial fetch stays immediate.
+  const debouncedFetch = useDebouncedCallback(fetchData);
+
   useEffect(() => {
     fetchData();
-    socket.on('graph-update', fetchData);
-    return () => { socket.off('graph-update', fetchData); };
-  }, []);
+    socket.on('graph-update', debouncedFetch);
+    return () => { socket.off('graph-update', debouncedFetch); };
+  }, [debouncedFetch]);
 
   const { agents, edges, tools, spawnTree } = data;
   const positions = agentPositions(agents.length);
