@@ -101,13 +101,38 @@ The bundled CLI installs a user-level service (launchd on macOS, systemd on Linu
 | Linux | systemd user service | Experimental |
 | Windows | Scheduled Task (at logon) | Experimental |
 
-### Docker (secondary) — headless / server use
+### Docker — headless / server use
+
+Requires [Docker](https://docs.docker.com/get-docker/). From the repo root:
 
 ```bash
-docker compose up
+docker compose up -d         # build the image and start the dashboard
+docker compose logs -f       # follow logs
+docker compose down          # stop and remove the container
 ```
 
-`docker-compose.yml` binds the **host** port to `127.0.0.1` only. The container binds `0.0.0.0` internally and requires a token (`CLAUDESEC_TOKEN`, defaulting to the placeholder `docker-local`). You must replace the placeholder before exposing the container to any non-loopback network. The browser dashboard over Docker requires the token to authenticate API requests; for a frictionless local dashboard the pnpm path above is recommended. Docker is well-suited to headless or server deployments where agents connect via OTLP.
+The dashboard is then at **http://localhost:3000**.
+
+- **Loopback-bound.** The host port is published on `127.0.0.1` only; the container binds
+  `0.0.0.0` *internally*. It is not reachable from other machines.
+- **No token needed locally.** `docker-compose.yml` sets `CLAUDESEC_TRUST_LOCAL=1`, which
+  lets the browser reach the API and Socket.io without a token — safe **only** because the
+  port is loopback-bound. To expose ClaudeSec on a LAN or public interface, change the
+  `ports:` mapping away from `127.0.0.1`, remove `CLAUDESEC_TRUST_LOCAL`, and set a strong
+  `CLAUDESEC_TOKEN`.
+- **Persistent data.** The SQLite database and custom rules live in the `claudesec-data`
+  Docker volume and survive restarts.
+- **Configuration.** Override retention, webhooks, OTLP forwarding, and other settings via
+  the `environment:` block in `docker-compose.yml` (or a `.env` file).
+
+**Ingestion in Docker is via OTLP only.** The container has no access to your machine's
+transcripts, so it does **not** auto-discover your local Claude Code / Copilot CLI / Codex
+sessions the way the pnpm path does. Same-host agents and CI can post to
+`http://localhost:3000/v1/traces` as-is; because the default `docker compose up` publishes
+only on `127.0.0.1`, reaching the container from **another machine** first requires the
+reconfiguration above (bind the port off loopback and set `CLAUDESEC_TOKEN`). See
+[Connecting an agent via OTLP](#connecting-an-agent-via-otlp-remote--ci). To watch local
+sessions with zero config, use the pnpm path above.
 
 ---
 
@@ -324,7 +349,6 @@ Full documentation is available in-app at the **Docs** tab of the dashboard (inc
 The following are planned future work — not yet shipped:
 
 - **Vector / semantic search** — span search is currently SQLite FTS5 keyword search; embedding-based semantic search is a roadmap item.
-- **Seamless Docker browser dashboard** — the in-browser dashboard over Docker currently requires token authentication (SPA token propagation is not yet wired); the pnpm path is the recommended zero-friction option.
 - **Claude Code plugin** — native plugin integration for deeper in-editor observability.
 
 ---
@@ -337,6 +361,8 @@ ClaudeSec reads sensitive material (your agents' commands, prompts, and file con
 - **No egress** — nothing is sent anywhere. The only optional outbound paths are `OTEL_FORWARD_URL` and the opt-in `CLAUDESEC_JUDGE_URL` — both off unless you set them, both SSRF-blocked for private ranges (re-checked on every retry to defeat DNS rebinding).
 - **Owner-only database** — `spans.db` is created with `0600` permissions.
 - **Secret scrubbing on by default** — known secret shapes, home paths, usernames, and emails are redacted before anything is persisted, broadcast, or exported. Disable with `CLAUDESEC_DISABLE_SCRUB=1`.
+
+For how these controls map to common frameworks (SOC 2, ISO 27001, GDPR, NIST AI RMF, and others) and the shared-responsibility split between ClaudeSec and the deploying organization, see [`COMPLIANCE.md`](COMPLIANCE.md).
 
 ---
 

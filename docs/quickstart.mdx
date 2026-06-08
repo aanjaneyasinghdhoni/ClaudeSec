@@ -8,6 +8,7 @@ ClaudeSec is zero-config. You do not set any environment variables, edit your sh
 ## Prerequisites
 
 - **Node.js 22.13+** (Node 22 LTS recommended)
+- **pnpm** — managed automatically via corepack (run `corepack enable`)
 - At least one supported agent on your machine — [Claude Code](/harnesses/claude-code), [GitHub Copilot CLI](/harnesses/copilot), or [Codex](/harnesses/codex)
 
 <Note>
@@ -21,8 +22,9 @@ ClaudeSec is zero-config. You do not set any environment variables, edit your sh
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
 cd ClaudeSec
-npm install
-npm run dev
+corepack enable
+pnpm install
+pnpm dev
 ```
 
 This starts the dashboard at **http://localhost:3000** and begins tailing every Claude Code, Copilot CLI, and Codex session on your machine.
@@ -57,10 +59,10 @@ See the [CLI reference](/reference/cli) for every command.
 
 ## Run as a background service
 
-`npm run dev` runs in the foreground. To keep ClaudeSec running across reboots, build the dashboard once and install the user-level background service (launchd on macOS, systemd user service on Linux, a Scheduled Task on Windows) through the bundled CLI:
+`pnpm dev` runs in the foreground. To keep ClaudeSec running across reboots, build the dashboard once and install the user-level background service (launchd on macOS, systemd user service on Linux, a Scheduled Task on Windows) through the bundled CLI:
 
 ```bash
-npm run build
+pnpm build
 node cli/init.mjs            # install + start the service, open the dashboard
 node cli/init.mjs stop       # stop and remove the service
 ```
@@ -77,7 +79,7 @@ Installing the service also removes any legacy ClaudeSec OTEL config it finds �
 | Linux | systemd user service | Experimental |
 | Windows | Scheduled Task (at logon) | Experimental |
 
-The watcher and dashboard run anywhere Node ≥ 22.13 runs; only the auto-start *service* layer is platform-specific. On any platform you can always run the foreground server with `npm run dev`.
+The watcher and dashboard run anywhere Node ≥ 22.13 runs; only the auto-start *service* layer is platform-specific. On any platform you can always run the foreground server with `pnpm dev`.
 
 ---
 

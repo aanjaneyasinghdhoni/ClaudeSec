@@ -1,14 +1,18 @@
+# Dependencies
 node_modules/
 .pnpm-store/
-build/
+
+# Build output
 dist/
+build/
 coverage/
 *.tgz
-.DS_Store
-*.log
+
+# Environment — keep the example, ignore real env files
 .env*
 !.env.example
-# Databases, WAL/SHM, and ANY backup/snapshot — user telemetry data, NEVER commit
+
+# Local databases, WAL/SHM, and any snapshot/export — runtime telemetry, never commit
 *.db
 *.db-shm
 *.db-wal
@@ -16,43 +20,20 @@ coverage/
 *.sqlite
 *.sqlite3
 exports/
-# Generated enforcement snapshot (built by scripts/build-enforcement-rules.ts)
-rules-enforcement.json
-# Server-written effective enforcement config (mode + per-rule overrides) — read
-# by the PreToolUse hook. Generated artifact, never commit.
-enforce-config.json
-# Server-written custom rules (saved at runtime). Generated artifact, never commit.
-rules.json
-.playwright-mcp/
-.claude/
-.remember/
-polish-screenshots/
-hooks/
-plan.html
 
-# Local-only: audits, specs, plans, and internal analysis
-# These contain security details, private context, or strategic decisions — never commit
-next.md
-docs/superpowers/
-docs/**/*development-flow*.md
-docs/**/*development-flow*.mdx
-docs/**/*dev-flow*.md
-docs/**/*dev-flow*.mdx
-docs/**/*flow.local.mdx
-audits/
-specs/
-plans/
-*.audit.md
-.gstack/
-# Screenshots, scratch notes, and the local session log — developer artifacts, never commit
+# Server- and build-generated artifacts
+rules-enforcement.json
+enforce-config.json
+rules.json
+
+# Images and screenshots — keep them out of the repository
 *.png
 *.jpg
 *.jpeg
-session.md
-snap*.md
+*.gif
 .screenshots/
+screenshots/
 
-# Local Claude Code guidance — machine-specific, never commit
-CLAUDE.md
-CLAUDE.local.md
-*.local.md
+# OS / editor noise
+.DS_Store
+*.log

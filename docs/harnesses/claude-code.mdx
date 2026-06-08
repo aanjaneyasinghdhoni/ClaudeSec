@@ -13,7 +13,7 @@ Claude Code writes a full session transcript for every conversation to:
 ~/.claude/projects/**/*.jsonl
 ```
 
-Once ClaudeSec is running (`npm run dev`), the [transcript watcher](/explanation/watcher) tails those files live. The moment Claude Code reads a file, runs a command, or makes a model request, the corresponding span appears in your dashboard — including sessions that were already running before you started it.
+Once ClaudeSec is running (`pnpm dev`), the [transcript watcher](/explanation/watcher) tails those files live. The moment Claude Code reads a file, runs a command, or makes a model request, the corresponding span appears in your dashboard — including sessions that were already running before you started it.
 
 You do **not** set `CLAUDE_CODE_ENABLE_TELEMETRY`, `OTEL_*`, or anything else. The installer actually *removes* any legacy ClaudeSec OTEL config it finds, because the watcher needs none.
 
