@@ -63,6 +63,21 @@ The local transcript watcher and the OpenTelemetry endpoint feed the **same** pi
 
 ## Quickstart
 
+### Run it in one command
+
+From a fresh clone, zero config either way:
+
+```bash
+./start.sh            # Local: clone -> dashboard, shows which agents it detects
+./start.sh --docker   # Server: runs `docker compose up` (headless, OTLP-only)
+```
+
+`./start.sh` checks Node, enables pnpm via corepack, installs deps on first run,
+prints which agents it can see, and opens **http://localhost:3000**. The
+`--docker` flag is a convenience wrapper over `docker compose up` — Docker
+ingests via **OTLP only** and does not watch local transcripts. The step-by-step
+commands below do exactly the same thing if you'd rather run them by hand.
+
 ### pnpm (recommended) — zero-config, full dashboard
 
 Requires Node.js >= 22.13.0 and [pnpm](https://pnpm.io) (managed automatically via corepack). Clone, install, and start:
