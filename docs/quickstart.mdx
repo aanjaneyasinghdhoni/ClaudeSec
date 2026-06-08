@@ -71,6 +71,25 @@ Installing the service also removes any legacy ClaudeSec OTEL config it finds �
 
 ---
 
+## Try it with synthetic data (demo container)
+
+Want to explore the dashboard, or show it to someone, without exposing your real telemetry? Start the **demo container** — a separate, on-demand container pre-seeded with synthetic data on its own isolated volume:
+
+```bash
+./start.sh --demo                  # brings up prod (:3000) AND demo (:3001)
+# or, equivalently:
+docker compose --profile demo up
+```
+
+This starts **two** containers side by side:
+
+- **Prod** on **http://localhost:3000** — your real data, unchanged.
+- **Demo** on **http://localhost:3001** — three synthetic sessions that fire real detection rules (RCE via `curl | bash`, SSH private-key read, dotenv read, POST exfiltration).
+
+The demo container has its **own** database volume holding nothing but synthetic data, so it is **physically isolated** from your real data — there is no in-app toggle and no per-row tagging to get wrong. Override the demo port with `DEMO_PORT`. A plain `docker compose up` (or `./start.sh --docker`) never starts the demo service; it lives behind a Compose `demo` profile.
+
+---
+
 ## Platform support
 
 | Platform | Background service | Status |

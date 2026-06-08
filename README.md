@@ -70,12 +70,15 @@ From a fresh clone, zero config either way:
 ```bash
 ./start.sh            # Local: clone -> dashboard, shows which agents it detects
 ./start.sh --docker   # Server: runs `docker compose up` (headless, OTLP-only)
+./start.sh --demo     # Docker + a demo container on :3001 (synthetic data)
 ```
 
 `./start.sh` checks Node, enables pnpm via corepack, installs deps on first run,
 prints which agents it can see, and opens **http://localhost:3000**. The
 `--docker` flag is a convenience wrapper over `docker compose up` — Docker
-ingests via **OTLP only** and does not watch local transcripts. The step-by-step
+ingests via **OTLP only** and does not watch local transcripts. The `--demo`
+flag additionally starts a separate, pre-seeded **demo container** on :3001 with
+its own isolated volume (see [Demo container](#demo-container)). The step-by-step
 commands below do exactly the same thing if you'd rather run them by hand.
 
 ### pnpm (recommended) — zero-config, full dashboard
@@ -148,6 +151,32 @@ only on `127.0.0.1`, reaching the container from **another machine** first requi
 reconfiguration above (bind the port off loopback and set `CLAUDESEC_TOKEN`). See
 [Connecting an agent via OTLP](#connecting-an-agent-via-otlp-remote--ci). To watch local
 sessions with zero config, use the pnpm path above.
+
+### Demo container
+
+To show ClaudeSec to someone without exposing your real telemetry, start the
+**demo container** — a separate, on-demand container pre-seeded with synthetic
+data on its own database volume:
+
+```bash
+./start.sh --demo                  # brings up prod (:3000) AND demo (:3001)
+# or, equivalently, by hand:
+docker compose --profile demo up   # same — starts both services
+```
+
+- **Prod** stays on **http://localhost:3000** with your real data and its
+  persistent `claudesec-data` volume — unchanged.
+- **Demo** runs on **http://localhost:3001** (override with `DEMO_PORT`). On its
+  first boot it seeds three synthetic sessions that fire real detection rules
+  (RCE via `curl | bash`, SSH private-key read, dotenv read, POST exfiltration),
+  so the dashboard lights up with genuine findings.
+- **Physically isolated.** The demo container has its **own** `claudesec-demo-data`
+  volume containing nothing but synthetic data. There is no in-app toggle and no
+  per-row tagging — the separation is the volume itself, so real and demo data
+  can never mix.
+
+The demo service lives behind a Compose `demo` profile, so a plain
+`docker compose up` (or `./start.sh --docker`) never starts it.
 
 ---
 

@@ -53,6 +53,7 @@ import {
   SsrfBlockedError,
 } from './ssrf.js';
 import { getJudgeConfig } from './llmJudge.js';
+import { seedDemoData } from './demoData.js';
 import type { Severity } from '../src/shared/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1250,6 +1251,35 @@ async function startServer() {
     }
 
     return { newSession, alertChanged };
+  }
+
+  // ── Demo-container seeding ────────────────────────────────────────────────
+  // The isolated demo container (docker-compose profile `demo`, on :3001) runs
+  // ClaudeSec against its OWN database volume that should hold nothing but
+  // synthetic data. When CLAUDESEC_SEED_DEMO=1, populate that empty DB once with
+  // the synthetic scenarios in server/demoData.ts, feeding each span through the
+  // same `ingestSpan` the OTLP/transcript paths use so the real detection engine
+  // classifies them.
+  //
+  // TWO GUARDS keep this from ever touching real data:
+  //   1. The env var must be exactly "1" (opt-in; the prod compose service and
+  //      every local/pnpm run leave it unset).
+  //   2. The spans table must be empty. A populated DB — real OR a previously
+  //      seeded demo — is left untouched, so this is idempotent and can never
+  //      duplicate or overwrite existing telemetry.
+  // (seedDemoData re-checks the empty-table condition internally as a backstop.)
+  if (process.env.CLAUDESEC_SEED_DEMO === '1') {
+    const spanCount = () =>
+      (db.prepare('SELECT COUNT(*) AS c FROM spans').get() as { c: number }).c;
+    if (spanCount() === 0) {
+      seedDemoData({
+        ingestSpan,
+        spanCount,
+        upsertSession: (traceId, name, createdAt) => { upsertSession.run(traceId, name, createdAt); },
+        harnessName: (id) => (HARNESSES.find(h => h.id === id) ?? HARNESSES[HARNESSES.length - 1]).name,
+        log: (msg) => console.log(msg),
+      });
+    }
   }
 
   // Security headers.  The dashboard uses inline event handlers, dynamic

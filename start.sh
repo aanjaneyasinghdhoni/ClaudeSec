@@ -12,6 +12,12 @@
 #                         Docker ingests via OTLP only — it cannot read your
 #                         machine's transcripts, so there is no local watching.
 #
+#   ./start.sh --demo     Docker + demo: runs `docker compose --profile demo up`,
+#                         bringing up BOTH the prod container (:3000) and a
+#                         separate demo container (:3001) pre-seeded with
+#                         synthetic data on its own isolated volume — handy for
+#                         showing the tool without exposing real telemetry.
+#
 # Why a shell script (not the existing `claudesec` CLI): the CLI installs a
 # background OS service; this script is the friendlier "clone and go" path that
 # runs the dashboard in the foreground and explains what it can see. It stays
@@ -57,6 +63,13 @@ USAGE:
                         Docker ingests via OTLP only — no local-transcript
                         watching (the container can't see your machine's files).
 
+  ./start.sh --demo     Run via Docker with the demo container too
+                        (`docker compose --profile demo up`). Brings up BOTH the
+                        prod container on :3000 and a separate demo container on
+                        :3001. The demo container is pre-seeded with synthetic
+                        data on its OWN volume — physically isolated from your
+                        real data — so you can show the tool to others safely.
+
   ./start.sh --help     Show this help.
 
 Requires Node.js >= 22.13 and pnpm (enabled automatically via corepack) for the
@@ -65,8 +78,8 @@ EOF
 }
 
 # --- Argument parsing ------------------------------------------------------
-# Only --help and --docker are recognized; anything else is an error so typos
-# don't silently fall through to the local path.
+# Only --help, --docker and --demo are recognized; anything else is an error so
+# typos don't silently fall through to the local path.
 MODE="local"
 case "${1:-}" in
   --help|-h)
@@ -75,6 +88,9 @@ case "${1:-}" in
     ;;
   --docker)
     MODE="docker"
+    ;;
+  --demo)
+    MODE="demo"
     ;;
   "")
     MODE="local"
@@ -103,6 +119,28 @@ if [ "$MODE" = "docker" ]; then
   echo
   # Run in the foreground so the build and run logs stay visible.
   exec docker compose up
+fi
+
+# --- Demo path -------------------------------------------------------------
+# Brings up BOTH the prod container (:3000) and the demo container (:3001) via
+# the `demo` Compose profile. The demo container has its own database volume
+# pre-seeded with synthetic data, physically isolated from your real data.
+if [ "$MODE" = "demo" ]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Error: 'docker' was not found on your PATH." >&2
+    echo "Install Docker (https://docs.docker.com/get-docker/) and retry." >&2
+    exit 1
+  fi
+  DEMO_URL="http://localhost:${DEMO_PORT:-3001}"
+  echo "Starting ClaudeSec via Docker with the demo container:"
+  echo "  Prod (your real data):     $URL"
+  echo "  Demo (synthetic data):     $DEMO_URL"
+  echo
+  echo "Note: the demo container holds ONLY synthetic data on its own volume,"
+  echo "      physically isolated from your real data — safe to show to others."
+  echo
+  # Run in the foreground so the build and run logs stay visible.
+  exec docker compose --profile demo up
 fi
 
 # --- Local path ------------------------------------------------------------
