@@ -48,5 +48,48 @@ services:
       retries: 3
       start_period: 15s
 
+  # On-demand demo container.
+  #
+  # Lives behind the `demo` Compose profile so a plain `docker compose up` never
+  # starts it. Bring it up with `docker compose --profile demo up` (or
+  # `./start.sh --demo`), which starts BOTH this service and the prod one above.
+  #
+  # ISOLATION: this service has its OWN named volume (claudesec-demo-data) that
+  # is never shared with prod. It seeds itself with synthetic data on first boot
+  # (CLAUDESEC_SEED_DEMO=1), so it can be shown to people without exposing any
+  # real telemetry. There is no toggle and no per-row tagging — the separation
+  # is physical (a different database volume).
+  demo:
+    build: .
+    image: claudesec:latest
+    container_name: claudesec-demo
+    profiles: ["demo"]
+    ports:
+      # Published on 127.0.0.1 only, on a separate host port (3001 by default)
+      # so prod (:3000) and demo (:3001) can run side by side.
+      - "127.0.0.1:${DEMO_PORT:-3001}:3000"
+    volumes:
+      # Dedicated volume — physically isolated from prod's claudesec-data.
+      - claudesec-demo-data:/data
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      CLAUDESEC_HOST: 0.0.0.0
+      # Same loopback-trust rationale as the prod service above: safe ONLY
+      # because the host port is published on 127.0.0.1.
+      CLAUDESEC_TRUST_LOCAL: "1"
+      # Seed the synthetic demo scenarios on first boot (only when the DB is
+      # empty — see server/index.ts). Persists in the demo volume thereafter.
+      CLAUDESEC_SEED_DEMO: "1"
+      CLAUDESEC_AUTO_EXPORT_DIR: /data/exports
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
 volumes:
   claudesec-data:
+  claudesec-demo-data:

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Isolated demo container — an on-demand container, pre-seeded with synthetic
+  data on its own database volume, for showing ClaudeSec without exposing real
+  telemetry. Start it with `./start.sh --demo` (or
+  `docker compose --profile demo up`): prod stays on `:3000` with your real data,
+  and the demo runs on `:3001` (override with `DEMO_PORT`) seeded with three
+  synthetic sessions that fire real detection rules. The demo container is
+  physically isolated from prod — its own `claudesec-demo-data` volume, no in-app
+  toggle, no per-row tagging.
 - `COMPLIANCE.md` — a compliance and controls mapping that relates ClaudeSec's
   detection, enforcement, and local-first hardening features to common security
   control frameworks, so teams can reason about where the tool fits in their
