@@ -72,14 +72,16 @@
       {
         "group": "How-to guides",
         "pages": [
-          "how-to/remote-agents"
+          "how-to/remote-agents",
+          "how-to/local-llm"
         ]
       },
       {
         "group": "Explanation",
         "pages": [
           "architecture",
-          "explanation/watcher"
+          "explanation/watcher",
+          "explanation/retention"
         ]
       },
       {

@@ -9,8 +9,12 @@ icon: "sitemap"
 ClaudeSec is a local AI agent observability dashboard. It receives OpenTelemetry traces from running AI agents, evaluates every span against a threat detection engine, persists results to SQLite, and streams live updates to a React frontend over Socket.io.
 
 ```
-AI Agent
-  ↓  OTLP JSON (POST /v1/traces)
+Local agents (Claude Code / Copilot CLI / Codex)
+  ↓  tails on-disk .jsonl transcripts (default, zero-config)
+transcriptWatcher.ts ─┐
+                      ├─→ ingestSpan()
+Remote / CI agents ───┘   (same pipeline)
+  ↑  OTLP JSON (POST /v1/traces)
 server/index.ts (Express)
   ├─ Rate limiting (token bucket per IP)
   ├─ Threat detection (detectSeverity)
@@ -21,6 +25,8 @@ server/index.ts (Express)
         ↓
    src/App.tsx (React 19 + Tailwind CSS 4)
 ```
+
+The default local path is the **transcript watcher**, which tails each agent's on-disk session files and needs no configuration. The OTLP endpoint (`POST /v1/traces`) is the path for remote and CI agents ClaudeSec can't read from disk. Both feed the same `ingestSpan()` pipeline, so local and remote activity land in one dashboard.
 
 ---
 
@@ -87,7 +93,7 @@ Runs per affected session after each OTLP batch. Does not block the HTTP respons
 |---------|-----------|----------|
 | Token spike | Latest span uses >4× session average input tokens, and >2000 tokens | `medium` |
 | Threat burst | ≥3 threats in the last 10 spans of a session | `high` |
-| Excessive tool calls | >100 total tool calls in a session (flagged once per 50 excess) | `low` |
+| Excessive tool calls | >100 total tool calls in a session (fires once, then deduped for 30 minutes) | `low` |
 | Off-hours activity | Agent active between 00:00–05:59 local time | `low` |
 
 Each anomaly is deduplicated within a cooldown window (5–60 minutes) to avoid alert flooding.
@@ -158,6 +164,8 @@ Stale buckets (idle for >5 minutes) are evicted every 60 seconds.
 ## Graph API (headless)
 
 The graph endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available as a headless API for programmatic access and export. They return span dependency data with Dagre-computed positions, suitable for rendering in external tools (Mermaid, Graphviz) or custom integrations. There is no graph UI tab in the dashboard.
+
+The graph renders only the **most-recent N events** — bounded by `CLAUDESEC_GRAPH_LIMIT` (default 2000) — so it stays fast as the database grows. Older events are **not** deleted; they remain available through Search and Sessions. See [Data retention](/explanation/retention) for the full capacity model.
 
 ---
 

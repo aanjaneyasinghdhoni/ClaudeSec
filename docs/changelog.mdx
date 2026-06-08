@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## Unreleased
+
+### Added
+
+- **One-command start** — `./start.sh` brings up the dashboard in a single command:
+  it installs dependencies if needed, starts the foreground server, tails your
+  on-disk agent transcripts, and tells you which agents it can see. `./start.sh --docker`
+  runs the headless Docker deployment (OTLP-only).
+- **Isolated demo container** — an on-demand container pre-seeded with synthetic
+  data on its own database volume, for showing ClaudeSec without exposing real
+  telemetry. Start it with `./start.sh --demo` (or `docker compose --profile demo up`):
+  prod stays on `:3000` with your real data, and the demo runs on `:3001` (override
+  with `DEMO_PORT`) seeded with synthetic sessions that fire real detection rules.
+  The demo container is physically isolated from prod — its own volume, no in-app
+  toggle, no per-row tagging.
+- **Local release flow** — `scripts/release.sh <patch|minor|major>` cuts a release
+  from a maintainer's machine: it runs the full local CI (`pnpm preflight`), bumps the
+  version everywhere it is recorded, writes the changelog, re-runs the consistency
+  gate, and — only after you confirm — commits, tags, pushes, and publishes the
+  GitHub Release. It refuses to run on a dirty or out-of-date tree and never
+  force-pushes.
+
+### Changed
+
+- **Graph performance** — the live graph now renders only the most-recent N events,
+  bounded by `CLAUDESEC_GRAPH_LIMIT` (default 2000), so it stays responsive as the
+  database grows. Older events are not deleted — they remain available through
+  Search and Sessions. See [Data retention](/explanation/retention).
+
+---
+
 ## 1.0.0 — Initial public release
 
 First production-ready release of ClaudeSec under the **AGPL-3.0-only** license.
@@ -34,7 +65,7 @@ interactive dashboard — all without any data leaving your machine.
 - Per-harness coloured indicators and filter chips in the dashboard.
 - Zero-config transcript watcher (`transcriptWatcher.ts`) that tails on-disk session transcripts
   for Claude Code, GitHub Copilot CLI, and Codex with no environment variables and no agent restart.
-- Interactive CLI setup wizard (`npx claudesec init` / `pnpm run init`).
+- Interactive CLI setup wizard (`node cli/init.mjs` / `pnpm run init`).
 
 **Threat detection**
 
@@ -140,7 +171,7 @@ interactive dashboard — all without any data leaving your machine.
 - Drawer sidebar (below `lg` breakpoint) + bottom tab bar (below `md` breakpoint).
 - Four built-in themes: Midnight, Carbon, Daylight, Paper (saved locally).
 - Accessibility: keyboard navigation and ARIA attributes throughout.
-- First-run welcome screen with `npx claudesec init` auto-setup flow.
+- First-run welcome screen with `node cli/init.mjs` auto-setup flow.
 
 **Observability**
 
