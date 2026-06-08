@@ -1,0 +1,80 @@
+---
+title: "Annotations API"
+description: "Add investigation notes and comments to individual spans"
+icon: "message-square"
+---
+
+## Overview
+
+The Annotations API lets analysts attach free-text notes to any span for investigation tracking. Annotations persist in SQLite and are included in data exports. Each annotation records the author (default: `analyst`) and a timestamp.
+
+## Endpoints
+
+### GET /api/spans/:spanId/annotations
+
+List all annotations for a specific span.
+
+```bash
+curl http://localhost:3000/api/spans/abc123def456/annotations
+```
+
+**Response:**
+```json
+{
+  "annotations": [
+    {
+      "id": 1,
+      "spanId": "abc123def456",
+      "text": "Confirmed false positive — standard CI/CD pipeline",
+      "author": "analyst",
+      "createdAt": "2026-04-09T14:32:01.000Z"
+    }
+  ]
+}
+```
+
+### POST /api/spans/:spanId/annotations
+
+Add an annotation to a span.
+
+**Request body:**
+```json
+{
+  "text": "Investigating — possible credential leak",
+  "author": "security-team"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `text` | string | Yes | Annotation text (whitespace-trimmed) |
+| `author` | string | No | Author name (default: `analyst`) |
+
+**Response:** `201 Created` with the created annotation object:
+```json
+{
+  "id": 5,
+  "spanId": "abc123def456",
+  "text": "Investigating — possible credential leak",
+  "author": "security-team",
+  "createdAt": "2026-04-09T15:10:00.000Z"
+}
+```
+
+A Socket.io `annotation-update` event is emitted with `{ spanId }` after creation.
+
+**Errors:**
+- `400` — `text` is missing or empty
+
+### DELETE /api/spans/:spanId/annotations/:id
+
+Delete an annotation by its numeric ID. The annotation must belong to the specified span.
+
+```bash
+curl -X DELETE http://localhost:3000/api/spans/abc123def456/annotations/5
+```
+
+**Response:** `{ "status": "ok" }`
+
+**Errors:**
+- `404` — Annotation not found or does not belong to this span

@@ -1,0 +1,42 @@
+---
+title: "Cost"
+description: "API-equivalent token cost per session and model, with subscription-plan awareness."
+---
+
+The **Cost** screen estimates what your agent usage would cost — and, if you're on a flat subscription, how that compares to your plan.
+
+## API-equivalent cost
+
+ClaudeSec aggregates `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` from every span and prices them against a built-in pricing table, broken down two ways:
+
+- **By model** — tokens and cost per model, with a running total.
+- **By session** — the same, grouped by trace.
+
+When telemetry doesn't carry a model name, ClaudeSec infers one from the harness and marks the row **inferred**. Models with no pricing data show `$0` and a `?`.
+
+<Warning>
+  This is an estimate, not a bill. Prices vary by region, tier, and caching, and the built-in table may lag current rates.
+</Warning>
+
+<Note>
+  **Experimental.** `GPT-5.x` and other non-Claude pricing figures are estimates, and some spans are priced against an inferred model rather than a reported one — treat non-Claude totals as rough.
+</Note>
+
+## Subscription-plan awareness
+
+Most coding-agent users are on a **flat subscription**, not pay-per-token — so a raw dollar figure is misleading. Pick your plan from the selector (saved locally):
+
+| Plan | Flat price |
+|------|-----------|
+| API (pay-per-token) | — |
+| Pro | $20 / mo |
+| Max 5× | $100 / mo |
+| Max 20× | $200 / mo |
+
+For a flat plan, ClaudeSec shows a **value-vs-plan** panel: your API-equivalent spend, the flat monthly price, and the ratio — so you can see whether your usage is "paying for" the subscription rather than worrying about a per-token bill.
+
+## Other panels
+
+The Cost screen also embeds a **Webhook** configurator and a **Database Health** panel (span usage, retention config, manual prune) for convenience.
+
+Backed by [`GET /api/costs`](/api-reference/costs) and `/api/cost-trend`.

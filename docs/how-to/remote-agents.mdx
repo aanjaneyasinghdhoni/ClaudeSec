@@ -1,0 +1,63 @@
+---
+title: "Capture remote & CI agents (OTLP)"
+description: "Stream telemetry from agents ClaudeSec can't read from disk — other machines, containers, or CI."
+---
+
+The local watcher captures every agent on **your** machine with zero config. For agents running **elsewhere** — another host, a container, or a CI job — where ClaudeSec can't read the filesystem, use the OpenTelemetry endpoint instead.
+
+Both intakes converge on the same detection-and-storage pipeline, so local and remote activity land in one dashboard.
+
+## Point any OTLP agent at ClaudeSec
+
+ClaudeSec accepts standard **OTLP/HTTP JSON** at `POST /v1/traces`. Set two environment variables on the remote agent:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://<claudesec-host>:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+Any OpenTelemetry-compatible tool then works out of the box.
+
+<Warning>
+  **Experimental.** OTLP harness detection matches the incoming `service.name` against known patterns (Claude Code, Copilot, Codex). Agents that don't emit a recognizable `service.name` are labeled **Unknown** — for local Copilot or Codex sessions, the [transcript watcher](/explanation/watcher) identifies them reliably from their on-disk transcripts.
+</Warning>
+
+## Claude Code over OTLP
+
+If you specifically need Claude Code's native telemetry (e.g. in CI, where there's no transcript on the ClaudeSec host), enable it on the agent side:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1   # model name + token counts
+export OTEL_LOG_TOOL_DETAILS=1                  # tool names + input args
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://<claudesec-host>:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+<Warning>
+  These OTEL variables are **only** for remote/CI capture. You do **not** need them for local agents — the watcher handles those, and installing the background service even removes legacy local OTEL config.
+</Warning>
+
+## Reaching the server from another machine
+
+By default the server binds loopback (`127.0.0.1`). To accept connections from other hosts, start it with:
+
+```bash
+CLAUDESEC_HOST=0.0.0.0 npm run dev
+```
+
+Only do this on a trusted network — ClaudeSec is unauthenticated by design. See [Privacy & Security](/security/privacy).
+
+## Forwarding to an upstream collector
+
+To fan telemetry out to another backend, set `OTEL_FORWARD_URL` and ClaudeSec transparently proxies each batch upstream (SSRF-blocked for private ranges). See the [OTEL Collector](/collector) guide.
+
+## Quick test
+
+```bash
+curl -s -X POST http://localhost:3000/v1/traces \
+  -H 'Content-Type: application/json' \
+  -d '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"test-agent"}}]},"scopeSpans":[{"scope":{},"spans":[{"traceId":"abc123","spanId":"span001","name":"test.operation","kind":1,"startTimeUnixNano":"1700000000000000000","endTimeUnixNano":"1700000001000000000","attributes":[{"key":"reason","value":{"stringValue":"quickstart test"}}],"status":{"code":1}}]}]}]}'
+```
+
+Expect `{"status":"ok"}` and a new session in the dashboard.

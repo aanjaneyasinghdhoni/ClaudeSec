@@ -1,0 +1,55 @@
+---
+title: "Span Tags API"
+description: "Attach lightweight labels to spans."
+icon: "tag"
+---
+
+## GET /api/spans/:spanId/tags
+
+Returns tags for a span:
+
+```json
+{
+  "tags": ["reviewed", "needs-investigation"]
+}
+```
+
+---
+
+## POST /api/spans/:spanId/tags
+
+Create/add a tag.
+
+```json
+{ "tag": "false-positive" }
+```
+
+Tag normalization in server:
+
+- lowercased
+- invalid chars removed (`[^a-z0-9_:.-]`)
+- truncated to 64 chars
+
+### Responses
+
+- `201` → `{ "tag": "false-positive" }`
+- `400` invalid/empty tag
+- `404`/`409` can occur for missing or duplicate states depending on DB/write outcome
+
+---
+
+## DELETE /api/spans/:spanId/tags/:tag
+
+Deletes a tag by tag value (not numeric id).
+
+Response:
+
+```json
+{ "status": "ok" }
+```
+
+If not found:
+
+```json
+{ "error": "tag not found" }
+```

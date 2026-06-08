@@ -1,0 +1,124 @@
+---
+title: "Sessions API"
+description: "List sessions, update session metadata, compare sessions, and fetch per-session health."
+---
+
+## Overview
+
+A ClaudeSec session maps to a single OpenTelemetry `traceId`. Session rows are created automatically the first time a trace is ingested.
+
+---
+
+## GET /api/sessions
+
+List sessions with aggregate stats and scores.
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `label` | string | Optional filter (`normal`, `incident`, `investigation`, `automated`, `other`) |
+
+### Response fields (per session)
+
+| Field | Type | Description |
+|---|---|---|
+| `traceId` | string | Session trace ID |
+| `name` | string | Display name |
+| `createdAt` | string | ISO timestamp |
+| `pinned` | number | `1` or `0` |
+| `label` | string | Session label |
+| `notes` | string | Analyst notes |
+| `spanCount` | number | Total spans |
+| `threatCount` | number | Spans where severity != `none` |
+| `maxSeverityRank` | number | `0..3` severity rank |
+| `harnesses` | string | Comma-separated harness IDs |
+| `threatHigh` / `threatMedium` / `threatLow` | number | Per-severity threat counts |
+| `alertCount` | number | Alert rows tied to this trace |
+| `riskScore` | number | Risk score `0..100` (higher = riskier) |
+| `healthScore` | number | `100 - riskScore` |
+
+---
+
+## PATCH /api/sessions/:traceId
+
+Update one or more mutable fields for a session.
+
+```json
+{
+  "name": "Incident triage · checkout workflow",
+  "pinned": true,
+  "label": "investigation",
+  "notes": "Suspected prompt injection from copied terminal output."
+}
+```
+
+### Supported fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Must be non-empty after trim |
+| `pinned` | boolean | Max 10 pinned sessions total |
+| `label` | string | One of `normal`, `incident`, `investigation`, `automated`, `other` |
+| `notes` | string | Free-form text |
+
+### Responses
+
+- `200` → `{ "status": "ok" }`
+- `400` invalid field values
+- `404` session not found
+- `409` pin limit reached
+
+---
+
+## GET /api/sessions/:traceId/health
+
+Returns dedicated health breakdown for one session:
+
+```json
+{
+  "score": 64,
+  "grade": "C",
+  "threatHigh": 1,
+  "threatMedium": 1,
+  "threatLow": 1,
+  "alertCount": 2
+}
+```
+
+---
+
+## GET /api/sessions/compare
+
+Compare two sessions side-by-side.
+
+```
+GET /api/sessions/compare?a=<traceIdA>&b=<traceIdB>
+```
+
+### Response
+
+```json
+{
+  "a": {
+    "traceId": "trace-a",
+    "name": "Session A",
+    "spanCount": 31,
+    "alertCount": 4,
+    "threatHigh": 1,
+    "threatMedium": 2,
+    "threatLow": 3,
+    "tokensIn": 12040,
+    "tokensOut": 4780,
+    "avgDurationMs": 184,
+    "topTools": [{ "name": "Bash", "count": 8 }],
+    "topRules": [{ "name": "Prompt injection attempt", "count": 2 }]
+  },
+  "b": { "...": "same shape as a" }
+}
+```
+
+### Errors
+
+- `400` missing/duplicate `a` and `b`
+- `404` one or both sessions not found

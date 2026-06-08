@@ -1,0 +1,99 @@
+---
+title: "Quickstart"
+description: "Install ClaudeSec and watch real agent activity stream in — in under a minute."
+---
+
+ClaudeSec is zero-config. You do not set any environment variables, edit your shell profile, or restart your agents. Clone the repo, run it, and the dashboard fills with live agent activity.
+
+## Prerequisites
+
+- **Node.js 20.19+** (Node 22 LTS recommended)
+- At least one supported agent on your machine — [Claude Code](/harnesses/claude-code), [GitHub Copilot CLI](/harnesses/copilot), or [Codex](/harnesses/codex)
+
+<Note>
+  `better-sqlite3` builds a native module on install. If you hit a build error, install the Xcode Command Line Tools (macOS) or `build-essential` (Linux) and try again.
+</Note>
+
+---
+
+## Step 1 — Clone and run
+
+```bash
+git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
+cd ClaudeSec
+npm install
+npm run dev
+```
+
+This starts the dashboard at **http://localhost:3000** and begins tailing every Claude Code, Copilot CLI, and Codex session on your machine.
+
+Because your agents already write transcripts to disk, the dashboard fills with **real, live activity immediately** — including sessions that were running before you started it.
+
+---
+
+## Step 2 — Look around
+
+Open [http://localhost:3000](http://localhost:3000) (it opens automatically). Within seconds of any agent action you'll see:
+
+- A session row per trace, tagged with the harness that produced it.
+- Spans appearing in the **Timeline** as colored bars, with live durations.
+- **Alert** counts incrementing whenever a detection rule matches.
+
+Take the [dashboard tour](/observe/timeline) to learn each screen.
+
+---
+
+## Step 3 — Check status from the terminal
+
+```bash
+node cli/init.mjs status      # server health, span/session/alert counts, uptime
+node cli/init.mjs tail        # stream new spans live in your terminal
+node cli/init.mjs processes   # list running agent processes
+```
+
+See the [CLI reference](/reference/cli) for every command.
+
+---
+
+## Run as a background service
+
+`npm run dev` runs in the foreground. To keep ClaudeSec running across reboots, build the dashboard once and install the user-level background service (launchd on macOS, systemd user service on Linux, a Scheduled Task on Windows) through the bundled CLI:
+
+```bash
+npm run build
+node cli/init.mjs            # install + start the service, open the dashboard
+node cli/init.mjs stop       # stop and remove the service
+```
+
+Installing the service also removes any legacy ClaudeSec OTEL config it finds — the watcher needs none. Your data in `~/.claudesec` / `spans.db` is left untouched; to wipe stored data, run `node cli/init.mjs reset`.
+
+---
+
+## Platform support
+
+| Platform | Background service | Status |
+|---|---|---|
+| macOS | launchd LaunchAgent | **Verified** |
+| Linux | systemd user service | Experimental |
+| Windows | Scheduled Task (at logon) | Experimental |
+
+The watcher and dashboard run anywhere Node ≥ 20.19 runs; only the auto-start *service* layer is platform-specific. On any platform you can always run the foreground server with `npm run dev`.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Dashboard tour" icon="gauge" href="/observe/timeline">
+    Every screen, explained.
+  </Card>
+  <Card title="Security rules" icon="shield" href="/security/rules">
+    The built-in threat library and how to add your own.
+  </Card>
+  <Card title="Remote & CI agents" icon="cloud" href="/how-to/remote-agents">
+    Capture agents ClaudeSec can't read from disk, via OTLP.
+  </Card>
+  <Card title="Privacy & Security" icon="lock" href="/security/privacy">
+    Loopback binding, the 0600 database, and secret scrubbing.
+  </Card>
+</CardGroup>

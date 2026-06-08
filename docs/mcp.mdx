@@ -1,0 +1,41 @@
+---
+title: MCP Server Mode
+description: Query ClaudeSec from AI agents using the Model Context Protocol
+icon: cpu
+---
+
+ClaudeSec exposes an MCP JSON-RPC endpoint at `POST /mcp`.
+
+## Endpoint
+
+```bash
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+## Supported MCP methods
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+## Current tools (11)
+
+| Tool | Purpose |
+|---|---|
+| `get_health` | Server status and counts |
+| `get_sessions` | List recent sessions (optional label filter) |
+| `get_spans` | List spans for a trace |
+| `get_alerts` | Fetch alerts (limit/severity filters) |
+| `search_spans` | Text search across spans |
+| `tag_span` | Add tag to a span |
+| `suppress_rule` | Create/update a suppression window |
+| `bookmark_span` | Bookmark a span |
+| `get_processes` | List detected local agent processes |
+| `get_incident_summary` | Build incident summary for a trace |
+| `list_bookmarks` | List bookmarks (optional trace filter) |
+
+## Security note
+
+ClaudeSec binds to `127.0.0.1` by default. Keep it local unless you explicitly set `CLAUDESEC_HOST` and secure network access.

@@ -1,0 +1,81 @@
+---
+title: "Bookmarks API"
+description: "Create, list, update, and delete span bookmarks."
+icon: "bookmark"
+---
+
+## GET /api/bookmarks
+
+List bookmarks (latest first).
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `session` | string | Optional traceId filter |
+
+### Response
+
+```json
+{
+  "bookmarks": [
+    {
+      "id": 1,
+      "spanId": "abc123",
+      "traceId": "trace-1",
+      "note": "Investigate this path",
+      "createdAt": "2026-04-18T00:00:00.000Z",
+      "spanName": "tool_call/Bash",
+      "severity": "high",
+      "harness": "claude-code"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/bookmarks
+
+```json
+{
+  "spanId": "abc123",
+  "traceId": "trace-1",
+  "note": "Optional note"
+}
+```
+
+- `spanId` is required
+- Returns `201` with the created bookmark row
+
+---
+
+## PATCH /api/bookmarks/:id
+
+Update only the note:
+
+```json
+{ "note": "Updated note" }
+```
+
+Responses:
+
+- `200` → `{ "status": "ok" }`
+- `400` when `note` is missing
+- `404` when bookmark is not found
+
+---
+
+## DELETE /api/bookmarks/:id
+
+Deletes a bookmark by numeric id.
+
+Response: `{ "status": "ok" }`
+
+---
+
+## DELETE /api/bookmarks/span/:spanId
+
+Deletes bookmarks tied to a span id (toggle-off convenience endpoint).
+
+Response: `{ "status": "ok" }`

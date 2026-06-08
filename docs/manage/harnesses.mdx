@@ -1,0 +1,19 @@
+---
+title: "Harnesses"
+description: "Per-agent activity stats — spans, sessions, threats, and tokens by harness."
+---
+
+The **Harnesses** screen (under Manage) summarizes activity by agent. For each harness ClaudeSec has seen — Claude Code, GitHub Copilot CLI, Codex, or any OTLP source — it shows:
+
+- Span and session counts.
+- Threat breakdown (high / medium / low).
+- Input / output token totals.
+- First-seen and last-seen times.
+
+Click a harness to filter the rest of the dashboard to just that agent.
+
+Backed by [`GET /api/harnesses`](/api-reference/orchestration).
+
+<Note>
+  The three local agents are captured automatically with zero config — see [Claude Code](/harnesses/claude-code), [GitHub Copilot CLI](/harnesses/copilot), and [Codex](/harnesses/codex). Any other OpenTelemetry agent can stream in over [OTLP](/how-to/remote-agents).
+</Note>

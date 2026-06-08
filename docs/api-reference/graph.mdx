@@ -1,0 +1,172 @@
+---
+title: "Graph API"
+description: "GET /api/graph — retrieve span dependency graph data for programmatic access and external visualization tools."
+---
+
+## Endpoint
+
+```
+GET /api/graph
+GET /api/graph?session={traceId}
+```
+
+Returns node and edge data for the span dependency graph. This is a headless API endpoint — there is no graph tab in the dashboard UI. Use this endpoint for programmatic access, custom integrations, or to feed data into external visualization tools.
+
+<Note>
+  All nodes are returned with `position: { x: 0, y: 0 }`. The server does not compute layout coordinates — run your own layout engine (e.g. Dagre or the built-in React Flow layout) client-side.
+</Note>
+
+---
+
+## Query parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session` | string | No | Filter graph to spans belonging to a specific `traceId`. If omitted, all spans across all sessions are included. |
+
+---
+
+## Response
+
+```json
+{
+  "nodes": [
+    {
+      "id": "claude-code",
+      "data": {
+        "label": "Claude Code",
+        "isRoot": true,
+        "harnessColor": "#f97316"
+      },
+      "position": { "x": 0, "y": 0 },
+      "type": "input",
+      "style": {
+        "backgroundColor": "#f9731622",
+        "border": "2px solid #f97316",
+        "color": "var(--cs-text-base)"
+      }
+    },
+    {
+      "id": "00f067aa0ba902b7",
+      "data": {
+        "label": "tool_use",
+        "attributes": {
+          "gen_ai.tool.name": "Bash",
+          "gen_ai.usage.input_tokens": 1024,
+          "gen_ai.usage.output_tokens": 256
+        },
+        "severity": "none",
+        "isMalicious": false,
+        "protocol": "HTTPS",
+        "reason": "Processing step",
+        "harness": "claude-code",
+        "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "startNano": "1700000000000000000",
+        "endNano": "1700000001500000000"
+      },
+      "position": { "x": 0, "y": 0 },
+      "style": {
+        "backgroundColor": "var(--cs-bg-elevated)",
+        "border": "1px solid var(--cs-border-soft)",
+        "color": "var(--cs-text-base)"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-claude-code-00f067aa0ba902b7",
+      "source": "claude-code",
+      "target": "00f067aa0ba902b7",
+      "label": "HTTPS",
+      "animated": true,
+      "style": {}
+    }
+  ]
+}
+```
+
+### Node object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Span ID (or harness ID for root nodes) |
+| `data.label` | string | Display name shown in the graph |
+| `data.isRoot` | boolean | `true` for harness root nodes |
+| `data.harnessColor` | string | Hex color for root nodes |
+| `data.attributes` | object | Parsed span attributes (key-value pairs) |
+| `data.severity` | string | `none`, `low`, `medium`, or `high` |
+| `data.isMalicious` | boolean | `true` if severity is not `none` |
+| `data.protocol` | string | Protocol extracted from span attributes (default: `"HTTPS"`) |
+| `data.reason` | string | Reason string from span attributes (default: `"Processing step"`) |
+| `data.harness` | string | Harness ID (e.g., `"claude-code"`) |
+| `data.traceId` | string | Session trace ID |
+| `data.startNano` | string | Start timestamp in nanoseconds |
+| `data.endNano` | string | End timestamp in nanoseconds |
+| `position` | object | `{x, y}` coordinates — always `{ "x": 0, "y": 0 }` (no server-side layout) |
+| `style` | object | React Flow inline style. Threat spans get a colored border (see below); clean (`none`) spans get a neutral elevated style. |
+
+### Severity styles
+
+| Severity | Background | Border |
+|----------|-----------|--------|
+| `none` | `var(--cs-bg-elevated)` | `1px solid var(--cs-border-soft)` |
+| `low` | `#fefce8` | `2px solid #eab308` |
+| `medium` | `#fff7ed` | `2px solid #f97316` |
+| `high` | `#fee2e2` | `2px solid #ef4444` |
+
+Threat spans (`low`/`medium`/`high`) use a `#1e293b` text color; clean (`none`) spans use the theme variables shown above.
+
+### Edge object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | `"e-{parentId}-{spanId}"` |
+| `source` | string | Parent span ID (or harness root ID) |
+| `target` | string | Child span ID |
+| `label` | string | Protocol label |
+| `animated` | boolean | Always `true` |
+| `style` | object | Colored stroke for threat spans; empty for clean spans |
+
+---
+
+## Examples
+
+### Fetch the full graph
+
+```bash
+curl http://localhost:3000/api/graph
+```
+
+### Fetch a session-scoped graph
+
+```bash
+curl "http://localhost:3000/api/graph?session=4bf92f3577b34da6a3ce929d0e0e4736"
+```
+
+### JavaScript (fetch)
+
+```javascript
+const response = await fetch('http://localhost:3000/api/graph');
+const { nodes, edges } = await response.json();
+// Pass directly to React Flow
+```
+
+---
+
+## Empty graph
+
+If no spans have been ingested, the response is:
+
+```json
+{
+  "nodes": [
+    {
+      "id": "agent",
+      "data": { "label": "AI Agent" },
+      "position": { "x": 0, "y": 0 },
+      "type": "input"
+    }
+  ],
+  "edges": []
+}
+```

@@ -1,0 +1,76 @@
+---
+title: "Search API"
+description: "Filtered span search, exports, and direct FTS queries."
+icon: "magnifying-glass"
+---
+
+## GET /api/search
+
+Primary search endpoint with pagination.
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `q` | string | Search text (FTS-backed; optional) |
+| `severity` | string | `high`, `medium`, `low`, `none`, or `all` |
+| `harness` | string | Harness filter |
+| `tag` | string | Filter by span tag |
+| `from` | ISO 8601 | Start time bound |
+| `to` | ISO 8601 | End time bound |
+| `limit` | number | 1..100 (default `20`) |
+| `page` | number | 1-indexed (default `1`) |
+
+### Response
+
+```json
+{
+  "spans": [ ... ],
+  "total": 47,
+  "page": 1,
+  "pages": 3,
+  "query": "rm -rf"
+}
+```
+
+---
+
+## GET /api/search/export
+
+Exports matching results as JSON attachment (up to 5000 rows).
+
+Accepts: `q`, `severity`, `harness`, `tag`.
+
+```json
+{
+  "exportedAt": "2026-04-18T00:10:00.000Z",
+  "query": "curl",
+  "count": 12,
+  "spans": [ ... ]
+}
+```
+
+---
+
+## GET /api/search/fts
+
+Direct FTS5 endpoint for prefix-term search.
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `q` | string | Required (min length 2) |
+| `limit` | number | 1..200 (default `50`) |
+
+### Response
+
+```json
+{
+  "spans": [ ... ],
+  "total": 9,
+  "query": "prompt inject"
+}
+```
+
+If the generated FTS expression is invalid, this endpoint returns `400`.

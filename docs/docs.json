@@ -1,0 +1,157 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "ClaudeSec",
+  "colors": {
+    "primary": "#3b82f6",
+    "light": "#60a5fa",
+    "dark": "#1d4ed8"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "index",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Agents",
+        "pages": [
+          "harnesses/claude-code",
+          "harnesses/copilot",
+          "harnesses/codex"
+        ]
+      },
+      {
+        "group": "Observe",
+        "pages": [
+          "observe/timeline",
+          "observe/orchestration",
+          "observe/heatmap",
+          "observe/processes"
+        ]
+      },
+      {
+        "group": "Detect",
+        "pages": [
+          "security/alerts",
+          "detect/search"
+        ]
+      },
+      {
+        "group": "Protect",
+        "pages": [
+          "security/rules",
+          "security/enforcement",
+          "security/mcp-scan",
+          "security/suppressions"
+        ]
+      },
+      {
+        "group": "Review",
+        "pages": [
+          "review/command-audit",
+          "review/file-access",
+          "review/tool-inventory",
+          "review/bookmarks",
+          "review/session-labels"
+        ]
+      },
+      {
+        "group": "Manage",
+        "pages": [
+          "manage/harnesses",
+          "cost/costs",
+          "manage/settings",
+          "manage/themes"
+        ]
+      },
+      {
+        "group": "How-to guides",
+        "pages": [
+          "how-to/remote-agents"
+        ]
+      },
+      {
+        "group": "Explanation",
+        "pages": [
+          "architecture",
+          "explanation/watcher"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli",
+          "reference/config",
+          "security/privacy"
+        ]
+      },
+      {
+        "group": "Integrations",
+        "pages": [
+          "mcp",
+          "collector"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api-reference/introduction",
+          "api-reference/otlp",
+          "api-reference/sessions",
+          "api-reference/spans",
+          "api-reference/health",
+          "api-reference/search",
+          "api-reference/alerts-api",
+          "api-reference/rules-api",
+          "api-reference/suppressions",
+          "api-reference/threshold-rules",
+          "api-reference/orchestration",
+          "api-reference/command-audit",
+          "api-reference/activity",
+          "api-reference/costs",
+          "api-reference/processes",
+          "api-reference/bookmarks",
+          "api-reference/tags",
+          "api-reference/annotations",
+          "api-reference/webhooks",
+          "api-reference/export",
+          "api-reference/import",
+          "api-reference/reports",
+          "api-reference/config",
+          "api-reference/db-stats",
+          "api-reference/graph",
+          "api-reference/graph-export",
+          "api-reference/mcp"
+        ]
+      },
+      {
+        "group": "About",
+        "pages": [
+          "changelog"
+        ]
+      }
+    ]
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/aanjaneyasinghdhoni/ClaudeSec"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/aanjaneyasinghdhoni/ClaudeSec"
+    }
+  }
+}

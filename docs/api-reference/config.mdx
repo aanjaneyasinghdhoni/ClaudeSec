@@ -1,0 +1,51 @@
+---
+title: "Config API"
+description: "Runtime config, collector config export, and scrub status."
+icon: "settings"
+---
+
+## GET /api/config
+
+Returns effective runtime configuration:
+
+```json
+{
+  "maxSpans": 50000,
+  "retentionDays": 30,
+  "rateLimitRps": 50,
+  "rateLimitBurst": 200,
+  "maxSpansBatch": 500,
+  "webhookUrl": "***",
+  "webhookThreshold": "high"
+}
+```
+
+`webhookUrl` is redacted as `"***"` when configured, otherwise `null`.
+
+---
+
+## GET /api/collector-config
+
+Downloads a ready-to-run OpenTelemetry Collector YAML file (`text/yaml`) that forwards traces to this ClaudeSec server.
+
+```bash
+curl http://localhost:3000/api/collector-config -o otel-collector-config.yaml
+```
+
+---
+
+## GET /api/scrub
+
+Returns data-scrubbing status and honeytoken count.
+
+```json
+{
+  "enabled": true,
+  "envOverride": false,
+  "honeytokens": 2,
+  "description": "Inline redaction of ... sensitive attribute keys ..."
+}
+```
+
+- `enabled` is false when `CLAUDESEC_DISABLE_SCRUB=1`
+- `envOverride` indicates that env config is forcing scrub behavior

@@ -1,0 +1,36 @@
+---
+title: "GitHub Copilot CLI"
+description: "GitHub Copilot CLI sessions are captured automatically by ClaudeSec — zero configuration."
+---
+
+## Captured automatically
+
+ClaudeSec captures [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) sessions with **no setup**. Copilot CLI writes session state to:
+
+```
+~/.copilot/session-state/**/*.jsonl
+```
+
+Once ClaudeSec is running (`npm run dev`), the [transcript watcher](/explanation/watcher) tails those files live. No environment variables, no flags, no restart.
+
+---
+
+## What ClaudeSec extracts
+
+The watcher maps Copilot's event stream:
+
+| Copilot event | Becomes |
+|---------------|---------|
+| `tool.execution_start` | A tool span (named by `toolName`, with `arguments` as attributes) |
+| `tool.execution_complete` | The span's end / duration |
+| `assistant.message` (with `model`) | A `llm_request` span feeding the [Cost view](/cost/costs) |
+
+The session ID is inferred from the session-state directory name and used as the trace ID, so Copilot activity groups into sessions just like the other agents.
+
+---
+
+## Troubleshooting
+
+1. Confirm the service is running: `node cli/init.mjs status`.
+2. Confirm session files exist: `ls ~/.copilot/session-state/`.
+3. Only new activity is captured by default — set `CLAUDESEC_BACKFILL=1` to import history.

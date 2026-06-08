@@ -1,0 +1,36 @@
+---
+title: "Orchestration"
+description: "The deep-dive Observe screen — spawn trees, tool inventory, command audit, and file access in one place."
+---
+
+The **Orchestration** screen is where you review what your agents actually did, broken down by tool, command, and file. It stacks four panels.
+
+## Spawn tree
+
+A tree of agent / sub-agent relationships across sessions, so you can see which agents spawned which.
+
+<Warning>
+  **Experimental.** The spawn tree is a heuristic grouping of related sessions — agents don't emit cross-trace spawn parentage yet, so the hierarchy is inferred rather than reported. Likewise, the Orchestration Graph's interaction (DAG) edges only appear when multiple agents share a single trace.
+</Warning>
+
+## Tool Inventory
+
+Every tool each agent invoked, with call counts and threat counts. Two views:
+
+- **Table** — tool, agent, calls, threats. Suspicious tools (e.g. shell-exec) are flagged with an orange dot.
+- **Heatmap** — tool-usage intensity at a glance.
+
+Tools are derived from the `gen_ai.tool.name` / `tool` attribute on each span. Backed by [`GET /api/orchestration`](/api-reference/orchestration).
+
+## Command Audit Trail
+
+A risk-ranked log of shell commands run by your agents — the real command text, the harness, the session, and a heuristic risk score. This is the fastest way to answer "what did this agent run on my machine?" Backed by [`GET /api/command-audit`](/api-reference/command-audit). See [Command Audit](/review/command-audit) for detail.
+
+## File Access
+
+Every file your agents read or wrote, ranked by access count, with read/write tallies and the agents involved. Paths matching sensitive patterns — `.env`, `~/.ssh/`, `/etc/passwd|shadow|sudoers|hosts`, `credentials`, `*.pem`, `id_rsa` — are flagged so credential-adjacent access stands out. Backed by `GET /api/file-access` (documented alongside the [Command Audit API](/api-reference/command-audit)). See [File Access](/review/file-access) for detail.
+
+## Related
+
+- [Heatmap](/observe/heatmap) — a full-screen tool-usage heatmap across harnesses.
+- [Tool Inventory](/review/tool-inventory) — the inventory panel in depth.

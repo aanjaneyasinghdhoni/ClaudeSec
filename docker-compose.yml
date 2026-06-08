@@ -1,0 +1,52 @@
+services:
+  claudesec:
+    build: .
+    image: claudesec:latest
+    container_name: claudesec
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    volumes:
+      # Persist the SQLite database and custom rules outside the container
+      - claudesec-data:/data
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      CLAUDESEC_HOST: 0.0.0.0
+      # CLAUDESEC_TRUST_LOCAL disables the loopback-address auth check so that
+      # the browser can reach /api/* and Socket.io without a token, even though
+      # Docker's port-forwarding means the container sees a bridge IP (not
+      # 127.0.0.1) for every connection.
+      #
+      # WARNING: This disables authentication for ALL clients that reach the
+      # published port.  It is safe here ONLY because the host port is published
+      # on 127.0.0.1 (see the `ports:` entry above) — the container is
+      # unreachable from any other machine on the network.
+      #
+      # If you change the `ports:` binding away from 127.0.0.1 (e.g. to
+      # expose it on a LAN or public interface), you MUST remove
+      # CLAUDESEC_TRUST_LOCAL and set CLAUDESEC_TOKEN to a strong secret.
+      #
+      # To use token auth instead of TRUST_LOCAL, comment out the line below
+      # and uncomment: # CLAUDESEC_TOKEN: your-secret-token-here
+      CLAUDESEC_TRUST_LOCAL: "1"
+      # CLAUDESEC_TOKEN:
+      # Webhook (optional — set in .env or shell)
+      CLAUDESEC_WEBHOOK_URL: ${CLAUDESEC_WEBHOOK_URL:-}
+      CLAUDESEC_WEBHOOK_THRESHOLD: ${CLAUDESEC_WEBHOOK_THRESHOLD:-high}
+      # Retention (optional)
+      CLAUDESEC_MAX_SPANS: ${CLAUDESEC_MAX_SPANS:-50000}
+      CLAUDESEC_RETENTION_DAYS: ${CLAUDESEC_RETENTION_DAYS:-30}
+      # OTLP forwarding (optional — send traces to upstream collector)
+      OTEL_FORWARD_URL: ${OTEL_FORWARD_URL:-}
+      # Auto-export directory
+      CLAUDESEC_AUTO_EXPORT_DIR: /data/exports
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  claudesec-data:

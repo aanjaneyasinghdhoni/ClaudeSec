@@ -1,0 +1,123 @@
+---
+title: "Activity API"
+description: "Real-time activity timeline, live agent status, threat heatmap, and SSE event stream"
+icon: "activity"
+---
+
+## Overview
+
+The Activity API provides multiple views into what agents are doing right now. It includes a 60-second sparkline ring buffer, per-agent live status, a 7x24 threat heatmap, and a Server-Sent Events (SSE) stream for real-time span ingestion.
+
+## Endpoints
+
+### GET /api/activity
+
+Get the activity sparkline data: 60 one-second buckets showing span and token throughput.
+
+```bash
+curl http://localhost:3000/api/activity
+```
+
+**Response:**
+```json
+{
+  "buckets": [
+    {
+      "ts": 1712659140000,
+      "spans": 0,
+      "tokensIn": 0,
+      "tokensOut": 0
+    },
+    {
+      "ts": 1712659141000,
+      "spans": 3,
+      "tokensIn": 1250,
+      "tokensOut": 890
+    }
+  ]
+}
+```
+
+The array always contains exactly 60 entries (one per second), ordered oldest to newest. `ts` is a Unix timestamp in milliseconds.
+
+### GET /api/live-activity
+
+Get per-agent live status showing what each agent is doing right now.
+
+```bash
+curl http://localhost:3000/api/live-activity
+```
+
+**Response:**
+```json
+{
+  "agents": [
+    {
+      "harness": "claude-code",
+      "harnessName": "Claude Code",
+      "color": "#d97706",
+      "lastSpan": "tool_call/Edit",
+      "tool": "Edit",
+      "input": "src/App.tsx",
+      "model": "claude-sonnet-4-6",
+      "severity": "none",
+      "traceId": "trace-abc-123",
+      "secondsAgo": 5,
+      "active": true
+    }
+  ],
+  "ts": "2026-04-09T14:32:01.000Z"
+}
+```
+
+Agents are sorted by recency (most recent first). `active` is `true` if the last span was within 60 seconds.
+
+### GET /api/heatmap
+
+Get a 7x24 threat activity heatmap (day-of-week by hour-of-day).
+
+```bash
+curl http://localhost:3000/api/heatmap
+```
+
+**Response:**
+```json
+{
+  "grid": [
+    [
+      { "spans": 12, "threats": 2 },
+      { "spans": 0, "threats": 0 }
+    ]
+  ],
+  "maxThreats": 8,
+  "maxSpans": 42,
+  "totalSpans": 1245
+}
+```
+
+`grid` is a 7x24 matrix: `grid[dayOfWeek][hour]` where day 0 = Sunday, hour 0-23. Each cell counts total spans and threat spans for that time slot. `maxThreats` and `maxSpans` are the peak values for normalizing the heatmap display.
+
+### GET /api/tail
+
+Server-Sent Events (SSE) stream of new spans as they arrive.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `harness` | string | Filter to spans from a specific agent harness |
+| `severity` | string | Filter to spans with a specific severity level |
+
+```bash
+curl -N http://localhost:3000/api/tail?harness=claude-code
+```
+
+**Response:** SSE stream with `data:` lines containing JSON span records:
+
+```
+data: {"spanId":"abc123","traceId":"trace-xyz","name":"tool_call/Edit","severity":"none","harness":"claude-code",...}
+
+data: {"spanId":"def456","traceId":"trace-xyz","name":"llm_request","severity":"none","harness":"claude-code",...}
+```
+
+A heartbeat comment (`: heartbeat`) is sent every 15 seconds to keep the connection alive. The connection stays open until the client disconnects.

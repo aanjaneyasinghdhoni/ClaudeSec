@@ -1,0 +1,22 @@
+---
+title: "Bookmarks"
+description: "Pin spans for follow-up and attach short notes."
+---
+
+The **Bookmarks** screen (under Review) collects spans you've flagged for follow-up — the evidence trail for an investigation.
+
+- Bookmark any span from the timeline or span inspector.
+- Attach a short **note** for context.
+- Filter bookmarks by session.
+
+## From the terminal
+
+```bash
+claudesec bookmarks                  # list bookmarked spans
+claudesec bookmarks --session <id>   # scope to one session
+claudesec bookmarks --delete <id>    # remove a bookmark
+```
+
+Backed by the [Bookmarks API](/api-reference/bookmarks): `GET/POST/PATCH/DELETE /api/bookmarks`.
+
+For higher-level triage, pair bookmarks with [Session Labels & Notes](/review/session-labels).

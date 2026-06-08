@@ -1,0 +1,84 @@
+---
+title: "Alerts API"
+description: "List, triage, export, and clear threat alerts."
+---
+
+## GET /api/alerts
+
+Returns recent alerts (newest first).
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `limit` | number | Max rows (default `200`, max `1000`) |
+| `severity` | string | `low`, `medium`, `high`, or `all` |
+| `showDismissed` | boolean | Include dismissed alerts when `true` |
+| `groupBy` | string | Use `groupBy=rule` to collapse duplicates |
+
+### Response
+
+```json
+{
+  "alerts": [
+    {
+      "id": 42,
+      "ts": "2026-04-18T00:10:00.000Z",
+      "ruleLabel": "Prompt injection attempt",
+      "severity": "high",
+      "spanId": "abc123",
+      "traceId": "trace-1",
+      "harness": "claude-code",
+      "spanName": "tool_call/Bash",
+      "matchedText": "ignore previous instructions",
+      "dismissed": 0,
+      "fp": 0,
+      "count": 3
+    }
+  ],
+  "total": 42
+}
+```
+
+---
+
+## PATCH /api/alerts/:id
+
+Triage an alert.
+
+```json
+{ "dismissed": true, "fp": false }
+```
+
+You can send either field or both.
+
+### Responses
+
+- `200` → `{ "status": "ok" }`
+- `400` when neither `dismissed` nor `fp` is provided
+- `404` when alert is not found
+
+---
+
+## GET /api/alerts/export
+
+Downloads all alerts as JSON attachment:
+
+```json
+{
+  "exportedAt": "2026-04-18T00:10:00.000Z",
+  "alerts": [ ... ]
+}
+```
+
+---
+
+## DELETE /api/alerts
+
+Deletes all alerts.
+
+Response:
+
+```json
+{ "status": "ok" }
+```

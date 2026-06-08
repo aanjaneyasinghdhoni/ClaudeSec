@@ -1,0 +1,92 @@
+---
+title: "Configuration reference"
+description: "Every environment variable ClaudeSec reads, and what it does."
+---
+
+All configuration is **optional** — ClaudeSec runs with sensible defaults and zero config. Set these as environment variables before starting the server (or the background service). Sensitive values are masked in the in-app reference. See `.env.example` for a copy-paste template.
+
+## Server & networking
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_PORT` / `PORT` | `3000` | Dashboard + OTLP listen port |
+| `CLAUDESEC_HOST` | `127.0.0.1` | Bind address. Set `0.0.0.0` only for deliberate LAN access |
+| `CLAUDESEC_TOKEN` | — | Bearer token required for **non-loopback** API/MCP access; **required** to bind a non-loopback host (the server refuses to start otherwise). Loopback access is exempt |
+| `CLAUDESEC_CORS_ORIGINS` | `localhost` | Comma-separated allowed CORS origins |
+| `CLAUDESEC_TRUST_PROXY` | — | Set `1` to trust `X-Forwarded-For` (behind a reverse proxy) |
+| `NODE_ENV` | — | `production` serves the built `dist/`; otherwise Vite dev mode |
+
+## Storage & data safety
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_DB` | `spans.db` | SQLite database path. Point throwaway / test instances elsewhere to isolate them |
+| `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the destructive data-wipe is disabled by default |
+
+## Enforcement
+
+These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook. The mode is normally set from the **Enforce** dashboard tab (which the server mirrors to `enforce-config.json`); the env vars are the fallback.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_MODE` | `monitor` | Hook mode: `monitor` logs would-blocks (default), `enforce` blocks high-severity tool calls |
+| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
+| `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (fail-open if absent) |
+
+## MCP / skill scanner
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_MCP_SCAN_ROOTS` | `~/.claude` | Colon/comma-separated roots for the [MCP & skill scanner](/security/mcp-scan). **Replaces** the defaults (does not append) |
+
+## Local watcher
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_WATCH` | `1` | Local transcript watcher. `0` disables it (OTLP still works) |
+| `CLAUDESEC_BACKFILL` | `0` | `1` imports each transcript's full history on first sight, not just new lines |
+
+## Detection & privacy
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_DISABLE_SCRUB` | — | Set `1` to store raw, unscrubbed attributes (not recommended) |
+| `CLAUDESEC_HONEYTOKENS` | — | Comma-separated canary strings; any span containing one fires a HIGH exfiltration alert |
+
+## Retention
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_MAX_SPANS` | `50000` | Total span capacity before count-based pruning |
+| `CLAUDESEC_RETENTION_DAYS` | `30` | Age-based pruning threshold |
+
+## Performance & limits
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_RATE_LIMIT_RPS` | `50` | Max OTLP requests/second per IP |
+| `CLAUDESEC_RATE_LIMIT_BURST` | `200` | Token-bucket burst capacity |
+| `CLAUDESEC_MAX_SPANS_BATCH` | `500` | Max spans allowed per OTLP batch |
+
+## Alerts & integrations
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / generic JSON endpoint for alert delivery |
+| `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to webhook |
+| `OTEL_FORWARD_URL` | — | Transparent OTLP proxy target (SSRF-blocked for private ranges) |
+| `CLAUDESEC_AUTO_EXPORT_DIR` | `./exports` | Directory for hourly auto-export JSON snapshots |
+
+## Remote / CI agent telemetry (set on the *agent*, not ClaudeSec)
+
+These configure the **agent** to export OTLP to ClaudeSec — only needed for [remote or CI agents](/how-to/remote-agents), never for local capture.
+
+| Variable | Purpose |
+|----------|---------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Point at `http://<host>:3000/v1/traces` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Set to `http/json` |
+| `CLAUDE_CODE_ENABLE_TELEMETRY` | Opt Claude Code into telemetry |
+| `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | Add model name + token counts |
+| `OTEL_LOG_TOOL_DETAILS` | Add tool names + input arguments |
+| `OTEL_LOG_TOOL_CONTENT` | Include full tool input/output bodies |
+| `OTEL_LOG_RAW_API_BODIES` | Include raw Anthropic Messages API JSON |

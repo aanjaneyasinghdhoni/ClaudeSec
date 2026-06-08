@@ -1,0 +1,126 @@
+---
+title: "Enforcement"
+description: "Block an agent's tool call before it runs, using the same rule set — monitor by default, enforce when you're ready."
+---
+
+Detection tells you what an agent *already did*. **Enforcement** can stop a tool call *before it runs* — using the same rule library, wired into Claude Code as a **PreToolUse hook** (`.claude/hooks/claudesec-enforce.cjs`).
+
+When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload against the high-severity block rules and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent).
+
+<Warning>
+  The hook is the **Claude Code layer** — it is agent-specific and bypassable (see [Bypass](#bypass)), **not** an OS-level sandbox. It also **fails open**: any error, missing config, or unparseable input results in *allow*, so a broken enforcement config can never lock you out. For agents that aren't Claude Code, the same rules are enforced at the **MCP wire level** — see [Cross-agent enforcement](#cross-agent-enforcement-mcp-proxy).
+</Warning>
+
+## Modes
+
+The hook runs in one of two modes, and **`monitor` is the default**:
+
+| Mode | What it does |
+|------|--------------|
+| `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the always-on *catastrophic-6 floor*. |
+| `enforce` | Actually **denies** high-severity command / file tool calls, in addition to the catastrophic floor. |
+
+### The catastrophic-6 floor
+
+Six bash patterns **always** block, in either mode — these are the unambiguous "you almost certainly did not mean this" commands:
+
+- `rm -rf` against the filesystem root (`/`)
+- fork bombs
+- piping a remote download straight into a shell (`curl … | sh` / `wget … | sh`)
+- reverse shells via `/dev/tcp`
+- formatting a filesystem (`mkfs.*`)
+- overwriting a raw disk device (`dd of=/dev/…`)
+
+In `monitor` mode this floor is the **only** thing that blocks — everything else is logged and allowed.
+
+## Turning it on
+
+The **server is the source of truth.** The recommended workflow is monitor first, then enforce:
+
+1. **Watch in monitor mode.** Run normally (the default). Open the **Enforce** dashboard tab and let your agents work. Every rule that *would* have blocked appears in the would-block feed, so you can confirm the rules match real activity without disrupting anything.
+2. **Flip to enforce.** When the would-block feed looks right, switch the mode to **enforce** from the **Enforce** tab. The server persists the mode and mirrors it to `enforce-config.json`, which the hook reads on each call.
+
+You can also set the mode through the API:
+
+```bash
+# Read current mode + overrides:
+curl http://localhost:3000/api/enforce/config
+
+# Switch to enforce:
+curl -X PUT http://localhost:3000/api/enforce/config \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"enforce"}'
+```
+
+Or set `CLAUDESEC_MODE=enforce` in the hook's environment. The mirrored config file wins over the env var; both default to `monitor`.
+
+<Note>
+  Per-rule overrides let you promote an `alert` rule to `block` (or demote a `block` rule to `alert`) without rebuilding the rule snapshot — `PUT /api/enforce/config` accepts an `overrides` map of `ruleLabel → "alert" | "block"`.
+</Note>
+
+## The would-block / block feed
+
+Every decision the hook reports streams to the **Enforce** tab over Socket.io and is also available at:
+
+```bash
+curl 'http://localhost:3000/api/enforce-log?limit=100'
+```
+
+The feed is an in-memory ring buffer — it is cleared on server restart. **Settings → Configuration Status** also summarizes recent enforcement activity (events in the last 24h) alongside the live mode.
+
+## Bypass
+
+Need to run something the hook would block, just once? Set the escape-hatch variable for that invocation:
+
+```bash
+CLAUDESEC_HOOKS_BYPASS=1 claude ...
+```
+
+With it set, the hook allows everything and exits immediately. Because enforcement is a Claude-Code hook, removing or not registering the hook also disables it entirely — which is exactly why the honest framing above matters: enforcement raises the bar for an agent, it does not sandbox the host.
+
+## Cross-agent enforcement (MCP proxy)
+
+The PreToolUse hook only reaches **Claude Code**. To enforce the *same* rules for **any** MCP-speaking agent — Codex, Copilot, Claude Desktop — ClaudeSec ships a **cross-agent MCP enforcement proxy**: a stdio gateway that wraps a downstream [MCP](https://modelcontextprotocol.io) server and gates every `tools/call` against the same `rules-enforcement.json` + `enforce-config.json`.
+
+The proxy speaks raw [JSON-RPC 2.0 over stdio](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports). It is a transparent pipe for `initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, and all responses; it intercepts **only** `tools/call`. For each call it builds the matchable text `toolName + ' ' + JSON.stringify(arguments)` and evaluates it exactly like the hook:
+
+- **`enforce`** + a high-severity `block` rule (or the catastrophic floor) matches → the call is **not** forwarded; the agent gets a `tools/call` result with `isError: true` and an explanatory message (a clean, model-readable refusal — not a transport error), and a would-block is logged to the dashboard.
+- **`monitor`** (default) + match → logs a would-block, then forwards normally.
+- no match → forwards.
+
+Mode is resolved per call (`enforce-config.json` → `CLAUDESEC_MODE` → `monitor`), so dashboard toggles take effect live. Like the hook, it **fails open** (any parse/proxy error forwards the original message) and honors `CLAUDESEC_HOOKS_BYPASS=1` (forward everything).
+
+### Wiring an agent
+
+Point the agent's `mcpServers` entry at the proxy instead of the real server. Wherever you would have launched `<real-server> <args...>`, launch:
+
+```
+claudesec mcp-proxy -- <real-server> <args...>
+```
+
+For example, to gate a filesystem MCP server in an agent's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "claudesec",
+      "args": [
+        "mcp-proxy", "--",
+        "npx", "-y", "@modelcontextprotocol/server-filesystem", "/work"
+      ],
+      "env": { "CLAUDESEC_MODE": "monitor" }
+    }
+  }
+}
+```
+
+The agent now talks to ClaudeSec, which transparently relays to (and gates) the real `server-filesystem`. Tool discovery (`tools/list`) is unchanged, so the agent sees exactly the same tools. Set `CLAUDESEC_MODE: "enforce"` (or flip the mode from the **Enforce** tab) when you're ready to block.
+
+<Note>
+  The proxy posts its would-blocks to `/api/enforce-log` (port from `CLAUDESEC_PORT` → `PORT` → 3000), so MCP-level decisions show up in the **same** Enforce dashboard feed as the hook's.
+</Note>
+
+## How the rules are built
+
+Both the hook and the MCP proxy compile their block-set from a `rules-enforcement.json` snapshot, regenerated from the live rule engine by `scripts/build-enforcement-rules.ts` (run: `tsx scripts/build-enforcement-rules.ts`). A rule blocks only if its effective action (snapshot action, possibly overridden) is `block`. The shared evaluation core lives in `enforceEval.ts` (imported by the proxy); the hook reproduces the same semantics dependency-free in `.claude/hooks/claudesec-enforce.cjs`. See [Security Rules](/security/rules) for the underlying rule library.

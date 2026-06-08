@@ -1,0 +1,46 @@
+---
+title: "How the transcript watcher works"
+description: "Why ClaudeSec needs zero config — and how it tails your agents' on-disk session transcripts in real time."
+---
+
+ClaudeSec's defining trick is that it needs **no configuration**. This page explains how.
+
+## The insight
+
+Claude Code, GitHub Copilot CLI, and Codex each write a full session transcript to disk as they work — append-only JSONL files, one record per event:
+
+| Agent | Transcript root |
+|-------|-----------------|
+| Claude Code | `~/.claude/projects/**/*.jsonl` |
+| GitHub Copilot CLI | `~/.copilot/session-state/**/*.jsonl` |
+| Codex | `~/.codex/sessions/**/*.jsonl` |
+
+Because the data is *already on disk*, ClaudeSec doesn't need agents to export telemetry. It just tails the files — so the moment you install it, it sees everything, including sessions that were already running.
+
+## The tailing loop
+
+`transcriptWatcher.ts` runs entirely on Node built-ins (no extra dependencies):
+
+1. **Rescan** (every ~5 s) — walk the transcript roots for `.jsonl` files. New files are recorded; unless backfill is on, their starting offset is set to the current end-of-file so only *new* activity is captured.
+2. **Hot set** — a file modified within the last ~2 minutes is "hot." Hot files are polled fast (every ~1 s); idle files are skipped, keeping the watcher cheap even with hundreds of historical transcripts.
+3. **Read new lines** — for each hot file, read only the bytes past the saved offset, split on newlines, and advance the offset. Partial trailing lines are left for the next pass.
+4. **Map records → spans** — each agent's format is parsed by a dedicated mapper:
+   - **Claude** — `tool_use` blocks become tool spans; `tool_result` blocks close them; `message.usage` emits a `llm_request` span for the Cost view.
+   - **Codex** — `function_call` / `local_shell_call` become spans; their `_output` counterparts close them.
+   - **Copilot** — `tool.execution_start` / `_complete` events become spans; `assistant.message` emits an `llm_request`.
+5. **Emit** — each mapped event is handed to `ingestSpan()` — the same entry point OTLP traces use — so detection, scrubbing, storage, and live broadcast all happen identically regardless of source.
+
+## Tool input summarization
+
+For each tool call the watcher extracts a one-line `reason` summary from the most descriptive input field (`command`, `file_path`, `path`, `pattern`, `query`, `url`, `description`, or `prompt`), truncated to ~80 chars — that's the human-readable line you see in the Timeline.
+
+## What you can control
+
+| Env var | Effect |
+|---------|--------|
+| `CLAUDESEC_WATCH=0` | Disable the watcher entirely (OTLP still works) |
+| `CLAUDESEC_BACKFILL=1` | On first sight of a file, ingest its full history instead of only new lines |
+
+## Why offsets matter
+
+The watcher persists a byte offset per file. On restart it resumes exactly where it left off — no duplicate spans, no missed lines — even across server restarts and the background service's auto-restarts.

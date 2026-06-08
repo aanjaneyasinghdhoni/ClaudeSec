@@ -1,0 +1,39 @@
+---
+title: "Export API"
+description: "Export spans and data for offline analysis"
+---
+
+## Export Spans (JSON)
+
+`GET /api/export`
+
+Downloads all recorded spans as a JSON file.
+
+```json Response (attachment)
+{
+  "exportedAt": "2025-01-01T12:00:00.000Z",
+  "version": "1.0.0",
+  "spans": [ ... ],
+  "annotations": [ ... ]
+}
+```
+
+## Export Spans (CSV)
+
+`GET /api/export/csv`
+
+Downloads all spans as CSV with columns:
+
+```
+spanId,traceId,name,harness,severity,protocol,reason,startNano,endNano
+```
+
+## Reset All Data
+
+`POST /api/reset`
+
+Clears spans, sessions, alerts, annotations, tags, bookmarks, FTS rows, and webhook delivery history. Emits `graph-update`, `sessions-update`, and `alerts-update` via Socket.io.
+
+<Warning>
+This operation is irreversible. All recorded telemetry data will be permanently deleted.
+</Warning>

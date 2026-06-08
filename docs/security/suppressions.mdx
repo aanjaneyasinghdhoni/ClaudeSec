@@ -1,0 +1,69 @@
+---
+title: "Rule Suppression"
+description: "Temporarily silence noisy rules while preserving span classification."
+icon: "bell-slash"
+---
+
+## Overview
+
+Suppressions disable alert creation for selected rule keys until an expiry time.
+
+- Span severity classification still happens.
+- Alert rows/webhooks are skipped for suppressed rules.
+- Suppressions are stored in SQLite and survive restarts.
+
+---
+
+## Rule key format
+
+- Built-in rules: `builtin-<index>`
+- Custom rules: `custom:<id>`
+
+Use `GET /api/rules` to discover valid IDs.
+
+---
+
+## API
+
+### GET /api/suppressions
+
+Returns active suppressions (expiry in the future):
+
+```json
+{
+  "suppressions": [
+    {
+      "id": 3,
+      "ruleKey": "builtin-65",
+      "suppressUntil": "2026-04-18T03:00:00.000Z",
+      "reason": "Known maintenance window",
+      "createdAt": "2026-04-18T01:00:00.000Z"
+    }
+  ]
+}
+```
+
+### POST /api/suppressions
+
+```json
+{
+  "ruleKey": "builtin-65",
+  "durationMs": 3600000,
+  "reason": "Known maintenance window"
+}
+```
+
+- `ruleKey` is required
+- `durationMs` must be > 0
+
+Returns `201` with the created suppression row.
+
+### DELETE /api/suppressions/:id
+
+Removes a suppression immediately.
+
+Response:
+
+```json
+{ "status": "ok" }
+```

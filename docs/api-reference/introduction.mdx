@@ -1,0 +1,83 @@
+---
+title: "API Introduction"
+description: "Base URL, auth model, content types, and core conventions for the ClaudeSec REST API."
+---
+
+## Base URL
+
+```
+http://localhost:3000
+```
+
+ClaudeSec is local-first and runs as a single Express server. If you run it on another port, all routes move with that port.
+
+---
+
+## Authentication
+
+ClaudeSec is intentionally **local-only and unauthenticated**.
+
+All routes are open on the local instance. Keep the service bound to loopback
+or behind a private network boundary if you deploy it in containerized setups.
+
+---
+
+## Rate limiting and safety guards
+
+- `POST /v1/traces` is token-bucket rate limited per IP (defaults: `50 RPS`, burst `200`).
+- Ingestion batches are capped (`CLAUDESEC_MAX_SPANS_BATCH`, default `500` spans per request).
+- Ingestion can temporarily reject with `503` when span capacity is near full (90% threshold).
+
+---
+
+## Content types
+
+- JSON for request/response bodies (`application/json`)
+- OTLP ingest expects OTLP/HTTP JSON on `POST /v1/traces`
+- CSV export uses `text/csv`
+- Graph/collector exports return plain text (`text/plain`, `text/vnd.graphviz`, `text/yaml`)
+
+---
+
+## Real-time events (Socket.io)
+
+ClaudeSec also pushes live updates over Socket.io:
+
+| Event | Description |
+|---|---|
+| `graph-update` | Graph changed |
+| `span-added` | A single span was ingested |
+| `alerts-update` | Alert list changed |
+| `sessions-update` | Session list changed |
+| `rules-update` | Custom rules changed |
+| `suppressions-update` | Rule suppressions changed |
+| `annotation-update` | Span annotations changed |
+| `bookmarks-update` | Bookmarks changed |
+| `processes-update` | Process control state changed |
+
+---
+
+## Error format
+
+Errors use standard HTTP status codes with JSON payloads:
+
+```json
+{ "error": "message" }
+```
+
+Some endpoints include a `detail` field for additional context.
+
+---
+
+## Frequently used endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/traces` | OTLP ingestion |
+| `GET` | `/api/graph` | Graph data |
+| `GET` | `/api/sessions` | Session list and scores |
+| `PATCH` | `/api/sessions/:traceId` | Rename/pin/label/note updates |
+| `GET` | `/api/search` | Filtered span search |
+| `GET` | `/api/alerts` | Alert listing |
+| `PATCH` | `/api/alerts/:id` | Alert triage (`dismissed` / `fp`) |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint |

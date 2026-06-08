@@ -1,0 +1,86 @@
+---
+title: "Database Stats API"
+description: "Monitor database size, row counts, and configure retention policies"
+icon: "database"
+---
+
+## Overview
+
+The Database Stats API exposes SQLite health metrics (size, row counts, oldest/newest session) and lets you manually trigger pruning or adjust retention settings. Retention is enforced both by age (days) and by span count.
+
+## Endpoints
+
+### GET /api/db-stats
+
+Get database statistics and current retention configuration.
+
+```bash
+curl http://localhost:3000/api/db-stats
+```
+
+**Response:**
+```json
+{
+  "spansTotal": 1245,
+  "sessionsTotal": 12,
+  "alertsTotal": 38,
+  "dbSizeBytes": 524288,
+  "dbSizeHuman": "512.0 KB",
+  "oldestSession": "2026-04-01T08:00:00.000Z",
+  "newestSession": "2026-04-09T14:32:00.000Z",
+  "retentionConfig": {
+    "maxSpans": 50000,
+    "retentionDays": 30
+  }
+}
+```
+
+### POST /api/db-stats/prune
+
+Manually trigger pruning. Removes sessions older than the configured retention period and trims excess spans beyond the max count.
+
+```bash
+curl -X POST http://localhost:3000/api/db-stats/prune
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "prunedByAge": 120,
+  "prunedByCount": 0
+}
+```
+
+`prunedByAge` is the number of spans removed because their session was older than `retentionDays`. `prunedByCount` is the number of oldest spans removed to stay under `maxSpans`.
+
+### POST /api/db-stats/retention
+
+Update retention policy settings.
+
+**Request body:**
+```json
+{
+  "maxSpans": 100000,
+  "retentionDays": 14
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `maxSpans` | number | No | Maximum number of spans to keep (minimum: 100) |
+| `retentionDays` | number | No | Number of days to retain sessions (minimum: 1) |
+
+Both fields are optional; only provided fields are updated. Settings can also be controlled via `CLAUDESEC_MAX_SPANS` and `CLAUDESEC_RETENTION_DAYS` environment variables (env vars take precedence).
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "maxSpans": 100000,
+  "retentionDays": 14
+}
+```
+
+**Errors:**
+- `400` — `maxSpans` below 100 or `retentionDays` below 1

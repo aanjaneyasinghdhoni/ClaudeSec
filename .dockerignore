@@ -1,0 +1,26 @@
+node_modules
+dist
+# Database files — never bake user data into the image
+spans.db
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+rules.json
+.env
+.env.*
+*.log
+.git
+.gitignore
+.claude/
+*.md
+plan.html
+openapi.yaml
+exports/
+hooks/
+cli/
+enforce-config.json
+rules-enforcement.json
+docs/superpowers/

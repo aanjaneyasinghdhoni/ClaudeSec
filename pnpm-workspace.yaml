@@ -1,0 +1,7 @@
+# pnpm 11.x workspace settings.
+# Build scripts are blocked for all packages by default in pnpm 10+.
+# Allowlist packages that need native compilation or binary bundling.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  re2: true

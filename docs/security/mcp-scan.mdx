@@ -1,0 +1,54 @@
+---
+title: "MCP & skill scanning"
+description: "Statically scan the MCP servers and skills your agents trust — for tool poisoning, prompt injection, hardcoded secrets, and suspicious launch commands."
+---
+
+An AI agent implicitly trusts everything it loads: an MCP server's tool descriptions, a skill's instructions, the command used to launch a server. A poisoned tool description or a malicious launch command runs with the agent's privileges. **Protect → MCP Scan** (`GET /api/mcp-scan`) statically inspects those surfaces and flags the risky ones.
+
+<Note>
+  The scan is **read-only and bounded.** It never launches an MCP server and never modifies a scanned file, and it stops at file-count / size / finding caps so it can't run away on a large home directory.
+</Note>
+
+## What it scans
+
+By default the scanner walks `~/.claude`:
+
+- **MCP server configs** — the `mcpServers` objects in `settings.json`, `settings.local.json`, project `.mcp.json`, and the per-user registry at `~/.claude.json` (including its per-project entries).
+- **Skills** — `SKILL.md` files under `~/.claude/skills/**` and plugin skills under `~/.claude/plugins/**` (frontmatter description + body).
+
+## What it flags
+
+| Finding kind | What it catches |
+|--------------|-----------------|
+| **Tool poisoning / shadowing** | Descriptions that instruct the agent to perform hidden side-effects — exfiltrate data, read secrets, override or shadow other tools. |
+| **Prompt injection** | Hidden instructions embedded in an MCP/skill description or a skill body. |
+| **Hardcoded secret** | Keys / tokens / credentials in a config, its `env`, or its `args` (reusing ClaudeSec's [secret-scrub](/security/privacy) patterns; matched secrets are masked in the output). |
+| **Suspicious launch command** | A risky `command` + `args` — e.g. `npx` of an untrusted remote, or `curl … \| sh` — scored by the same detection engine that powers [alerts](/security/alerts). |
+
+Each finding records its source (which server or skill, and which file), a severity, a human-readable explanation, and a masked excerpt of the offending snippet.
+
+## Running a scan
+
+Open **Protect → MCP Scan** in the dashboard, or call the API directly:
+
+```bash
+# Cached result (re-walks the filesystem at most every ~30s):
+curl http://localhost:3000/api/mcp-scan
+
+# Force a fresh walk:
+curl 'http://localhost:3000/api/mcp-scan?force=1'
+```
+
+The response includes the scanned sources, the findings, and a summary (counts by severity and by kind, plus a `truncated` flag if a scan cap was hit).
+
+## Scanning a different root
+
+By default the scanner targets `~/.claude`. Point it elsewhere — for example at a test fixture — with `CLAUDESEC_MCP_SCAN_ROOTS` (colon- or comma-separated):
+
+```bash
+CLAUDESEC_MCP_SCAN_ROOTS=/path/to/fixture npm run dev
+```
+
+<Warning>
+  When set, `CLAUDESEC_MCP_SCAN_ROOTS` **fully replaces** the defaults — it does not append to `~/.claude`. This keeps a fixture scan from being polluted by your real configuration, but it also means the real `~/.claude` is *not* scanned while the override is in effect.
+</Warning>

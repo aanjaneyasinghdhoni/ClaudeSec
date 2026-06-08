@@ -1,0 +1,66 @@
+---
+title: "Session Health API"
+description: "Session-level scoring and grade breakdown."
+icon: "heart-pulse"
+---
+
+## Two score surfaces
+
+ClaudeSec exposes health in two places:
+
+1. `GET /api/sessions` includes `riskScore` and `healthScore` for each session.
+2. `GET /api/sessions/:traceId/health` returns the dedicated grade breakdown.
+
+These are related but computed by different logic in the current codebase.
+
+---
+
+## GET /api/sessions/:traceId/health
+
+This endpoint computes:
+
+```
+score = max(0, 100 − (high × 15) − (medium × 8) − (low × 3) − min(alertCount × 10, 30))
+```
+
+Grade mapping:
+
+| Score | Grade |
+|---|---|
+| `>= 90` | `A` |
+| `>= 75` | `B` |
+| `>= 60` | `C` |
+| `>= 40` | `D` |
+| `< 40` | `F` |
+
+### Response
+
+```json
+{
+  "score": 64,
+  "grade": "C",
+  "threatHigh": 1,
+  "threatMedium": 1,
+  "threatLow": 1,
+  "alertCount": 2
+}
+```
+
+---
+
+## GET /api/sessions (inline score fields)
+
+Each session row includes:
+
+- `riskScore` (0..100, higher = riskier)
+- `healthScore` (`100 - riskScore`)
+
+The inline risk model uses weighted severity counts, alert weight, and threat density (`threatCount / spanCount`) to rank sessions.
+
+---
+
+## Errors
+
+`GET /api/sessions/:traceId/health` returns:
+
+- `404` → `{ "error": "session not found" }`

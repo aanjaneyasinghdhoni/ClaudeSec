@@ -1,0 +1,22 @@
+---
+title: "Tool Inventory"
+description: "Every tool each agent invoked, with call and threat counts."
+---
+
+The **Tool Inventory** panel (inside [Orchestration](/observe/orchestration)) lists every distinct tool your agents used, grouped by agent.
+
+Each row shows:
+
+- The **tool** name (`Bash`, `Read`, `Edit`, `Write`, MCP tools, skills, …).
+- The **agent** that used it.
+- **Calls** — how many times it was invoked.
+- **Threats** — how many of those calls matched a detection rule.
+
+Tools that are inherently risky (shell-exec style) are flagged with an orange dot so they stand out even at zero threats.
+
+Two views:
+
+- **Table** — sortable counts.
+- **Heatmap** — tool-usage intensity at a glance (distinct from the time-based full-screen [Heatmap](/observe/heatmap), which charts activity by day and hour).
+
+Backed by [`GET /api/orchestration`](/api-reference/orchestration), which derives the inventory from each span's `gen_ai.tool.name` / `tool` attribute.

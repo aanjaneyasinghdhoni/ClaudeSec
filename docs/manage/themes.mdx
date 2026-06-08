@@ -1,0 +1,15 @@
+---
+title: "Themes"
+description: "Four built-in themes — two dark, two light — saved locally."
+---
+
+ClaudeSec ships four themes, switchable from the palette icon in the top bar. Your choice is saved in `localStorage` (`claudesec.theme`) and persists across reloads.
+
+| Theme | Mode | Accent |
+|-------|------|--------|
+| **Midnight** | Dark | Teal (`#00d4aa`) |
+| **Carbon** | Dark | Amber (`#f5a623`) |
+| **Daylight** | Light | Green (`#00a884`) |
+| **Paper** | Light | Indigo (`#6366f1`) |
+
+Themes are pure CSS-variable token sets (`--cs-*`), so every screen — timeline, alerts, cost tables — re-skins instantly with no reload. Light themes also set a `light` class on the document root for components that need it.

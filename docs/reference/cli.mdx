@@ -1,0 +1,46 @@
+---
+title: "CLI reference"
+description: "Every claudesec command and flag."
+---
+
+Run from the repo via `node cli/init.mjs <command>`. With no command, it installs the background service and opens the dashboard.
+
+## Setup & monitoring
+
+| Command | Description |
+|---------|-------------|
+| `claudesec` / `start` | Install + start the background watcher service, then open the dashboard |
+| `claudesec stop` | Stop and remove the background service (data is kept) |
+| `claudesec status` | Server health: version, uptime, span / session / alert counts, DB size, webhook status |
+| `claudesec open` | Open the dashboard in the default browser |
+| `claudesec tail` | Stream new spans live in the terminal |
+| `claudesec processes` | List running agent processes (macOS / Linux) |
+
+### `tail` flags
+
+| Flag | Description |
+|------|-------------|
+| `--harness <id>` | Only spans from this harness |
+| `--severity <high\|medium\|low\|none>` | Only spans at this severity |
+
+## Data
+
+| Command | Description |
+|---------|-------------|
+| `claudesec export [file]` | Download all spans as JSON (default `claudesec-export-<ts>.json`) |
+| `claudesec reset` | Wipe all spans, sessions, and alerts (asks for confirmation) |
+| `claudesec search <query>` | Full-text span search — `--severity`, `--harness`, `--limit` |
+| `claudesec sessions` | List sessions with health scores — `--json` for raw output |
+| `claudesec bookmarks` | View bookmarks — `--session <id>`, `--delete <id>` |
+
+## Analytics
+
+| Command | Description |
+|---------|-------------|
+| `claudesec top` | Rank sessions — `--by spans\|threats\|health`, `--limit N` |
+| `claudesec report [id]` | Markdown security report for a session (`latest` by default) — `--out <file>` |
+
+## Notes
+
+- The CLI talks to the running server over HTTP on `CLAUDESEC_PORT` (default `3000`). If the server isn't running, commands that need it print a hint to start it.
+- `claudesec init` is an alias for `start`.

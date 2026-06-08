@@ -1,0 +1,46 @@
+---
+title: "Privacy & Security"
+description: "ClaudeSec reads sensitive material, so it is local-first by construction."
+---
+
+ClaudeSec sees your agents' commands, prompts, and code. It is built so none of that leaves your machine.
+
+## Local-first guarantees
+
+- **Loopback only** — the server binds `127.0.0.1` by default. Set `CLAUDESEC_HOST=0.0.0.0` only if you deliberately want LAN access, and only on a trusted network (ClaudeSec is unauthenticated by design).
+- **No egress** — nothing is sent anywhere. The single optional outbound path is `OTEL_FORWARD_URL`, off unless you set it, and SSRF-blocked for private ranges.
+- **Owner-only database** — `spans.db` is created with `0600` permissions (owner read/write only).
+- **Username scrubbing** — process command lines and OS usernames are masked (`/Users/***`, `user: ***`) before being shown or exported.
+
+## Secret scrubbing (on by default)
+
+Before any attribute is persisted, broadcast, or exported, ClaudeSec redacts known secret **shapes**:
+
+- Private keys (`-----BEGIN … PRIVATE KEY-----`), JWTs.
+- Provider keys — `sk-ant-…` (Anthropic), `sk-…` (OpenAI), AWS `AKIA…`/`ASIA…` access keys and `aws_secret_access_key` values.
+- Slack / Discord / Telegram webhook URLs.
+- Home paths, usernames, and email addresses.
+
+The attribute *shape* is preserved (e.g. `sk-‹redacted›`) so downstream collectors keep working. Disable with `CLAUDESEC_DISABLE_SCRUB=1` (not recommended).
+
+<Warning>
+  Scrubbing catches known secret *shapes* — it does not sanitize arbitrary source code or free-form prose. Keep ClaudeSec on a trusted, local machine.
+</Warning>
+
+## Honeytokens
+
+Plant canary strings that should never legitimately appear in agent traffic. Any span containing one fires a HIGH-severity `Honeytoken exfiltration` alert:
+
+```bash
+export CLAUDESEC_HONEYTOKENS='aws-prod-key-DO-NOT-LEAK,CanaryDB-SensitiveRow-42'
+```
+
+Configure them via `CLAUDESEC_HONEYTOKENS` (see the [Configuration reference](/reference/config)) or the `/api/honeytokens` endpoint. The matching detection lives in [Rules](/security/rules).
+
+## Sensitive-file access
+
+Reads of credential-adjacent paths — `.env`, `~/.ssh/`, `id_rsa`, `*.pem`, `/etc/passwd|shadow|sudoers|hosts` — are flagged in the [File Access](/review/file-access) panel. Many also trip the rule engine: SSH private keys and `~/.ssh/` access are HIGH-severity detections, while `.env` and `/etc/passwd`-family reads are MEDIUM.
+
+## Data retention
+
+Spans are pruned by count (`CLAUDESEC_MAX_SPANS`, default 50,000) and age (`CLAUDESEC_RETENTION_DAYS`, default 30). You can prune manually from the Cost screen's Database Health panel or `POST /api/db-stats/prune`.

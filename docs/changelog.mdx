@@ -1,0 +1,161 @@
+---
+title: Changelog
+description: Release notes for ClaudeSec.
+---
+
+All notable changes to ClaudeSec are documented here.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions,
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## 1.0.0 — Initial public release
+
+First production-ready release of ClaudeSec under the **AGPL-3.0-only** license.
+ClaudeSec is a local-first AI agent security observatory that ingests OpenTelemetry traces
+from AI coding agents, detects threats in real time, and visualises agent activity in an
+interactive dashboard — all without any data leaving your machine.
+
+### Added
+
+**Core infrastructure**
+
+- Express + Socket.io backend (`server/index.ts`) with OTLP/HTTP JSON ingestion at `POST /v1/traces`.
+- SQLite persistence via `better-sqlite3` (spans, sessions, alerts, config tables).
+- Vite + React + Tailwind CSS frontend with hot-module replacement in development.
+- Two-process dev mode: Vite HMR proxied through the Express server (`npm run dev`).
+- Dagre-powered client-side auto-layout for the Orchestration agent-DAG (alternative to the default radial layout); graph data endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available for external tools and are served by the server-side `buildGraph()` function.
+
+**Multi-harness agent support**
+
+- Harness detection registry (`src/harnesses.ts`) covering 3 agent frameworks:
+  Claude Code, GitHub Copilot CLI, and Codex.
+- Automatic harness identification from `service.name` / `telemetry.sdk.name` resource attributes.
+- Per-harness coloured indicators and filter chips in the dashboard.
+- Zero-config transcript watcher (`transcriptWatcher.ts`) that tails on-disk session transcripts
+  for Claude Code, GitHub Copilot CLI, and Codex with no environment variables and no agent restart.
+- Interactive CLI setup wizard (`npx claudesec init` / `npm run init`).
+
+**Threat detection**
+
+- Approximately 630 built-in regex threat-detection rules across HIGH / MEDIUM / LOW severities,
+  covering prompt injection, credential theft, reverse shells and C2, supply-chain attacks,
+  data exfiltration, container escape, cloud-metadata SSRF, crypto-mining, privilege escalation,
+  and reconnaissance.
+- Core rules in `server/detection.ts`; extended rule set in `server/severityRulesExtra.ts` (gated at build time).
+- `tests/ruleSelfTest.ts` gate: ReDoS heuristic + execution gate + dedup + false-positive check.
+  `npm test` runs this gate; `prebuild` runs `npm test` — a ReDoS-prone or duplicate rule fails the build.
+- Custom rule CRUD via dashboard UI and REST API (persisted to `rules.json`).
+- Rule suppressions — temporarily or permanently suppress noisy rules.
+- Alert deduplication via fingerprinting to prevent duplicate alerts for the same pattern.
+- Alert triage — mark alerts as dismissed or false-positive.
+- Immutable alert log in SQLite with timestamp, matched text, and span context.
+- Web Notifications API integration for desktop HIGH-severity alerts.
+
+**Optional LLM-as-judge semantic detection**
+
+- Local-first, off by default. Set `CLAUDESEC_JUDGE_URL` to any OpenAI-compatible endpoint
+  (e.g. a local Ollama instance) to enable semantic scoring alongside the regex engine.
+  No data is sent to a remote service unless you configure a remote URL.
+
+**Enforcement (PreToolUse hook)**
+
+- `.claude/hooks/claudesec-enforce.cjs` intercepts Claude Code tool calls before they execute.
+- **Monitor mode** (default): logs "would-block" events to `POST /api/enforce-log`; never blocks
+  except for the always-on catastrophic severity-6 floor.
+- **Enforce mode**: actively denies (`exit 2`) tool calls that match high-severity rules.
+- Server is the source of truth: mode and per-rule overrides live in the SQLite `config` table,
+  exposed via `GET /PUT /api/enforce/config`, and mirrored to `enforce-config.json`.
+- Fails open on any error or missing config; bypassable via `CLAUDESEC_HOOKS_BYPASS=1`.
+
+**Cross-agent MCP enforcement proxy**
+
+- `mcpProxy.ts` — a proxy layer that applies the same rule set to MCP tool calls across agents,
+  enabling enforcement beyond Claude Code hooks.
+
+**MCP / skill static scanner**
+
+- `mcpScan.ts` (`GET /api/mcp-scan`, **Protect → MCP Scan**) statically scans installed MCP server
+  configs and `SKILL.md` skills under `~/.claude` for tool-poisoning, prompt-injection in
+  descriptions, hardcoded secrets, and suspicious launch commands.
+  Never launches a server or writes a file; results cached ~30 s.
+  Scanner roots overridable with `CLAUDESEC_MCP_SCAN_ROOTS`.
+
+**MCP server**
+
+- Model Context Protocol server at `POST /mcp` with 11 tools for AI-to-AI interaction:
+  `get_health`, `get_sessions`, `get_spans`, `get_alerts`, `search_spans`, `tag_span`,
+  `suppress_rule`, `bookmark_span`, `get_processes`, `get_incident_summary`, `list_bookmarks`.
+
+**Observatory features**
+
+- Gantt-style timeline view with BigInt nanosecond precision (default landing tab).
+- Session isolation: each traceId becomes a named session with inline rename.
+- Span search with `key=value` attribute filter syntax.
+- Severity filter chips (All / Normal / Malicious) and per-harness filter chips.
+- Live metrics: input tokens, output tokens, tool calls, average latency.
+- Orchestration tab with SVG agent DAG showing inter-agent edges and sub-agent spawn trees.
+- Tool inventory with table and heatmap grid views (tool x harness matrix).
+- Suspicious tool flagging (bash, eval, exec, curl, etc.).
+- Token cost estimator (`GET /api/costs`) with pricing for 20+ models.
+- Span bookmarks, custom tags, and text annotations.
+- Session labels (normal, incident, investigation, automated, other) and free-text session notes.
+- Command audit (`GET /api/command-audit`) and file access tracking (`GET /api/file-access`).
+- Activity timeline, live activity stream, and threat activity heatmap.
+
+**Process scanner**
+
+- Detects running AI agent CLIs on the local machine (3 harness patterns via `ps aux`: Claude Code, GitHub Copilot CLI, and Codex).
+- Kill, pause, and resume individual agents or all agents from the dashboard.
+
+**OTLP forwarding**
+
+- Transparent proxy to upstream OpenTelemetry collectors via `OTEL_FORWARD_URL`.
+  Traces are analysed locally and forwarded simultaneously.
+
+**Auto-export**
+
+- Hourly JSON snapshots of spans, alerts, and sessions to `exports/` (last 24 kept).
+
+**Webhook alerts**
+
+- Configurable webhook delivery on threat detection.
+- Slack, Discord, and generic JSON payload formats, auto-detected from URL.
+- Threshold configurable via `CLAUDESEC_WEBHOOK_THRESHOLD` (low / medium / high; default: high).
+- In-dashboard webhook management UI with test-delivery button.
+
+**Security and hardening**
+
+- `CLAUDESEC_TOKEN` bearer token required for non-loopback API / MCP / OTLP access.
+  Server refuses to bind a non-loopback host without it.
+- SSRF guard (shared by `OTEL_FORWARD_URL` and `CLAUDESEC_WEBHOOK_URL`) blocks loopback,
+  private, and cloud-metadata IP ranges; re-checked on every retry to defeat DNS rebinding.
+- `CLAUDESEC_ALLOW_RESET` must be explicitly set to `1` to permit the data-wipe endpoint.
+- Secret scrubbing of known secret shapes (keys, tokens, webhook URLs, home paths) before
+  storage, broadcast, or export; honeytoken exfiltration alerts.
+- `helmet` + `cors` middleware; configurable rate limiting on `/v1/traces`.
+
+**Responsive UI and UX**
+
+- Drawer sidebar (below `lg` breakpoint) + bottom tab bar (below `md` breakpoint).
+- Four built-in themes: Midnight, Carbon, Daylight, Paper (saved locally).
+- Accessibility: keyboard navigation and ARIA attributes throughout.
+- First-run welcome screen with `npx claudesec init` auto-setup flow.
+
+**Observability**
+
+- `GET /api/health` — server status, uptime, span / session / alert counts, DB size.
+- `GET /metrics` — Prometheus text format: `spans_total`, `threats_total`,
+  `tokens_in_total`, `tokens_out_total` (by harness), `sessions_total`, `alerts_total`, `uptime_seconds`.
+
+**Deployment**
+
+- Production-ready Dockerfile with multi-stage build.
+- `docker-compose.yml` with volumes, health checks, and environment variable pass-through.
+
+**Documentation**
+
+- In-app MDX documentation site (Diátaxis structure): Getting Started, Agents, Observe,
+  Detect, Protect, Review, Manage, Explanation, Reference, Integrations, and API Reference sections.
+- Complete OpenAPI 3.0.3 specification (`openapi.yaml`) with all schemas and examples.
+- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue templates, and PR template.

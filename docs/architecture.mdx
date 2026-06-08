@@ -1,0 +1,167 @@
+---
+title: "Architecture Overview"
+description: "How ClaudeSec ingests, stores, analyzes, and visualizes agent traces"
+icon: "sitemap"
+---
+
+## System overview
+
+ClaudeSec is a local AI agent observability dashboard. It receives OpenTelemetry traces from running AI agents, evaluates every span against a threat detection engine, persists results to SQLite, and streams live updates to a React frontend over Socket.io.
+
+```
+AI Agent
+  ↓  OTLP JSON (POST /v1/traces)
+server/index.ts (Express)
+  ├─ Rate limiting (token bucket per IP)
+  ├─ Threat detection (detectSeverity)
+  ├─ SQLite write (spans, sessions, alerts)
+  ├─ Behavioral anomaly detection (per session)
+  ├─ Threshold rule evaluation (per session)
+  └─ Socket.io broadcast (sessions-update, alerts-update, span-added)
+        ↓
+   src/App.tsx (React 19 + Tailwind CSS 4)
+```
+
+---
+
+## Two-process model
+
+ClaudeSec runs as a single Node process but has two logical layers in one repository.
+
+### server/index.ts — backend
+
+- **Express** handles all HTTP: OTLP ingestion at `POST /v1/traces`, REST endpoints under `/api/*`, and static file serving for the built frontend in production.
+- **Socket.io** emits real-time events (`sessions-update`, `alerts-update`, `rules-update`, `span-added`) to connected browser clients.
+- **better-sqlite3** provides synchronous, embedded SQLite access with no separate database process.
+- In development, the backend also hosts a **Vite dev server** (middleware mode) for frontend HMR on the same port.
+
+### src/App.tsx — frontend
+
+- A single React component (no routing) that owns all UI state.
+- **Socket.io client** listens for server events and triggers local state updates.
+- Dashboard views include timeline, orchestration, alerts, rules, costs, heatmap, search, processes, and bookmarks — each as a dedicated tab component.
+
+---
+
+## Data flow in detail
+
+### OTLP ingestion
+
+1. The agent sends an OTLP JSON payload to `POST /v1/traces`.
+2. The **token-bucket rate limiter** allows 50 RPS with a burst of 200 per IP (configurable via `CLAUDESEC_RATE_LIMIT_RPS` and `CLAUDESEC_RATE_LIMIT_BURST`).
+3. A **circuit breaker** rejects new ingestion with `503` when the span table is at 90% of its configured maximum (default 50,000 spans).
+4. Each span's attributes and name are concatenated into a search string and passed to `detectSeverity()`.
+5. The span record (with severity) is written to the `spans` table. An alert row is written to `alerts` if a rule matched.
+6. A `span-added` Socket.io event is emitted per span. A `sessions-update` event is emitted once per batch.
+7. Behavioral anomaly detection and threshold rule evaluation run asynchronously after the batch.
+8. The HTTP response returns `200 { status: "ok" }` immediately after all spans are persisted.
+
+---
+
+## Threat detection pipeline
+
+### Pattern matching — SEVERITY_RULES
+
+Built-in rules are a static array of `{ pattern: RegExp, severity, label }` objects compiled into `server/detection.ts`. The full set is documented in [Security Rules](/security/rules).
+
+```
+detectSeverity(text):
+  1. Evaluate custom rules (most recently added first)
+  2. Evaluate built-in SEVERITY_RULES in order
+  3. Return first match → { severity, matchedLabel, matchedText }
+  4. If no match → { severity: "none" }
+```
+
+The `text` input is `JSON.stringify(span.attributes) + " " + span.name`.
+
+When a rule matches:
+- The `severity` column on the `spans` row is set to `high | medium | low`.
+- An `alerts` row is inserted with the rule label and matched text.
+- A webhook delivery is fired asynchronously (if configured).
+
+### Behavioral anomaly detection
+
+Runs per affected session after each OTLP batch. Does not block the HTTP response.
+
+| Anomaly | Condition | Severity |
+|---------|-----------|----------|
+| Token spike | Latest span uses >4× session average input tokens, and >2000 tokens | `medium` |
+| Threat burst | ≥3 threats in the last 10 spans of a session | `high` |
+| Excessive tool calls | >100 total tool calls in a session (flagged once per 50 excess) | `low` |
+| Off-hours activity | Agent active between 00:00–05:59 local time | `low` |
+
+Each anomaly is deduplicated within a cooldown window (5–60 minutes) to avoid alert flooding.
+
+### Threshold rules
+
+User-defined numeric conditions evaluated per session after every OTLP batch. Stored in the `threshold_rules` table.
+
+Available metrics: `tokens_in`, `tokens_out`, `threat_count`, `span_count`, `high_threat_count`.
+
+Operators: `>`, `>=`, `<`, `<=`, `=`.
+
+A threshold alert fires at most once per `window_min` minutes per session to prevent duplicates.
+
+---
+
+## SQLite schema
+
+All data lives in a single file (`spans.db`) created automatically on first run. The file is gitignored.
+
+| Table | Purpose |
+|-------|---------|
+| `spans` | One row per OpenTelemetry span. Primary store. |
+| `sessions` | One row per trace ID. Auto-created on first span for a trace. |
+| `alerts` | Security alert rows written when a rule matches or a behavioral anomaly fires. |
+| `annotations` | Free-text investigation notes attached to a `spanId`. |
+| `span_tags` | Short labels attached to spans for triage workflows. |
+| `threshold_rules` | User-configured numeric alert conditions. |
+| `webhook_deliveries` | Log of every webhook delivery attempt (last 500 rows). |
+| `config` | Key-value store for runtime configuration (webhook URL, retention settings). |
+| `suppressions` | Active rule snoozes — rules suppressed until a given timestamp. |
+| `spans_fts` | FTS5 virtual table mirroring `spans(spanId, name, attributes)`. |
+
+### FTS5 full-text index
+
+`spans_fts` uses the `unicode61` tokenizer with diacritic removal. It is kept in sync via an `AFTER INSERT` trigger on the `spans` table. A one-time backfill runs on server startup to index any spans that pre-date the trigger.
+
+---
+
+## Session health scoring
+
+ClaudeSec currently exposes two related score paths:
+
+1. **`GET /api/sessions/:traceId/health`** uses `computeHealthScore(traceId)` with:
+   `100 - (high*15) - (medium*8) - (low*3) - min(alerts*10, 30)` and returns `score + grade`.
+2. **`GET /api/sessions`** includes inline `riskScore` and `healthScore` derived from weighted threat counts, alert weight, and threat-density.
+
+The dashboard badge coloring uses the inline `healthScore` (`green >= 80`, `yellow 50-79`, `red < 50`).
+
+---
+
+## Rate limiting
+
+Token-bucket algorithm, one bucket per client IP.
+
+| Parameter | Default | Env override |
+|-----------|---------|--------------|
+| Sustained rate | 50 RPS | `CLAUDESEC_RATE_LIMIT_RPS` |
+| Burst capacity | 200 requests | `CLAUDESEC_RATE_LIMIT_BURST` |
+| Max spans per batch | 500 | `CLAUDESEC_MAX_SPANS_BATCH` |
+
+When the limit is exceeded the server responds with `429 Too Many Requests` and a `Retry-After` header.
+
+Stale buckets (idle for >5 minutes) are evicted every 60 seconds.
+
+---
+
+## Graph API (headless)
+
+The graph endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available as a headless API for programmatic access and export. They return span dependency data with Dagre-computed positions, suitable for rendering in external tools (Mermaid, Graphviz) or custom integrations. There is no graph UI tab in the dashboard.
+
+---
+
+## Tags and groups
+
+- **Architecture** — system design, data flow, storage
+- **Core** — fundamental concepts

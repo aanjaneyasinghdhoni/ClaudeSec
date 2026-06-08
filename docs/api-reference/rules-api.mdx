@@ -1,0 +1,60 @@
+---
+title: "Rules API"
+description: "Manage custom threat detection rules"
+---
+
+## List Rules
+
+`GET /api/rules`
+
+Returns both built-in rules and user-defined custom rules.
+
+```json Response
+{
+  "builtIn": [
+    {
+      "id": "builtin-0",
+      "pattern": "rm\\s+-rf\\s+[\\/\\\\]",
+      "flags": "i",
+      "severity": "high",
+      "label": "Recursive root deletion",
+      "builtin": true
+    }
+  ],
+  "custom": [
+    {
+      "id": "custom-1700000000000-ab12c",
+      "pattern": "my-secret-pattern",
+      "flags": "i",
+      "severity": "high",
+      "label": "My custom rule",
+      "createdAt": "2025-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+## Create Custom Rule
+
+`POST /api/rules`
+
+```json Body
+{
+  "pattern": "my-regex-pattern",
+  "severity": "high",
+  "label": "Human-readable rule name"
+}
+```
+
+- `severity`: `"low"` | `"medium"` | `"high"`
+- `pattern`: regex string, compiled with RE2 (`new RE2(pattern)`). RE2 is linear-time and rejects backtracking-only constructs such as backreferences and lookaround. Maximum length is 1000 characters.
+
+All three fields (`pattern`, `severity`, `label`) are required. The endpoint returns `400` if any is missing, if `severity` is not one of `low`/`medium`/`high`, if the pattern exceeds 1000 characters, or if the pattern fails to compile with RE2.
+
+Custom rules are always stored with `flags: "i"` (case-insensitive). Returns `201 Created` with the new rule object.
+
+## Delete Custom Rule
+
+`DELETE /api/rules/:id`
+
+Only custom rules can be deleted. Returns `404` if the rule does not exist or is a built-in rule.

@@ -1,0 +1,22 @@
+---
+title: "Heatmap"
+description: "A 7-day × 24-hour calendar heatmap of agent activity and threat density."
+---
+
+The **Heatmap** screen is a calendar heatmap — **7 days of the week × 24 hours of the day** — so you can see *when* your agents are active and when threats cluster.
+
+Each cell counts the spans and threat-spans that fell in that day/hour slot. Color encodes intensity, and you can switch what's shaded:
+
+- **Threat %** — share of spans in the cell that were threats.
+- **Threat Count** — raw threat count.
+- **Span Count** — total activity.
+
+Two layouts: a **Weekday** grid (Sun–Sat × hour) and a **Last 14 days** calendar view. Hover any cell for the exact counts.
+
+This is the fastest way to spot **off-hours activity** — an agent doing things at 3am is itself a low-severity signal the detection engine raises.
+
+Backed by [`GET /api/heatmap`](/api-reference/activity), which returns `grid[dayOfWeek][hour]` with `maxThreats` / `maxSpans` for scaling.
+
+<Note>
+  Looking for *which tools* dominate rather than *when*? That's the tool-usage heatmap inside [Tool Inventory](/review/tool-inventory).
+</Note>
