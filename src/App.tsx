@@ -77,6 +77,9 @@ export default function App() {
   // ── Graph state ───────────────────────────────────────────────────────────
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  // When the unscoped graph shows only the most-recent N spans (older spans stay
+  // searchable, never deleted), the server reports a window so we can say so.
+  const [graphWindow, setGraphWindow] = useState<{ shown: number; total: number } | null>(null);
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab]           = useState<Tab>('timeline');
@@ -306,10 +309,11 @@ export default function App() {
     const graphUrl = activeSession ? `/api/graph?session=${encodeURIComponent(activeSession)}` : '/api/graph';
     fetch(graphUrl)
       .then(r => r.json())
-      .then(({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
+      .then(({ nodes: n, edges: e, windowed, shown, total }: { nodes: Node[]; edges: Edge[]; windowed?: boolean; shown?: number; total?: number }) => {
         setNodes(applyLayout(n, e, layoutMode));
         setEdges(e);
         syncWorkflows(n);
+        setGraphWindow(windowed ? { shown: shown ?? n.length, total: total ?? 0 } : null);
       });
     fetchSessions();
     fetchAlertCount();
@@ -358,7 +362,7 @@ export default function App() {
 
   // Socket events
   useEffect(() => {
-    const handleGraphUpdate = ({ nodes: n, edges: e }: { nodes: Node[]; edges: Edge[] }) => {
+    const handleGraphUpdate = ({ nodes: n, edges: e, windowed, shown, total }: { nodes: Node[]; edges: Edge[]; windowed?: boolean; shown?: number; total?: number }) => {
       // When scoped to a session, re-fetch the scoped graph instead of using the broadcast
       if (activeSession) {
         fetch(`/api/graph?session=${encodeURIComponent(activeSession)}`)
@@ -367,12 +371,14 @@ export default function App() {
             setNodes(applyLayout(sn, se, layoutMode));
             setEdges(se);
             syncWorkflows(sn);
+            setGraphWindow(null); // a single session is shown in full
           });
         return;
       }
       setNodes(applyLayout(n, e, layoutMode));
       setEdges(e);
       syncWorkflows(n);
+      setGraphWindow(windowed ? { shown: shown ?? n.length, total: total ?? 0 } : null);
 
       // Desktop notifications for new HIGH severity spans
       if (notifyEnabledRef.current) {
@@ -1316,6 +1322,12 @@ export default function App() {
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
+            )}
+            {graphWindow && !activeSession && (
+              <p className="mx-4 mt-1 mb-1 text-[11px]" style={{ color: 'var(--cs-text-faint)' }}>
+                Showing the most recent {graphWindow.shown.toLocaleString()} events.
+                Older events remain available via Search and Sessions.
+              </p>
             )}
             <Timeline
               workflows={visibleWorkflows}

@@ -64,6 +64,10 @@ for (const stmt of [
   `CREATE INDEX IF NOT EXISTS idx_spans_traceId_startNano ON spans(traceId, startNano)`,
   `CREATE INDEX IF NOT EXISTS idx_spans_severity          ON spans(severity)`,
   `CREATE INDEX IF NOT EXISTS idx_spans_harness           ON spans(harness)`,
+  // Time-ordered reads (recent-N graph window, time-range search) sort/filter
+  // on startNano/endNano; these let SQLite use an index instead of a full scan.
+  `CREATE INDEX IF NOT EXISTS idx_spans_startNano         ON spans(startNano)`,
+  `CREATE INDEX IF NOT EXISTS idx_spans_endNano           ON spans(endNano)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_traceId          ON alerts(traceId)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_dismissed_ts     ON alerts(dismissed, ts)`,
 ]) {

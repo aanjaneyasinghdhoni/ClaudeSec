@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { DollarSign, TrendingUp, Cpu, HelpCircle, Webhook, CheckCircle, XCircle, AlertTriangle, Database, Trash2, RefreshCw, Info } from 'lucide-react';
 import { socket } from './socket';
 import { ExperimentalBadge } from './ExperimentalBadge';
+import { useDebouncedCallback } from './lib/useDebouncedCallback';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -401,12 +402,16 @@ export function CostTab() {
   const load = () =>
     fetch('/api/costs').then(r => r.json()).then(setData).catch(() => {});
 
+  // `/api/costs` runs a full table scan. Refresh on the coalesced `graph-update`
+  // signal (not per `span-added`, which would re-scan once for EVERY span in a
+  // batch), and debounce so a burst of updates triggers a single refetch.
+  const debouncedLoad = useDebouncedCallback(load);
+
   useEffect(() => {
     load();
-    socket.on('graph-update', load);
-    socket.on('span-added', load);
-    return () => { socket.off('graph-update', load); socket.off('span-added', load); };
-  }, []);
+    socket.on('graph-update', debouncedLoad);
+    return () => { socket.off('graph-update', debouncedLoad); };
+  }, [debouncedLoad]);
 
   useEffect(() => {
     try { localStorage.setItem(PLAN_STORAGE_KEY, plan); } catch {}
