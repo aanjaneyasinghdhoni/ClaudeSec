@@ -28,14 +28,14 @@ export interface DocSearchEntry {
 }
 
 const frontmatters = import.meta.glob<DocFrontmatter>(
-  ['/docs/**/*.mdx', '!/docs/superpowers/**'],
+  ['/docs/**/*.mdx', '!/docs/_local/**'],
   { eager: true, import: 'frontmatter' },
 );
 
-const loaders = import.meta.glob(['/docs/**/*.mdx', '!/docs/superpowers/**']);
+const loaders = import.meta.glob(['/docs/**/*.mdx', '!/docs/_local/**']);
 
 const rawSources = import.meta.glob<string>(
-  ['/docs/**/*.mdx', '!/docs/superpowers/**'],
+  ['/docs/**/*.mdx', '!/docs/_local/**'],
   { eager: true, query: '?raw', import: 'default' },
 );
 
