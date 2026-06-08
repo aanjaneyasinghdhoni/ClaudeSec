@@ -27,8 +27,9 @@ if (apiVersion !== version) {
   errors.push(`version drift: package.json is ${version}, openapi.yaml is ${apiVersion ?? '(not found)'}`);
 }
 
-// 2. Changelog: every release needs an entry.
-if (!new RegExp(`^##\\s*\\[${version.replace(/\./g, '\\.')}\\]`, 'm').test(read('CHANGELOG.md'))) {
+// 2. Changelog: every release needs an entry. Plain substring match (no regex)
+// so the version string needs no metacharacter escaping.
+if (!read('CHANGELOG.md').includes(`## [${version}]`)) {
   errors.push(`CHANGELOG.md has no "## [${version}]" section — add the release notes before tagging`);
 }
 
