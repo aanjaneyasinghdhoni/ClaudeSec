@@ -23,7 +23,7 @@ interactive dashboard — all without any data leaving your machine.
 - Express + Socket.io backend (`server/index.ts`) with OTLP/HTTP JSON ingestion at `POST /v1/traces`.
 - SQLite persistence via `better-sqlite3` (spans, sessions, alerts, config tables).
 - Vite + React + Tailwind CSS frontend with hot-module replacement in development.
-- Two-process dev mode: Vite HMR proxied through the Express server (`npm run dev`).
+- Two-process dev mode: Vite HMR proxied through the Express server (`pnpm dev`).
 - Dagre-powered client-side auto-layout for the Orchestration agent-DAG (alternative to the default radial layout); graph data endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available for external tools and are served by the server-side `buildGraph()` function.
 
 **Multi-harness agent support**
@@ -34,7 +34,7 @@ interactive dashboard — all without any data leaving your machine.
 - Per-harness coloured indicators and filter chips in the dashboard.
 - Zero-config transcript watcher (`transcriptWatcher.ts`) that tails on-disk session transcripts
   for Claude Code, GitHub Copilot CLI, and Codex with no environment variables and no agent restart.
-- Interactive CLI setup wizard (`npx claudesec init` / `npm run init`).
+- Interactive CLI setup wizard (`npx claudesec init` / `pnpm run init`).
 
 **Threat detection**
 
@@ -44,7 +44,7 @@ interactive dashboard — all without any data leaving your machine.
   and reconnaissance.
 - Core rules in `server/detection.ts`; extended rule set in `server/severityRulesExtra.ts` (gated at build time).
 - `tests/ruleSelfTest.ts` gate: ReDoS heuristic + execution gate + dedup + false-positive check.
-  `npm test` runs this gate; `prebuild` runs `npm test` — a ReDoS-prone or duplicate rule fails the build.
+  `pnpm test` runs this gate; `prebuild` runs `pnpm test` — a ReDoS-prone or duplicate rule fails the build.
 - Custom rule CRUD via dashboard UI and REST API (persisted to `rules.json`).
 - Rule suppressions — temporarily or permanently suppress noisy rules.
 - Alert deduplication via fingerprinting to prevent duplicate alerts for the same pattern.
