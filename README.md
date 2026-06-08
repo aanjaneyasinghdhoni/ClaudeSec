@@ -3,7 +3,7 @@
 [![CI](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml/badge.svg)](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/codeql.yml/badge.svg)](https://github.com/aanjaneyasinghdhoni/ClaudeSec/actions/workflows/codeql.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20.19-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.13-green.svg)](https://nodejs.org)
 
 **A zero-config, fully-local security observatory for AI coding agents.**
 
@@ -65,7 +65,7 @@ The local transcript watcher and the OpenTelemetry endpoint feed the **same** pi
 
 ### pnpm (recommended) — zero-config, full dashboard
 
-Requires Node.js >= 20.19.0 and [pnpm](https://pnpm.io) (managed automatically via corepack). Clone, install, and start:
+Requires Node.js >= 22.13.0 and [pnpm](https://pnpm.io) (managed automatically via corepack). Clone, install, and start:
 
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git

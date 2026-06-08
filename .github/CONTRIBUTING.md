@@ -6,8 +6,8 @@ Thank you for your interest in contributing! This guide covers everything you ne
 
 ## Prerequisites
 
-- **Node.js** >= 20.19.0
-- **pnpm** >= 11 — managed automatically via [corepack](https://nodejs.org/api/corepack.html) (ships with Node 20+)
+- **Node.js** >= 22.13.0
+- **pnpm** >= 11 — managed automatically via [corepack](https://nodejs.org/api/corepack.html) (ships with Node 22+)
 - A terminal and a code editor
 
 ---
