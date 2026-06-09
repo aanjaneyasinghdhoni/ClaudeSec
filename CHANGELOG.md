@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-09
+
 ### Added
 
 - Isolated demo container — an on-demand container, pre-seeded with synthetic
@@ -135,5 +137,6 @@ without anything leaving your computer.
 - Released under the [AGPL-3.0-only](LICENSE) license. Commercial and
   dual-licensing options are documented in [`.github/LICENSING.md`](.github/LICENSING.md).
 
-[Unreleased]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases/tag/v1.1.0
 [1.0.0]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases/tag/v1.0.0
