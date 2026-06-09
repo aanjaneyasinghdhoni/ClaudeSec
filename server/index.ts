@@ -869,6 +869,7 @@ async function fireWebhook(alert: {
 
 const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number; label: string }> = {
   // Claude
+  'claude-fable-5':       { inputPer1M: 10,    outputPer1M: 50,    label: 'Claude Fable 5' },
   'claude-opus-4-8':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.8' },
   'claude-opus-4-7':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.7' },
   'claude-opus-4-6':      { inputPer1M: 5,     outputPer1M: 25,    label: 'Claude Opus 4.6' },
