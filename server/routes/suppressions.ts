@@ -3,7 +3,7 @@ import { db } from '../db.js';
 import type { RouteContext } from './context.js';
 
 export function registerSuppressionRoutes(app: Express, ctx: RouteContext): void {
-  const { io, invalidateSuppressedCache } = ctx;
+  const { io, invalidateSuppressedCache, auditLog } = ctx;
 
   // ── Suppressions CRUD (s61) ───────────────────────────────────────────────
   app.get('/api/suppressions', (_req, res) => {
@@ -27,6 +27,7 @@ export function registerSuppressionRoutes(app: Express, ctx: RouteContext): void
     `).run(ruleKey.trim(), suppressUntil, (reason ?? '').trim(), new Date().toISOString());
     const row = db.prepare('SELECT * FROM suppressions WHERE id = ?').get(result.lastInsertRowid);
     invalidateSuppressedCache?.();
+    auditLog?.(req, 'suppression.create', ruleKey.trim(), { ruleKey: ruleKey.trim(), durationMs, reason: (reason ?? '').trim() });
     io.emit('rules-update');
     res.status(201).json(row);
   });
@@ -35,6 +36,7 @@ export function registerSuppressionRoutes(app: Express, ctx: RouteContext): void
     const changes = db.prepare('DELETE FROM suppressions WHERE id = ?').run(Number(req.params.id)).changes;
     if (!changes) return res.status(404).json({ error: 'suppression not found' }) as any;
     invalidateSuppressedCache?.();
+    auditLog?.(req, 'suppression.delete', req.params.id, {});
     io.emit('rules-update');
     res.json({ status: 'ok' });
   });

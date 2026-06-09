@@ -19,13 +19,21 @@ interface SpanRecord {
 
 const getAllSpans = db.prepare(`SELECT * FROM spans`);
 
-export function registerExportRoutes(app: Express, _ctx: RouteContext): void {
+/** Export routes also need the running app version to stamp into the dump. */
+interface ExportRouteContext extends RouteContext {
+  appVersion?: string;
+}
+
+export function registerExportRoutes(app: Express, ctx: ExportRouteContext): void {
+  // Fall back to '0.0.0' so a missing version never produces an unstamped dump.
+  const version = ctx.appVersion ?? '0.0.0';
+
   // ── Export ───────────────────────────────────────────────────────────────
   app.get('/api/export', (_req, res) => {
     const records     = getAllSpans.all() as SpanRecord[];
     const annotations = db.prepare('SELECT * FROM annotations ORDER BY id ASC').all();
     res.setHeader('Content-Disposition', `attachment; filename="claudesec-${Date.now()}.json"`);
-    res.json({ exportedAt: new Date().toISOString(), version: '1.0.0', spans: records, annotations });
+    res.json({ exportedAt: new Date().toISOString(), version, spans: records, annotations });
   });
 
   app.get('/api/export/csv', (_req, res) => {

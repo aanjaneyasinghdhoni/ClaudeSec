@@ -266,3 +266,22 @@ export const SEVERITY_RULES: SeverityRule[] = [
   ...CORE_SEVERITY_RULES,
   ...EXTRA_SEVERITY_RULES,
 ];
+
+// The detection-path labels that mirror the catastrophic-6 enforcement floor
+// (server/enforceEval.ts CATASTROPHIC). These are the highest-consequence
+// intents — root deletion, disk wipe, remote-code-into-shell, reverse shells —
+// and an operator must NOT be able to disable them, the same way the floor
+// blocks them even in monitor mode. The per-rule enable/disable feature treats
+// this set as load-bearing: any attempt to disable one of these labels is
+// rejected, and the in-memory disabled-set drops them defensively. Kept here,
+// beside the rules themselves, so the protected set can never drift from the
+// rule definitions it names. (The fork-bomb floor pattern has no single
+// detection-rule equivalent and so is not listed.)
+export const CATASTROPHIC_DETECTION_LABELS: ReadonlySet<string> = new Set([
+  'Recursive root deletion',           // rm -rf /
+  'Filesystem format command',         // mkfs.*
+  'Raw disk write via dd',             // dd if=… of=/dev/…
+  'Remote code execution via curl',    // curl … | sh
+  'Remote code execution via wget',    // wget … | sh
+  'Bash TCP reverse shell',            // /dev/tcp/
+]);

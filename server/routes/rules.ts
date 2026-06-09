@@ -9,7 +9,7 @@ import type { CustomRule, RouteContext } from './context.js';
 const MAX_RULE_PATTERN_LEN = 1000;
 
 export function registerRuleRoutes(app: Express, ctx: RouteContext): void {
-  const { io } = ctx;
+  const { io, auditLog } = ctx;
 
   // ── Rules CRUD ───────────────────────────────────────────────────────────
   app.get('/api/rules', (_req, res) => {
@@ -50,6 +50,7 @@ export function registerRuleRoutes(app: Express, ctx: RouteContext): void {
       createdAt: new Date().toISOString(),
     };
     ctx.addCustomRule?.(rule);
+    auditLog?.(req, 'rule.create', rule.id, { label: rule.label, severity: rule.severity, pattern: rule.pattern });
     io.emit('rules-update');
     res.status(201).json(rule);
   });
@@ -57,6 +58,7 @@ export function registerRuleRoutes(app: Express, ctx: RouteContext): void {
   app.delete('/api/rules/:id', (req, res) => {
     const removed = ctx.removeCustomRule?.(req.params.id) ?? false;
     if (!removed) return res.status(404).json({ error: 'rule not found' }) as any;
+    auditLog?.(req, 'rule.delete', req.params.id, {});
     io.emit('rules-update');
     res.json({ status: 'ok' });
   });

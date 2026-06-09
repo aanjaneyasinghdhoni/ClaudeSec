@@ -30,15 +30,19 @@ export function registerHoneytokenRoutes(app: Express, ctx: RouteContext): void 
     }
     const clean = tokens.filter((t): t is string => typeof t === 'string' && t.trim().length >= 6);
     ctx.saveHoneytokens?.(clean);
+    // Audit only the count — the token values themselves are secrets and must
+    // never reach the audit log.
+    ctx.auditLog?.(req, 'honeytokens.set', 'honeytokens', { count: clean.length });
     res.json({ status: 'ok', count: clean.length });
   });
 
-  app.delete('/api/honeytokens', (_req, res) => {
+  app.delete('/api/honeytokens', (req, res) => {
     if (process.env.CLAUDESEC_HONEYTOKENS) {
       res.status(409).json({ error: 'CLAUDESEC_HONEYTOKENS env var is set — unset it instead' });
       return;
     }
     ctx.clearHoneytokens?.();
+    ctx.auditLog?.(req, 'honeytokens.clear', 'honeytokens', {});
     res.json({ status: 'ok' });
   });
 }

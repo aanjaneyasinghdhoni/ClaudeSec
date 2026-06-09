@@ -68,6 +68,11 @@ for (const stmt of [
   // on startNano/endNano; these let SQLite use an index instead of a full scan.
   `CREATE INDEX IF NOT EXISTS idx_spans_startNano         ON spans(startNano)`,
   `CREATE INDEX IF NOT EXISTS idx_spans_endNano           ON spans(endNano)`,
+  // Per-harness and per-session threat rollups (orchestration, metrics, cost)
+  // GROUP BY on these pairs and filter severity; the composite indexes let
+  // SQLite satisfy the aggregation from the index alone.
+  `CREATE INDEX IF NOT EXISTS idx_spans_harness_severity  ON spans(harness, severity)`,
+  `CREATE INDEX IF NOT EXISTS idx_spans_traceId_severity  ON spans(traceId, severity)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_traceId          ON alerts(traceId)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_dismissed_ts     ON alerts(dismissed, ts)`,
 ]) {
@@ -223,5 +228,44 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+`);
+
+// ---------------------------------------------------------------------------
+// Operator audit log — an append-only record of every config-mutating action
+// (who changed what, when). Read-only over the API; there is deliberately no
+// delete endpoint — an audit log that can be cleared from the UI is not an
+// audit log. Growth is bounded by pruning the oldest rows on insert past a cap
+// (see server/auditLog.ts), so it can never grow without limit on a long-lived
+// install. The `detail` column is scrubbed before insert so secrets that pass
+// through a config payload never land here.
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS operator_audit_log (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       INTEGER NOT NULL,
+    actor    TEXT NOT NULL DEFAULT 'local',
+    action   TEXT NOT NULL,
+    target   TEXT NOT NULL DEFAULT '',
+    detail   TEXT NOT NULL DEFAULT '{}',
+    sourceIp TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_operator_audit_log_ts ON operator_audit_log(ts);
+`);
+
+// ---------------------------------------------------------------------------
+// Per-rule enable/disable overrides — lets an operator permanently silence a
+// noisy built-in or custom rule (distinct from a time-boxed suppression).
+// Only the enable/disable flag is persisted; severity is not overridable here.
+// The catastrophic-floor rules can never be disabled — that constraint is
+// enforced in the API + detection path, not the schema.
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rule_overrides (
+    ruleLabel TEXT PRIMARY KEY,
+    enabled   INTEGER NOT NULL DEFAULT 1,
+    updatedTs INTEGER NOT NULL
   );
 `);

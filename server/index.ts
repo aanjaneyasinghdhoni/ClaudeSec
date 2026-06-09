@@ -40,11 +40,14 @@ import { registerOrchestrationRoutes } from './routes/orchestration.js';
 import { registerLiveActivityRoutes } from './routes/liveActivity.js';
 import { registerWebhookRoutes } from './routes/webhook.js';
 import { registerEnforceRoutes } from './routes/enforce.js';
+import { registerAuditLogRoutes } from './routes/auditLog.js';
+import { registerRuleOverrideRoutes } from './routes/ruleOverrides.js';
+import { makeAuditLogger } from './auditLog.js';
 import type { CustomRule, HealthBreakdown, EnforceLogEvent } from './routes/context.js';
 import { detectHarness, HARNESSES } from '../src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
-import { SEVERITY_RULES } from './detection.js';
+import { SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from './detection.js';
 import {
   normalizeAddr,
   isLoopbackAddr,
@@ -413,6 +416,48 @@ function getSuppressedKeysCached(): Set<string> {
 function invalidateSuppressedCache() { _suppressedCache = null; }
 
 // ---------------------------------------------------------------------------
+// Disabled-rule cache — operator-set per-rule enable/disable overrides.
+// Same short-lived (~2s) cache shape as suppressions so ingest never round-
+// trips SQLite per rule per span, and UI changes still propagate fast.
+// The catastrophic-floor labels are dropped here defensively: even if a stale
+// override row somehow existed, a catastrophic rule can never be silenced.
+// ---------------------------------------------------------------------------
+
+let _disabledRulesCache: { labels: Set<string>; at: number } | null = null;
+const DISABLED_RULES_TTL_MS = 2_000;
+
+function getDisabledRuleLabelsCached(): Set<string> {
+  const now = Date.now();
+  if (_disabledRulesCache && now - _disabledRulesCache.at < DISABLED_RULES_TTL_MS) {
+    return _disabledRulesCache.labels;
+  }
+  const rows = db.prepare(
+    `SELECT ruleLabel FROM rule_overrides WHERE enabled = 0`,
+  ).all() as { ruleLabel: string }[];
+  const labels = new Set(
+    rows.map(r => r.ruleLabel).filter(l => !CATASTROPHIC_DETECTION_LABELS.has(l)),
+  );
+  _disabledRulesCache = { labels, at: now };
+  return labels;
+}
+
+function invalidateDisabledRulesCache() { _disabledRulesCache = null; }
+
+// ---------------------------------------------------------------------------
+// Operator audit log writer
+// ---------------------------------------------------------------------------
+// A request is "local" (actor = 'local') when it comes from loopback or runs
+// under CLAUDESEC_TRUST_LOCAL — exactly the cases the HTTP auth gate lets
+// through without a token. Anything else reached the handler only by presenting
+// a valid CLAUDESEC_TOKEN, so it's attributed to 'token'. detail is scrubbed
+// inside the writer; sourceIp uses req.socket.remoteAddress (never the
+// spoofable X-Forwarded-For), matching the auth gate's choice.
+const auditLog = makeAuditLogger(
+  () => scrubOptions,
+  (req) => isLoopbackAddr(req.socket?.remoteAddress) || trustLocalEnabled(),
+);
+
+// ---------------------------------------------------------------------------
 // Custom rules persistence
 // ---------------------------------------------------------------------------
 
@@ -667,6 +712,23 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
 // ---------------------------------------------------------------------------
 
 const SERVER_START_MS = Date.now();
+
+// Single source of truth for the version surfaced over HTTP/MCP. Read from
+// package.json at startup so a release bump can't drift from what the server
+// reports. Falls back to '0.0.0' if the file can't be located (e.g. an unusual
+// packaging layout) rather than crashing the boot.
+const APP_VERSION = (() => {
+  for (const candidate of [
+    path.join(__dirname, '..', 'package.json'),
+    path.join(__dirname, '..', '..', 'package.json'),
+  ]) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8')) as { version?: string };
+      if (pkg.version) return pkg.version;
+    } catch {}
+  }
+  return '0.0.0';
+})();
 
 // ── OTLP forwarding stats ────────────────────────────────────────────────
 const forwardStats = { total: 0, success: 0, failed: 0, lastError: '', lastSuccessAt: '' };
@@ -943,14 +1005,16 @@ const ENFORCE_LOG_MAX = 500;
 const enforceLog: EnforceLogEvent[] = [];
 
 function detectSeverity(text: string): DetectHit {
-  // SECURITY: batch the suppression lookup — cached for ~2s, so ingest never
-  // round-trips SQLite per rule per span under load.
+  // SECURITY: batch the suppression + disabled-rule lookups — both cached for
+  // ~2s, so ingest never round-trips SQLite per rule per span under load.
   const suppressed = getSuppressedKeysCached();
+  const disabled   = getDisabledRuleLabelsCached();
 
   // Custom rules first — user overrides beat built-ins.
   for (const rule of customRules) {
     const key = `custom:${rule.id}`;
     if (suppressed.has(key)) continue;
+    if (disabled.has(rule.label)) continue; // operator-disabled rule
     // Skip patterns that exceed the ReDoS-mitigation cap (e.g. rules persisted
     // before the limit was enforced at creation time).
     if (rule.pattern.length > MAX_RULE_PATTERN_LEN) continue;
@@ -974,6 +1038,9 @@ function detectSeverity(text: string): DetectHit {
     const key = `builtin-${i}`;
     if (suppressed.has(key)) continue;
     const rule = SEVERITY_RULES[i];
+    // Operator-disabled built-in rule. The catastrophic-floor labels are never
+    // in the disabled set (filtered at cache build), so they always run.
+    if (disabled.has(rule.label)) continue;
     const m = rule.pattern.exec(text);
     if (m) {
       return {
@@ -1760,7 +1827,7 @@ async function startServer() {
   });
 
   // ── Export ───────────────────────────────────────────────────────────────
-  registerExportRoutes(app, { io });
+  registerExportRoutes(app, { io, appVersion: APP_VERSION });
 
   // ── Harness profiles (full per-agent stats) ──────────────────────────────
   registerHarnessRoutes(app, { io });
@@ -1836,7 +1903,7 @@ async function startServer() {
               const threatCount  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c;
               let dbSizeBytes = 0;
               try { dbSizeBytes = fs.statSync(DB_PATH).size; } catch {}
-              ok({ content: [{ type: 'text', text: JSON.stringify({ status: 'ok', version: '1.0.0', uptime: Date.now() - SERVER_START_MS, spanCount, sessionCount, alertCount: alertCount2, threatCount, dbSizeBytes }) }] });
+              ok({ content: [{ type: 'text', text: JSON.stringify({ status: 'ok', version: APP_VERSION, uptime: Date.now() - SERVER_START_MS, spanCount, sessionCount, alertCount: alertCount2, threatCount, dbSizeBytes }) }] });
               break;
             }
             case 'get_sessions': {
@@ -1883,10 +1950,29 @@ async function startServer() {
               const query = String(args.query ?? '').trim();
               const limit = Math.min(Number(args.limit ?? 50), 200);
               if (!query) { err(-32602, 'query required'); break; }
-              const results = (getAllSpans.all() as SpanRecord[])
-                .filter(s => (s.name + ' ' + s.attributes).toLowerCase().includes(query.toLowerCase()))
-                .slice(0, limit)
-                .map(s => ({ spanId: s.spanId, traceId: s.traceId, name: s.name, severity: s.severity, harness: s.harness }));
+              // Push the filter into SQLite instead of loading every span and
+              // matching in JS. Free text routes through the FTS5 index (split on
+              // whitespace, prefix-match each term); a malformed FTS expression
+              // falls back to a scoped LIKE rather than erroring.
+              const terms = query.replace(/["']/g, ' ').split(/\s+/).filter(Boolean);
+              let results: { spanId: string; traceId: string; name: string; severity: string; harness: string }[] = [];
+              if (terms.length > 0) {
+                const ftsQuery = terms.map(t => `"${t}"*`).join(' ');
+                try {
+                  results = db.prepare(
+                    `SELECT spanId, traceId, name, severity, harness FROM spans
+                     WHERE spanId IN (SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?)
+                     ORDER BY startNano DESC LIMIT ?`
+                  ).all(ftsQuery, limit) as typeof results;
+                } catch {
+                  const like = `%${query.replace(/[%_]/g, m => '\\' + m)}%`;
+                  results = db.prepare(
+                    `SELECT spanId, traceId, name, severity, harness FROM spans
+                     WHERE name LIKE ? ESCAPE '\\' OR attributes LIKE ? ESCAPE '\\'
+                     ORDER BY startNano DESC LIMIT ?`
+                  ).all(like, like, limit) as typeof results;
+                }
+              }
               ok({ content: [{ type: 'text', text: JSON.stringify(results) }] });
               break;
             }
@@ -1997,7 +2083,7 @@ async function startServer() {
           ok({
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
-            serverInfo: { name: 'claudesec', version: '1.0.0' },
+            serverInfo: { name: 'claudesec', version: APP_VERSION },
           });
           break;
         }
@@ -2010,13 +2096,13 @@ async function startServer() {
   });
 
   // ── Threshold alert rules ────────────────────────────────────────────────
-  registerThresholdRuleRoutes(app, { io });
+  registerThresholdRuleRoutes(app, { io, auditLog });
 
   // ── OTEL Collector config generator ─────────────────────────────────────
   app.get('/api/collector-config', (_req, res) => {
     const port = process.env.PORT ?? 3000;
     const yaml = `# OpenTelemetry Collector configuration for ClaudeSec
-# Generated by ClaudeSec v1.0.0 — https://github.com/aanjaneyasinghdhoni/ClaudeSec
+# Generated by ClaudeSec v${APP_VERSION} — https://github.com/aanjaneyasinghdhoni/ClaudeSec
 #
 # Usage:
 #   docker run --rm -p 4317:4317 -p 4318:4318 \\
@@ -2370,13 +2456,14 @@ service:
   registerSpanMetaRoutes(app, { io });
 
   // ── Reset ────────────────────────────────────────────────────────────────
-  app.post('/api/reset', (_req, res) => {
+  app.post('/api/reset', (req, res) => {
     // SAFETY: data wipe is DISABLED by default — prevents accidental destruction
     // of the spans database. Set CLAUDESEC_ALLOW_RESET=1 to explicitly permit it.
     if (process.env.CLAUDESEC_ALLOW_RESET !== '1') {
       res.status(403).json({ error: 'reset disabled', hint: 'Set CLAUDESEC_ALLOW_RESET=1 to enable /api/reset' });
       return;
     }
+    auditLog(req, 'data.reset', 'all', {});
     deleteAllSpans.run();
     deleteAllSessions.run();
     deleteAllAlerts.run();
@@ -2407,6 +2494,7 @@ service:
     getEnforceOverrides,
     writeEnforceConfigFile,
     enforceConfigFile: ENFORCE_CONFIG_FILE,
+    auditLog,
   });
 
   // ── MCP / skill static scanner ───────────────────────────────────────────
@@ -2424,7 +2512,19 @@ service:
       saveCustomRules();
       return true;
     },
+    auditLog,
   });
+
+  // ── Per-rule enable/disable overrides ─────────────────────────────────────
+  registerRuleOverrideRoutes(app, {
+    io,
+    invalidateDisabledRulesCache,
+    getCustomRules: () => customRules,
+    auditLog,
+  });
+
+  // ── Operator audit log (read-only) ────────────────────────────────────────
+  registerAuditLogRoutes(app, { io });
 
   // ── Alerts ───────────────────────────────────────────────────────────────
   registerAlertRoutes(app, { io });
@@ -2433,7 +2533,7 @@ service:
   registerOrchestrationRoutes(app, { io });
 
   // ── DB stats + retention config ──────────────────────────────────────────
-  registerDbStatsRoutes(app, { io, getMaxSpans, getRetentionDays, pruneSpans, buildGraph });
+  registerDbStatsRoutes(app, { io, getMaxSpans, getRetentionDays, pruneSpans, buildGraph, auditLog });
 
   // ── Health check ────────────────────────────────────────────────────────
   // ── Command audit trail — all tool executions with risk scores ────────
@@ -2454,7 +2554,7 @@ service:
     const annotationsTotal = (db.prepare('SELECT COUNT(*) as c FROM annotations').get() as any).c as number;
     res.json({
       status:      'ok',
-      version:     '1.0.0',
+      version:     APP_VERSION,
       uptimeMs:    Date.now() - SERVER_START_MS,
       uptime:      (Date.now() - SERVER_START_MS) / 1000,
       spans:       spansTotal,
@@ -2493,27 +2593,30 @@ service:
 
   // ── Prometheus metrics ───────────────────────────────────────────────────
   app.get('/metrics', (_req, res) => {
-    const allSpans = getAllSpans.all() as SpanRecord[];
-
-    // spans_total by harness
+    // Aggregate in SQL (GROUP BY harness / severity, json_extract for tokens)
+    // so /metrics stays O(distinct harnesses) instead of scanning every span.
     const spansPerHarness = new Map<string, number>();
     const threatsPerHarnessSev = new Map<string, number>();
     const tokensIn  = new Map<string, number>();
     const tokensOut = new Map<string, number>();
 
-    for (const span of allSpans) {
-      spansPerHarness.set(span.harness, (spansPerHarness.get(span.harness) ?? 0) + 1);
-      if (span.severity !== 'none') {
-        const k = `${span.harness}::${span.severity}`;
-        threatsPerHarnessSev.set(k, (threatsPerHarnessSev.get(k) ?? 0) + 1);
-      }
-      try {
-        const attrs = JSON.parse(span.attributes);
-        const ti = Number(attrs['gen_ai.usage.input_tokens']  ?? attrs['llm.usage.input_tokens']  ?? 0);
-        const to = Number(attrs['gen_ai.usage.output_tokens'] ?? attrs['llm.usage.output_tokens'] ?? 0);
-        if (ti) tokensIn.set(span.harness,  (tokensIn.get(span.harness)  ?? 0) + ti);
-        if (to) tokensOut.set(span.harness, (tokensOut.get(span.harness) ?? 0) + to);
-      } catch {}
+    for (const row of db.prepare(`SELECT harness, COUNT(*) AS c FROM spans GROUP BY harness`).all() as { harness: string; c: number }[]) {
+      spansPerHarness.set(row.harness, row.c);
+    }
+    for (const row of db.prepare(`SELECT harness, severity, COUNT(*) AS c FROM spans WHERE severity != 'none' GROUP BY harness, severity`).all() as { harness: string; severity: string; c: number }[]) {
+      threatsPerHarnessSev.set(`${row.harness}::${row.severity}`, row.c);
+    }
+    const tokenRows = db.prepare(`
+      SELECT harness,
+             SUM(COALESCE(json_extract(attributes, '$."gen_ai.usage.input_tokens"'),  json_extract(attributes, '$."llm.usage.input_tokens"'),  0)) AS tin,
+             SUM(COALESCE(json_extract(attributes, '$."gen_ai.usage.output_tokens"'), json_extract(attributes, '$."llm.usage.output_tokens"'), 0)) AS tout
+      FROM spans GROUP BY harness
+    `).all() as { harness: string; tin: number; tout: number }[];
+    for (const row of tokenRows) {
+      const tin  = Number(row.tin)  || 0;
+      const tout = Number(row.tout) || 0;
+      if (tin)  tokensIn.set(row.harness,  tin);
+      if (tout) tokensOut.set(row.harness, tout);
     }
 
     const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
@@ -2564,6 +2667,7 @@ service:
     getWebhookThreshold,
     maskWebhookUrl,
     fireWebhook,
+    auditLog,
   });
 
   // ── Token cost estimation + cost trend ────────────────────────────────────
@@ -2610,6 +2714,7 @@ service:
       delConfig.run('honeytokens');
       scrubOptions = loadScrubOptions([]);
     },
+    auditLog,
   });
 
   // ── Scrub status (read-only) ───────────────────────────────────────────
@@ -2705,7 +2810,7 @@ service:
   });
 
   // ── Suppressions CRUD (s61) ───────────────────────────────────────────────
-  registerSuppressionRoutes(app, { io, invalidateSuppressedCache });
+  registerSuppressionRoutes(app, { io, invalidateSuppressedCache, auditLog });
 
   // ── Auto-discovery: scan running agent processes and create live spans ───
   // This makes the dashboard "just work" — start `pnpm dev`, open the
