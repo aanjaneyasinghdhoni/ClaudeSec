@@ -12,7 +12,8 @@ const deleteThresholdRule  = db.prepare(`DELETE FROM threshold_rules WHERE id = 
 const updateThresholdRule  = db.prepare(`UPDATE threshold_rules SET enabled = ? WHERE id = ?`);
 const getAllThresholdRules  = db.prepare(`SELECT * FROM threshold_rules ORDER BY id ASC`);
 
-export function registerThresholdRuleRoutes(app: Express, _ctx: RouteContext): void {
+export function registerThresholdRuleRoutes(app: Express, ctx: RouteContext): void {
+  const { auditLog } = ctx;
   // ── Threshold alert rules ────────────────────────────────────────────────
   app.get('/api/threshold-rules', (_req, res) => {
     res.json({ rules: getAllThresholdRules.all() });
@@ -35,6 +36,7 @@ export function registerThresholdRuleRoutes(app: Express, _ctx: RouteContext): v
       createdAt: new Date().toISOString(),
     });
     const row = db.prepare('SELECT * FROM threshold_rules WHERE id = ?').get(result.lastInsertRowid);
+    auditLog?.(req, 'threshold-rule.create', String((result as any).lastInsertRowid), { name: name.trim(), metric, operator, value: Number(value) });
     res.status(201).json(row);
   });
 
@@ -43,12 +45,14 @@ export function registerThresholdRuleRoutes(app: Express, _ctx: RouteContext): v
     if (enabled === undefined) return res.status(400).json({ error: 'enabled required' }) as any;
     const changes = updateThresholdRule.run(enabled ? 1 : 0, Number(req.params.id)).changes;
     if (!changes) return res.status(404).json({ error: 'Rule not found' }) as any;
+    auditLog?.(req, 'threshold-rule.update', req.params.id, { enabled });
     res.json({ status: 'ok' });
   });
 
   app.delete('/api/threshold-rules/:id', (req, res) => {
     const changes = deleteThresholdRule.run(Number(req.params.id)).changes;
     if (!changes) return res.status(404).json({ error: 'Rule not found' }) as any;
+    auditLog?.(req, 'threshold-rule.delete', req.params.id, {});
     res.json({ status: 'ok' });
   });
 }

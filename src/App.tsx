@@ -37,6 +37,7 @@ import { LiveActivityPanel } from './LiveActivityPanel';
 import { motion, AnimatePresence } from 'motion/react';
 import type { Severity } from './shared/types';
 import { applyLayout, type LayoutMode } from './lib/graphLayout';
+import { useDebouncedCallback } from './lib/useDebouncedCallback';
 import { toMs, formatSpanName } from './lib/format';
 import { Timeline } from './Timeline';
 import {
@@ -117,6 +118,11 @@ export default function App() {
   const [workflows, setWorkflows]           = useState<Workflow[]>([]);
   const [sessions, setSessions]             = useState<Session[]>([]);
   const [activeSession, setActiveSession]   = useState<string | null>(null);
+  // The socket effect registers its handlers once and never re-runs on session
+  // switches (re-registering would risk duplicate handlers), so read the live
+  // session through a ref instead of the value captured at registration time.
+  const activeSessionRef = useRef(activeSession);
+  useEffect(() => { activeSessionRef.current = activeSession; }, [activeSession]);
   const [connectionStatus, setConnectionStatus] = useState<'live' | 'idle' | 'setup'>('setup');
   const [timelineIntroShown, setTimelineIntroShown] = useState(
     () => localStorage.getItem('claudesec-timeline-intro-dismissed') !== 'true'
@@ -223,6 +229,10 @@ export default function App() {
 
   const seenIds      = useRef<Set<string>>(new Set());
   const prevWorkflows = useRef<Workflow[]>([]);
+  // Signature of the last graph we laid out (sorted node + edge ids + layout mode).
+  // dagre layout is the expensive step on every graph-update; skipping it when the
+  // structure is unchanged keeps a stream of identical broadcasts cheap.
+  const lastLayoutSig = useRef<string>('');
 
   const onConnect = useCallback(
     (params: any) => setEdges(eds => addEdge(params, eds)),
@@ -261,6 +271,23 @@ export default function App() {
       .then(r => r.json())
       .then(({ total }: { total: number }) => setAlertCount(total ?? 0))
       .catch(() => {});
+
+  // Lay out the graph, but skip the dagre pass when the node/edge set and layout
+  // mode are unchanged since the last render — a no-op broadcast then just refreshes
+  // edges without re-running the expensive layout.
+  const layoutGraph = (n: Node[], e: Edge[]) => {
+    const sig = `${layoutMode}|${n.map(node => node.id).sort().join(',')}|${e.map(edge => edge.id).sort().join(',')}`;
+    if (sig !== lastLayoutSig.current) {
+      lastLayoutSig.current = sig;
+      setNodes(applyLayout(n, e, layoutMode));
+    }
+    setEdges(e);
+  };
+
+  // Collapse bursts of socket events into a single trailing refetch (~400ms) so a
+  // batch of broadcasts does not stampede the API with one call per event.
+  const debouncedFetchSessions   = useDebouncedCallback(fetchSessions, 400);
+  const debouncedFetchAlertCount = useDebouncedCallback(fetchAlertCount, 400);
 
   const requestNotifications = async () => {
     if (!('Notification' in window)) return;
@@ -310,11 +337,11 @@ export default function App() {
     fetch(graphUrl)
       .then(r => r.json())
       .then(({ nodes: n, edges: e, windowed, shown, total }: { nodes: Node[]; edges: Edge[]; windowed?: boolean; shown?: number; total?: number }) => {
-        setNodes(applyLayout(n, e, layoutMode));
-        setEdges(e);
+        layoutGraph(n, e);
         syncWorkflows(n);
         setGraphWindow(windowed ? { shown: shown ?? n.length, total: total ?? 0 } : null);
       });
+    // Independent of the graph fetch above; fire concurrently rather than awaiting it.
     fetchSessions();
     fetchAlertCount();
   }, [activeSession]);
@@ -363,20 +390,21 @@ export default function App() {
   // Socket events
   useEffect(() => {
     const handleGraphUpdate = ({ nodes: n, edges: e, windowed, shown, total }: { nodes: Node[]; edges: Edge[]; windowed?: boolean; shown?: number; total?: number }) => {
-      // When scoped to a session, re-fetch the scoped graph instead of using the broadcast
-      if (activeSession) {
-        fetch(`/api/graph?session=${encodeURIComponent(activeSession)}`)
+      // When scoped to a session, re-fetch the scoped graph instead of using the
+      // broadcast. Read the live session via a ref — this handler is registered
+      // once and would otherwise close over the session from first render.
+      const scopedSession = activeSessionRef.current;
+      if (scopedSession) {
+        fetch(`/api/graph?session=${encodeURIComponent(scopedSession)}`)
           .then(r => r.json())
           .then(({ nodes: sn, edges: se }: { nodes: Node[]; edges: Edge[] }) => {
-            setNodes(applyLayout(sn, se, layoutMode));
-            setEdges(se);
+            layoutGraph(sn, se);
             syncWorkflows(sn);
             setGraphWindow(null); // a single session is shown in full
           });
         return;
       }
-      setNodes(applyLayout(n, e, layoutMode));
-      setEdges(e);
+      layoutGraph(n, e);
       syncWorkflows(n);
       setGraphWindow(windowed ? { shown: shown ?? n.length, total: total ?? 0 } : null);
 
@@ -408,16 +436,16 @@ export default function App() {
     };
 
     socket.on('graph-update', handleGraphUpdate);
-    socket.on('sessions-update', fetchSessions);
-    socket.on('alerts-update', fetchAlertCount);
+    socket.on('sessions-update', debouncedFetchSessions);
+    socket.on('alerts-update', debouncedFetchAlertCount);
     socket.on('span-added', handleSpanAdded);
     return () => {
       socket.off('graph-update', handleGraphUpdate);
-      socket.off('sessions-update', fetchSessions);
-      socket.off('alerts-update', fetchAlertCount);
+      socket.off('sessions-update', debouncedFetchSessions);
+      socket.off('alerts-update', debouncedFetchAlertCount);
       socket.off('span-added', handleSpanAdded);
     };
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, debouncedFetchSessions, debouncedFetchAlertCount]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 

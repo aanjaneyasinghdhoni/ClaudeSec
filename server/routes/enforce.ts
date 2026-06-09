@@ -26,6 +26,7 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
     getEnforceOverrides,
     writeEnforceConfigFile,
     enforceConfigFile,
+    auditLog,
   } = ctx;
   if (
     !appendEnforceLog || !readEnforceLog || !enforceLogCount || enforceLogMax === undefined ||
@@ -113,6 +114,7 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
       mode:      getEnforceMode(),
       overrides: getEnforceOverrides(),
     };
+    auditLog?.(req, 'enforce.config', 'enforce.config', effective);
     io.emit('enforce-config', effective);
     res.json(effective);
   });

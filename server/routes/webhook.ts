@@ -12,7 +12,7 @@ const updateDelivery = db.prepare(`
 `);
 
 export function registerWebhookRoutes(app: Express, ctx: RouteContext): void {
-  const { getWebhookUrl, getWebhookThreshold, maskWebhookUrl, fireWebhook } = ctx;
+  const { getWebhookUrl, getWebhookThreshold, maskWebhookUrl, fireWebhook, auditLog } = ctx;
   if (!getWebhookUrl || !getWebhookThreshold || !maskWebhookUrl || !fireWebhook) {
     throw new Error('registerWebhookRoutes requires getWebhookUrl/getWebhookThreshold/maskWebhookUrl/fireWebhook in ctx');
   }
@@ -50,14 +50,17 @@ export function registerWebhookRoutes(app: Express, ctx: RouteContext): void {
     if (threshold && ['low', 'medium', 'high'].includes(threshold)) {
       setConfig.run('webhook.threshold', threshold);
     }
+    // Audit the change — record the redacted URL only, never the raw secret URL.
+    auditLog?.(req, 'webhook.set', 'webhook.url', { urlPreview: maskWebhookUrl(url.trim()), threshold: getWebhookThreshold() });
     res.json({ status: 'ok', urlPreview: maskWebhookUrl(url), threshold: getWebhookThreshold() });
   });
 
-  app.delete('/api/webhook', (_req, res) => {
+  app.delete('/api/webhook', (req, res) => {
     if (process.env.CLAUDESEC_WEBHOOK_URL) {
       return res.status(409).json({ error: 'CLAUDESEC_WEBHOOK_URL env var is set — unset it instead' }) as any;
     }
     delConfig.run('webhook.url');
+    auditLog?.(req, 'webhook.delete', 'webhook.url', {});
     res.json({ status: 'ok' });
   });
 

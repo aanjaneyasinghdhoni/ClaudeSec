@@ -6,7 +6,7 @@ import type { RouteContext } from './context.js';
 const setConfig = db.prepare(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`);
 
 export function registerDbStatsRoutes(app: Express, ctx: RouteContext): void {
-  const { io, getMaxSpans, getRetentionDays, pruneSpans, buildGraph } = ctx;
+  const { io, getMaxSpans, getRetentionDays, pruneSpans, buildGraph, auditLog } = ctx;
   if (!getMaxSpans || !getRetentionDays || !pruneSpans || !buildGraph) {
     throw new Error('registerDbStatsRoutes requires getMaxSpans/getRetentionDays/pruneSpans/buildGraph in ctx');
   }
@@ -55,6 +55,7 @@ export function registerDbStatsRoutes(app: Express, ctx: RouteContext): void {
       if (retentionDays < 1) return res.status(400).json({ error: 'retentionDays must be >= 1' }) as any;
       setConfig.run('retention.days', String(retentionDays));
     }
+    auditLog?.(req, 'retention.set', 'retention', { maxSpans: getMaxSpans(), retentionDays: getRetentionDays() });
     res.json({ status: 'ok', maxSpans: getMaxSpans(), retentionDays: getRetentionDays() });
   });
 }

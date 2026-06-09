@@ -18,22 +18,55 @@ interface SpanRecord {
   endNano: string;
 }
 
-const getAllSpans = db.prepare(`SELECT * FROM spans`);
+// Per-harness rollup over the FULL table — counts must stay accurate as the
+// span table grows, so they come straight from SQL (the (harness, severity)
+// index satisfies this) rather than an in-memory scan.
+const harnessStats = db.prepare(`
+  SELECT harness,
+         COUNT(*) AS spanCount,
+         SUM(CASE WHEN severity != 'none' THEN 1 ELSE 0 END) AS threatCount
+  FROM spans
+  GROUP BY harness
+`);
+
+// Per-trace rollup over the FULL table. Powers the spawn-tree node stats.
+const traceStats = db.prepare(`
+  SELECT traceId, harness,
+         COUNT(*) AS spanCount,
+         SUM(CASE WHEN severity != 'none' THEN 1 ELSE 0 END) AS threatCount
+  FROM spans
+  GROUP BY traceId
+`);
+
+// The tool matrix, harness edges, and spawn tree need each span's attributes
+// JSON and parentage, which can't be aggregated in SQL. Bound that work to the
+// most-recent spans so the endpoint stops being O(total table) — older history
+// stays available via Search/Sessions. Override with CLAUDESEC_ORCH_LIMIT.
+const ORCH_LIMIT = (() => {
+  const n = parseInt(String(process.env.CLAUDESEC_ORCH_LIMIT ?? ''), 10);
+  return Number.isFinite(n) && n > 0 ? n : 20000;
+})();
+
+const getRecentSpans = db.prepare(`
+  SELECT * FROM (
+    SELECT * FROM spans ORDER BY startNano DESC LIMIT ?
+  ) ORDER BY startNano ASC
+`);
 
 export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): void {
   // ── Orchestration ────────────────────────────────────────────────────────
   app.get('/api/orchestration', (_req, res) => {
-    const allSpans = getAllSpans.all() as SpanRecord[];
+    const recentSpans = getRecentSpans.all(ORCH_LIMIT) as SpanRecord[];
 
-    // Per-harness stats
+    // Per-harness stats (full-table counts via SQL; tool set from recent window)
+    const harnessRows = harnessStats.all() as { harness: string; spanCount: number; threatCount: number }[];
     const agentMap = new Map<string, { harness: string; spanCount: number; threatCount: number; tools: Set<string> }>();
-    for (const span of allSpans) {
-      if (!agentMap.has(span.harness)) {
-        agentMap.set(span.harness, { harness: span.harness, spanCount: 0, threatCount: 0, tools: new Set() });
-      }
-      const entry = agentMap.get(span.harness)!;
-      entry.spanCount++;
-      if (span.severity !== 'none') entry.threatCount++;
+    for (const row of harnessRows) {
+      agentMap.set(row.harness, { harness: row.harness, spanCount: row.spanCount, threatCount: row.threatCount, tools: new Set() });
+    }
+    for (const span of recentSpans) {
+      const entry = agentMap.get(span.harness);
+      if (!entry) continue;
       try {
         const attrs = JSON.parse(span.attributes);
         const toolName = attrs['tool'] || attrs['gen_ai.tool.name'] || attrs['tool.name'] || span.name || '';
@@ -50,7 +83,7 @@ export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): v
 
     // Group spans by traceId to find co-occurring harnesses
     const traceHarnesses = new Map<string, { harness: string; startNano: string }[]>();
-    for (const span of allSpans) {
+    for (const span of recentSpans) {
       if (!traceHarnesses.has(span.traceId)) traceHarnesses.set(span.traceId, []);
       traceHarnesses.get(span.traceId)!.push({ harness: span.harness, startNano: span.startNano });
     }
@@ -74,7 +107,7 @@ export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): v
 
     // Tool inventory (full matrix: toolName × harness)
     const toolMap = new Map<string, { toolName: string; harness: string; count: number; threatCount: number }>();
-    for (const span of allSpans) {
+    for (const span of recentSpans) {
       try {
         const attrs = JSON.parse(span.attributes);
         const toolName = attrs['tool'] || attrs['gen_ai.tool.name'] || attrs['tool.name'] || span.name || '';
@@ -94,8 +127,12 @@ export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): v
 
     // Build span index for O(1) parent lookup
     const spanIdx = new Map<string, { traceId: string; harness: string; name: string }>();
-    for (const span of allSpans) {
+    // Earliest startNano per trace within the working window — feeds the
+    // fallback sort below without re-scanning the span array per trace.
+    const traceFirstNano = new Map<string, string>();
+    for (const span of recentSpans) {
       spanIdx.set(span.spanId, { traceId: span.traceId, harness: span.harness, name: span.name });
+      if (!traceFirstNano.has(span.traceId)) traceFirstNano.set(span.traceId, span.startNano);
     }
 
     // Pre-fetch sessions for display names
@@ -103,22 +140,18 @@ export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): v
     const sessionRows = db.prepare('SELECT traceId, name FROM sessions').all() as { traceId: string; name: string }[];
     for (const s of sessionRows) sessionNames.set(s.traceId, s.name);
 
-    // Per-trace stats (reuse agentMap data, aggregate by traceId)
+    // Per-trace stats over the FULL table (SQL GROUP BY) — node counts stay
+    // accurate even for traces outside the recent working window.
     const traceStatMap = new Map<string, { traceId: string; harness: string; spanCount: number; threatCount: number }>();
-    for (const span of allSpans) {
-      if (!traceStatMap.has(span.traceId)) {
-        traceStatMap.set(span.traceId, { traceId: span.traceId, harness: span.harness, spanCount: 0, threatCount: 0 });
-      }
-      const ts = traceStatMap.get(span.traceId)!;
-      ts.spanCount++;
-      if (span.severity !== 'none') ts.threatCount++;
+    for (const row of traceStats.all() as { traceId: string; harness: string; spanCount: number; threatCount: number }[]) {
+      traceStatMap.set(row.traceId, { traceId: row.traceId, harness: row.harness, spanCount: row.spanCount, threatCount: row.threatCount });
     }
 
     // Find cross-trace parent-child edges (unique by parentTrace→childTrace)
     const spawnChildMap = new Map<string, Set<string>>(); // parentTraceId → Set<childTraceId>
     const hasSpawnParent = new Set<string>();             // traceIds that are children
 
-    for (const span of allSpans) {
+    for (const span of recentSpans) {
       // parentId could be a harness root id (not a real span) — skip those
       const isHarnessRoot = HARNESSES.some(h => h.id === span.parentId);
       if (isHarnessRoot || !span.parentId) continue;
@@ -132,7 +165,7 @@ export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): v
     }
 
     // Also detect spawn-like spans by name/attribute patterns (agent.tool.name = "Agent", sub_agent, etc.)
-    for (const span of allSpans) {
+    for (const span of recentSpans) {
       const isSpawnSpan = /\b(sub.?agent|spawn|agent.tool|delegate)\b/i.test(span.name);
       if (!isSpawnSpan) continue;
       try {
@@ -200,11 +233,9 @@ export function registerOrchestrationRoutes(app: Express, _ctx: RouteContext): v
       for (const [, traceIds] of harnessTraces) {
         if (traceIds.length < 2) continue;
         // Sort by start time (earliest first) — use first span's startNano
-        traceIds.sort((a, b) => {
-          const aSpan = allSpans.find(s => s.traceId === a);
-          const bSpan = allSpans.find(s => s.traceId === b);
-          return (aSpan?.startNano ?? '0').localeCompare(bSpan?.startNano ?? '0');
-        });
+        traceIds.sort((a, b) =>
+          (traceFirstNano.get(a) ?? '0').localeCompare(traceFirstNano.get(b) ?? '0'),
+        );
         const [root, ...children] = traceIds;
         for (const child of children) {
           if (!spawnChildMap.has(root)) spawnChildMap.set(root, new Set());

@@ -425,6 +425,99 @@ paths:
                         sensitive: { type: boolean }
                   total: { type: integer }
 
+  /api/audit-log:
+    get:
+      tags: [Security]
+      summary: Operator audit log
+      description: Read-only, newest-first view of operator actions. Cursor-paginated; there is no delete endpoint by design.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: before
+          in: query
+          schema: { type: integer }
+          description: Cursor — return entries with id less than this value
+      responses:
+        '200':
+          description: Audit log page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        ts: { type: integer }
+                        actor: { type: string }
+                        action: { type: string }
+                        target: { type: string }
+                        detail: { type: string }
+                        sourceIp: { type: string }
+                  total: { type: integer }
+                  nextBefore: { type: integer, nullable: true }
+
+  /api/rule-overrides:
+    get:
+      tags: [Rules]
+      summary: List rule enable/disable overrides
+      description: Returns the persisted per-rule enabled flags set by the operator.
+      responses:
+        '200':
+          description: Current overrides
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overrides:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ruleLabel: { type: string }
+                        enabled: { type: integer }
+                        updatedTs: { type: integer }
+
+  /api/rule-overrides/{label}:
+    put:
+      tags: [Rules]
+      summary: Enable or disable a rule by label
+      description: Persists an enable/disable override. Catastrophic-floor rules can never be disabled.
+      parameters:
+        - name: label
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Override applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  ruleLabel: { type: string }
+                  enabled: { type: boolean }
+        '400':
+          description: Invalid body, or attempt to disable a catastrophic-floor rule
+        '404':
+          description: No rule found with the given label
+
   /api/cost-trend:
     get:
       tags: [Sessions]

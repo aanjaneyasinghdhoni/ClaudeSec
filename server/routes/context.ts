@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import type { Server } from 'socket.io';
 import type { Severity } from '../../src/shared/types.js';
 import type { DetectFn } from '../mcpScan.js';
@@ -23,6 +24,10 @@ export interface RouteContext {
   io: Server;
   /** Invalidate the in-memory suppressed-rule-keys cache (owned by index.ts). */
   invalidateSuppressedCache?: () => void;
+  /** Invalidate the in-memory disabled-rule-labels cache (owned by index.ts). */
+  invalidateDisabledRulesCache?: () => void;
+  /** Record a config-mutating action in the operator audit log (owned by index.ts). */
+  auditLog?: (req: Request, action: string, target: string, detail?: unknown) => void;
   /** Effective max-span capacity (owned by index.ts). */
   getMaxSpans?: () => number;
   /** Effective age-based retention window in days (owned by index.ts). */

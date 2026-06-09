@@ -67,3 +67,61 @@ Response:
 ```json
 { "status": "ok" }
 ```
+
+---
+
+## Disable vs. suppress
+
+A **suppression** is temporary: it silences a rule's alerts until the expiry you
+set, then the rule fires again on its own. A **disable** is permanent: the rule
+stops classifying spans entirely until you re-enable it. Reach for a disable
+when a built-in rule is consistently noisy in your environment and you've decided
+it should not run at all — not just during a maintenance window.
+
+| | Suppression | Disable |
+|---|---|---|
+| Scope | Skips alert rows / webhooks | Skips the rule during detection |
+| Span severity still set? | Yes | No |
+| Expires? | Yes — at `suppressUntil` | No — until re-enabled |
+| Keyed by | Rule key (`builtin-<index>` / `custom:<id>`) | Rule **label** |
+| Stored in | `suppressions` | `rule_overrides` |
+
+Both survive restarts.
+
+<Warning>
+  The six **catastrophic-floor** rules — root deletion (`rm -rf /`), filesystem
+  format (`mkfs`), raw disk write (`dd of=/dev/…`), remote code execution piped
+  into a shell (`curl`/`wget … | sh`), and the `/dev/tcp` reverse shell — can
+  **never** be disabled. These are the worst-case events ClaudeSec exists to
+  catch, so the enforcement floor blocks them even in monitor mode and the
+  detection path always runs them. Attempting to disable one returns `400`.
+</Warning>
+
+### GET /api/rule-overrides
+
+Lists every rule that has an explicit enable/disable override (rules without an
+override are simply enabled):
+
+```json
+{
+  "overrides": [
+    { "ruleLabel": "Sudo usage", "enabled": 0, "updatedTs": 1749500000000 }
+  ]
+}
+```
+
+### PUT /api/rule-overrides/:label
+
+Enable or disable a rule by its **label** (the human-readable name shown in
+alerts, not the rule key). The label must belong to a built-in or custom rule.
+
+```json
+{ "enabled": false }
+```
+
+Returns `200` with `{ "status": "ok", "ruleLabel": "...", "enabled": false }`,
+`404` if no rule carries that label, or `400` if the label is a
+catastrophic-floor rule.
+
+Every enable/disable is recorded in the operator audit log so you can answer who
+changed which rule and when.

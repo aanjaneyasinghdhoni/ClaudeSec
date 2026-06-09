@@ -21,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { EXTRA_SEVERITY_RULES } from '../server/severityRulesExtra.js';
-import { CORE_SEVERITY_RULES } from '../server/detection.js';
+import { CORE_SEVERITY_RULES, SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from '../server/detection.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -473,6 +473,25 @@ async function main(): Promise<void> {
   console.log('═══════════════════════════════════════════════════════════════');
   console.log('  ClaudeSec — ruleSelfTest.ts  (EXTRA_SEVERITY_RULES gate)');
   console.log('═══════════════════════════════════════════════════════════════');
+  console.log();
+
+  // ── Catastrophic-floor label parity ───────────────────────────────────────
+  // CATASTROPHIC_DETECTION_LABELS names the rules an operator can never disable
+  // (the per-rule override route rejects them by exact label). If a rule is ever
+  // renamed without updating that set, the protection silently stops matching —
+  // the rule could then be disabled. Assert every protected label still maps to
+  // a real rule so a rename can't quietly disarm the floor.
+  const ruleLabels = new Set(SEVERITY_RULES.map(r => r.label));
+  const orphanedLabels = [...CATASTROPHIC_DETECTION_LABELS].filter(label => !ruleLabels.has(label));
+  if (orphanedLabels.length > 0) {
+    console.error('FAIL  CATASTROPHIC_DETECTION_LABELS references label(s) with no matching rule:');
+    for (const label of orphanedLabels) console.error(`         ${JSON.stringify(label)}`);
+    console.error('      A protected catastrophic-floor label was renamed or removed from the rule set,');
+    console.error('      which would silently disarm the disable-protection. Re-sync detection.ts.');
+    console.error('Exit: 1 (fail)');
+    process.exit(1);
+  }
+  console.log(`Catastrophic-floor parity: all ${CATASTROPHIC_DETECTION_LABELS.size} protected label(s) map to a real rule.`);
   console.log();
 
   const rules = EXTRA_SEVERITY_RULES as unknown[];
