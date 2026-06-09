@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project governance and release-process documentation (`.github/GOVERNANCE.md`
   and `.github/RELEASING.md`) describing roles, decision-making, and how versioned
   releases are cut.
+- Cost tracking for Claude Fable 5, priced at its published rates ($10 / 1M input,
+  $50 / 1M output). Prompt-cache tokens are derived from the input rate, so cache
+  reads and writes are costed automatically. Spans from Fable 5 sessions now show
+  real costs instead of `$0`.
 
 ### Changed
 
