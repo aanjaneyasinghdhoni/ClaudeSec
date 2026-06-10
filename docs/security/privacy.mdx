@@ -22,9 +22,14 @@ Before any attribute is persisted, broadcast, or exported, ClaudeSec redacts kno
 - Private keys (`-----BEGIN … PRIVATE KEY-----`), JWTs.
 - Provider keys — `sk-ant-…` (Anthropic), `sk-…` (OpenAI), AWS `AKIA…`/`ASIA…` access keys and `aws_secret_access_key` values.
 - Slack / Discord / Telegram webhook URLs.
+- Database connection strings — the inline `user:password@` in `mongodb://`, `postgres://`/`postgresql://`, `mysql://`, and `redis://` URLs.
 - Home paths, usernames, and email addresses.
 
 The attribute *shape* is preserved (e.g. `sk-‹redacted›`) so downstream collectors keep working. Disable with `CLAUDESEC_DISABLE_SCRUB=1` (not recommended).
+
+<Note>
+  This applies to **every** alert, including the new `critical` exfiltration tier. A critical alert stores only the **scrubbed / redacted** matched text — never the live secret. The detection records *that* a credential was being transmitted and what kind, not the credential value itself.
+</Note>
 
 <Warning>
   Scrubbing catches known secret *shapes* — it does not sanitize arbitrary source code or free-form prose. Keep ClaudeSec on a trusted, local machine.

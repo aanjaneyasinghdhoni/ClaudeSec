@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A `critical` severity tier — a new highest level above `high`, reserved for
+  active secret **exfiltration**: a credential, private key, or `.env` being
+  transmitted off the machine (piped to `curl`/`wget`/`nc`, `scp`/`rsync`/`sftp`
+  to a remote, posted via `requests`, or a key literal in a POST body). A secret
+  merely *present* in a file stays `high`; transmission is what escalates to
+  `critical`. Sixteen existing transmission rules were promoted and nine new
+  exfiltration rules added (25 critical rules total). Critical alerts render with
+  a distinct rose badge and are blocked alongside `high` in `enforce` mode.
+- Database connection-string scrubbing — inline `user:password@` credentials in
+  `mongodb://`, `postgres://`/`postgresql://`, `mysql://`, and `redis://` URLs are
+  now redacted before persistence, so a dumped `.env` no longer stores live DB
+  passwords. As with every alert, `critical` exfiltration alerts store only the
+  scrubbed/redacted matched text — never the live secret.
+
 ## [1.1.0] - 2026-06-09
 
 ### Added

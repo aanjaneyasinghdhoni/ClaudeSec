@@ -109,7 +109,7 @@ export const HARNESS_NAMES: Record<string, string> = {
 };
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
-  none: 'OK', low: 'LOW', medium: 'MED', high: 'HIGH',
+  none: 'OK', low: 'LOW', medium: 'MED', high: 'HIGH', critical: 'CRIT',
 };
 
 export const SEVERITY_COLORS: Record<Severity, { row: string; badge: string; text: string; icon: string }> = {
@@ -117,6 +117,9 @@ export const SEVERITY_COLORS: Record<Severity, { row: string; badge: string; tex
   low:    { row: 'bg-yellow-500/10 border-yellow-500/30 hover:bg-yellow-500/20', badge: 'bg-yellow-900/40 text-yellow-300', text: 'text-yellow-200', icon: 'text-yellow-400' },
   medium: { row: 'bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20', badge: 'bg-orange-900/40 text-orange-300', text: 'text-orange-200', icon: 'text-orange-400' },
   high:   { row: 'bg-red-500/10 border-red-500/40 hover:bg-red-500/20',          badge: 'bg-red-900/40 text-red-300',       text: 'text-red-200',   icon: 'text-red-400'    },
+  // critical = active exfiltration. A screaming rose/pink badge that pulses, kept
+  // visually distinct from high (red) so an operator can't mistake one for the other.
+  critical: { row: 'bg-rose-500/15 border-rose-500/60 hover:bg-rose-500/25',     badge: 'bg-rose-900/60 text-rose-200 border border-rose-500/60 animate-pulse', text: 'text-rose-200', icon: 'text-rose-400' },
 };
 
-export const SEV_RANK: Record<number, Severity> = { 3: 'high', 2: 'medium', 1: 'low', 0: 'none' };
+export const SEV_RANK: Record<number, Severity> = { 4: 'critical', 3: 'high', 2: 'medium', 1: 'low', 0: 'none' };

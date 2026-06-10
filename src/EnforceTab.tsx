@@ -184,7 +184,7 @@ export function EnforceTab() {
   // Aggregate counts by rule label + severity over the visible feed.
   const stats = useMemo(() => {
     const byRule = new Map<string, { count: number; severity: string }>();
-    const bySeverity: Record<string, number> = { high: 0, medium: 0, low: 0 };
+    const bySeverity: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const e of events) {
       const r = byRule.get(e.label) ?? { count: 0, severity: e.severity };
       r.count += 1;
@@ -398,8 +398,9 @@ export function EnforceTab() {
         </div>
 
         {/* Counts */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <StatCard label="Would-block events" value={stats.total} accent="var(--cs-accent)" icon={<Activity className="w-4 h-4" />} />
+          <StatCard label="Critical severity" value={stats.bySeverity.critical} accent="#f43f5e" icon={<ShieldAlert className="w-4 h-4" />} />
           <StatCard label="High severity" value={stats.bySeverity.high} accent="#ff3b5c" icon={<ShieldAlert className="w-4 h-4" />} />
           <StatCard label="Medium severity" value={stats.bySeverity.medium} accent="#f97316" icon={<AlertTriangle className="w-4 h-4" />} />
           <StatCard label="Low severity" value={stats.bySeverity.low} accent="#ffb224" icon={<AlertTriangle className="w-4 h-4" />} />

@@ -50,7 +50,7 @@ function useAlertCounts() {
           let high = 0;
           for (const a of alerts ?? []) {
             next[categorizeRule(a.ruleLabel ?? '')] += 1;
-            if (a.severity === 'high') high += 1;
+            if (a.severity === 'high' || a.severity === 'critical') high += 1;
           }
           setCounts(next);
           setHighTotal(high);

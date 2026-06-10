@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers, Sparkles, Loader2, Undo2 } from 'lucide-react';
 import { socket } from './socket';
+import type { Severity } from './shared/types';
 
 // How long a just-triaged row lingers (greyed, with an Undo affordance) before
 // it drops out of the list. Long enough to read "Dismissed — Undo" and react.
 const UNDO_WINDOW_MS = 5000;
 
-type Severity = 'none' | 'low' | 'medium' | 'high';
-type SeverityFilter = 'all' | 'high' | 'medium' | 'low';
+type SeverityFilter = 'all' | 'critical' | 'high' | 'medium' | 'low';
 
 type JudgeVerdict = 'malicious' | 'suspicious' | 'benign';
 interface JudgeResult {
@@ -73,6 +73,7 @@ const HARNESS_NAMES: Record<string, string> = {
 };
 
 const SEV_BADGE: Record<string, string> = {
+  critical: 'bg-rose-900/60 text-rose-200 border border-rose-500/60 animate-pulse',
   high:   'bg-red-900/40 text-red-300 border border-red-700/40',
   medium: 'bg-orange-900/40 text-orange-300 border border-orange-700/40',
   low:    'bg-yellow-900/40 text-yellow-300 border border-yellow-700/40',
@@ -80,6 +81,7 @@ const SEV_BADGE: Record<string, string> = {
 };
 
 const SEV_COUNT_COLOR: Record<string, string> = {
+  critical: 'bg-rose-600 text-white',
   high:   'bg-red-600 text-white',
   medium: 'bg-orange-500 text-white',
   low:    'bg-yellow-500 text-black',
@@ -87,10 +89,11 @@ const SEV_COUNT_COLOR: Record<string, string> = {
 };
 
 const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
-  { label: 'All',    value: 'all'    },
-  { label: 'High',   value: 'high'   },
-  { label: 'Medium', value: 'medium' },
-  { label: 'Low',    value: 'low'    },
+  { label: 'All',      value: 'all'      },
+  { label: 'Critical', value: 'critical' },
+  { label: 'High',     value: 'high'     },
+  { label: 'Medium',   value: 'medium'   },
+  { label: 'Low',      value: 'low'      },
 ];
 
 export function AlertsTab() {

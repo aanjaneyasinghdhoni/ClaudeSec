@@ -339,6 +339,8 @@ function pruneDeliveryLog() {
 // Both the per-session endpoint (computeHealthScore → /api/sessions/:id/health,
 // used by the CLI `report` command) and the session list (/api/sessions) call
 // this so the two paths can never diverge again.
+// `h` folds in the `critical` exfiltration tier (counted upstream as high), so a
+// confirmed exfil is penalized at least as hard as a high — never as a free pass.
 function healthFromCounts(h: number, m: number, l: number, alertCount: number): HealthBreakdown {
   const raw   = 100 - h * 15 - m * 8 - l * 3 - Math.min(alertCount * 10, 30);
   const score = Math.max(0, raw);
@@ -349,7 +351,7 @@ function healthFromCounts(h: number, m: number, l: number, alertCount: number): 
 function computeHealthScore(traceId: string): HealthBreakdown {
   const sev = db.prepare(`
     SELECT
-      SUM(CASE WHEN severity = 'high'   THEN 1 ELSE 0 END) AS h,
+      SUM(CASE WHEN severity IN ('high', 'critical') THEN 1 ELSE 0 END) AS h,
       SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS m,
       SUM(CASE WHEN severity = 'low'    THEN 1 ELSE 0 END) AS l
     FROM spans WHERE traceId = ?
@@ -781,7 +783,7 @@ function getWebhookUrl(): string {
 function getWebhookThreshold(): Severity {
   const t = process.env.CLAUDESEC_WEBHOOK_THRESHOLD
     ?? (getConfig.get('webhook.threshold')?.value ?? 'high');
-  return (['low', 'medium', 'high'].includes(t) ? t : 'high') as Severity;
+  return (['low', 'medium', 'high', 'critical'].includes(t) ? t : 'high') as Severity;
 }
 
 function maskWebhookUrl(url: string): string {
@@ -797,7 +799,7 @@ function maskWebhookUrl(url: string): string {
 // so every outbound-fetch sink — webhook sender/retry, OTLP forward, and the
 // optional LLM-as-judge — shares ONE copy of the security control.
 
-const SEV_RANK_MAP: Record<Severity, number> = { none: 0, low: 1, medium: 2, high: 3 };
+const SEV_RANK_MAP: Record<Severity, number> = { none: 0, low: 1, medium: 2, high: 3, critical: 4 };
 
 async function fireWebhook(alert: {
   ruleLabel: string; severity: Severity; harness: string;
@@ -816,7 +818,7 @@ async function fireWebhook(alert: {
   const isSlack   = webhookHost === 'hooks.slack.com';
   const isDiscord = webhookHost === 'discord.com' || webhookHost === 'discordapp.com';
 
-  const sevEmoji = alert.severity === 'high' ? '🔴' : alert.severity === 'medium' ? '🟠' : '🟡';
+  const sevEmoji = alert.severity === 'critical' ? '🚨' : alert.severity === 'high' ? '🔴' : alert.severity === 'medium' ? '🟠' : '🟡';
 
   let body: string;
   if (isSlack) {
@@ -839,7 +841,7 @@ async function fireWebhook(alert: {
       ],
     });
   } else if (isDiscord) {
-    const color = alert.severity === 'high' ? 0xef4444 : alert.severity === 'medium' ? 0xf97316 : 0xeab308;
+    const color = alert.severity === 'critical' ? 0xf43f5e : alert.severity === 'high' ? 0xef4444 : alert.severity === 'medium' ? 0xf97316 : 0xeab308;
     body = JSON.stringify({
       username: 'ClaudeSec',
       avatar_url: 'https://raw.githubusercontent.com/aanjaneyasinghdhoni/ClaudeSec/main/public/logo.png',
@@ -1065,10 +1067,11 @@ function detectSeverity(text: string): DetectHit {
 // ---------------------------------------------------------------------------
 
 const SEVERITY_STYLES: Record<Severity, { bg: string; border: string }> = {
-  none:   { bg: '',        border: '' },
-  low:    { bg: '#fefce8', border: '#eab308' },
-  medium: { bg: '#fff7ed', border: '#f97316' },
-  high:   { bg: '#fee2e2', border: '#ef4444' },
+  none:     { bg: '',        border: '' },
+  low:      { bg: '#fefce8', border: '#eab308' },
+  medium:   { bg: '#fff7ed', border: '#f97316' },
+  high:     { bg: '#fee2e2', border: '#ef4444' },
+  critical: { bg: '#4c0519', border: '#f43f5e' },
 };
 
 function recordToNode(r: SpanRecord) {
@@ -2042,7 +2045,8 @@ async function startServer() {
               const topThreats = Object.entries(threatsByRule).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([rule, count]) => ({ rule, count }));
 
               const harnesses = [...new Set(spans3.map(s => s.harness))];
-              const severity = alerts3.some(a => a.severity === 'high') ? 'high'
+              const severity = alerts3.some(a => a.severity === 'critical') ? 'critical'
+                : alerts3.some(a => a.severity === 'high') ? 'high'
                 : alerts3.some(a => a.severity === 'medium') ? 'medium'
                 : alerts3.some(a => a.severity === 'low') ? 'low'
                 : 'none';
@@ -2789,10 +2793,10 @@ service:
 
     const seen = new Set<string>();
     const colorMap: Record<Severity, string> = {
-      high: '#450a0a', medium: '#431407', low: '#422006', none: '#1e293b',
+      critical: '#4c0519', high: '#450a0a', medium: '#431407', low: '#422006', none: '#1e293b',
     };
     const borderMap: Record<Severity, string> = {
-      high: '#ef4444', medium: '#f97316', low: '#eab308', none: '#334155',
+      critical: '#f43f5e', high: '#ef4444', medium: '#f97316', low: '#eab308', none: '#334155',
     };
 
     for (const r of records) {

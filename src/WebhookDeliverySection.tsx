@@ -42,6 +42,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 const SEVERITY_CLS: Record<string, string> = {
+  critical: 'bg-rose-900/60 text-rose-200 border-rose-500 animate-pulse',
   high:   'bg-red-900/60 text-red-300 border-red-700',
   medium: 'bg-orange-900/60 text-orange-300 border-orange-700',
   low:    'bg-yellow-900/60 text-yellow-300 border-yellow-700',

@@ -14,7 +14,7 @@
 
 ClaudeSec is a self-hosted, local-first security-observability tool for AI coding agents
 (Claude Code, GitHub Copilot CLI, Codex, and any OpenTelemetry/OTLP-emitting agent). It
-ingests agent activity, evaluates each span against ~630 deterministic threat-detection
+ingests agent activity, evaluates each span against ~639 deterministic threat-detection
 rules, persists spans to a local SQLite database, streams them to a local dashboard, and
 can optionally **enforce** (block) tool calls before they run.
 
@@ -54,8 +54,8 @@ controls in any framework belong to the **deployer**. The split is summarized be
 | **Authentication** | Optional bearer token (`CLAUDESEC_TOKEN`) gating non-loopback API/MCP/OTLP access | SSO/MFA, identity lifecycle, and access reviews at the network/identity layer |
 | **Data at rest** | DB file created `0600` (owner-only); secret scrubbing before persistence | Disk/volume encryption (full-disk, LUKS, or equivalent); filesystem ACLs; backup protection |
 | **Data minimization & retention** | Secret/PII scrubbing on by default; count- and age-based pruning (`CLAUDESEC_MAX_SPANS`, `CLAUDESEC_RETENTION_DAYS`) | Set retention to match policy; document lawful basis; honor data-subject requests |
-| **Detection content** | ~630 maintained rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
-| **Enforcement** | Opt-in PreToolUse hook (one-command installer) + cross-agent MCP proxy; `monitor` default, `enforce` available; dashboard surfaces hook-registration status (no false green) | Decide policy; understand fail-open scope; layer an OS sandbox for hard isolation |
+| **Detection content** | ~639 maintained rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
+| **Enforcement** | Opt-in PreToolUse hook (one-command installer) + cross-agent MCP proxy; `monitor` default, `enforce` blocks high- and critical-severity (active exfiltration) tool calls; dashboard surfaces hook-registration status (no false green) | Decide policy; understand fail-open scope; layer an OS sandbox for hard isolation |
 | **Governance** | Audit-quality event logs and reporting to feed a program | Policies, risk register, roles/accountability, training, vendor management, audits |
 
 > **Read this first:** [`.github/SECURITY.md`](.github/SECURITY.md) states plainly that
@@ -80,7 +80,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **CC6.1** | Logical access security measures | Loopback-only default bind; **bind-refusal guard** that exits rather than expose a non-loopback host without a token; optional `CLAUDESEC_TOKEN`; `0600` DB file | MFA/SSO, identity store, password policy, privileged-access management |
 | **CC6.6** | Access restricted from external threats | No egress by default; the only outbound paths (`OTEL_FORWARD_URL`, `CLAUDESEC_JUDGE_URL`) are off unless set and pass an SSRF guard | Network segmentation, IDS/IPS, perimeter controls |
 | **CC6.7** | Transmission of data protected | Optional bearer-token auth on remote API/OTLP; SSRF guard blocks egress to private/loopback/metadata ranges | **TLS in transit** (terminate at a reverse proxy) — not provided by the tool |
-| **CC7.1** | Vulnerability & malware detection | ~630 threat rules covering credential theft, reverse shells, supply-chain attacks, exfiltration, cloud-metadata SSRF, container escape; MCP/skill static scanner | Endpoint EDR, host vulnerability scanning, patch cadence |
+| **CC7.1** | Vulnerability & malware detection | ~639 threat rules covering credential theft, reverse shells, supply-chain attacks, exfiltration (a dedicated `critical` tier for active off-machine secret transmission), cloud-metadata SSRF, container escape; MCP/skill static scanner | Endpoint EDR, host vulnerability scanning, patch cadence |
 | **CC7.2** | Monitoring for security events | Real-time span ingestion + live alerting; Prometheus `/metrics`; webhook delivery of HIGH alerts; honeytokens | Central SIEM, alert triage SLAs, on-call rotation |
 | **CC7.3 / CC7.4** | Incident evaluation, containment & response | Per-session security reports (`cli/init.mjs report`); enforcement hook/proxy can block a tool call before it runs (`enforce` mode), and the dashboard verifies the hook is registered before claiming blocking is active | Documented IR plan, runbooks, post-incident reviews |
 | **CC8.1** | Authorized, tested changes | The project's own SDLC: SHA-pinned GitHub Actions, `pnpm install --frozen-lockfile`, type-check + build gates, ReDoS rule self-test gate as a `prebuild` step | The deployer's own change-management process |
@@ -89,8 +89,8 @@ deployer obligation. Control identifiers are taken from the published frameworks
 
 | Annex A | Control | How ClaudeSec supports it | Deployer still owns |
 |---|---|---|---|
-| **A.8.11** | Data masking | **Secret scrubbing** (`server/scrub.ts`): keys, tokens, JWTs, cloud credentials, home paths, usernames, and emails are redacted before anything is stored, broadcast, or exported (on by default) | Classification scheme; verifying masking meets policy (scrubbing is best-effort regex) |
-| **A.8.12** | Data leakage prevention | Honeytokens fire a HIGH exfiltration alert on any match; exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
+| **A.8.11** | Data masking | **Secret scrubbing** (`server/scrub.ts`): keys, tokens, JWTs, cloud credentials, database connection-string credentials, home paths, usernames, and emails are redacted before anything is stored, broadcast, or exported (on by default). Alert `matchedText` is stored **already scrubbed** — even a `critical` exfiltration alert records the secret *type / redacted shape*, never the live value | Classification scheme; verifying masking meets policy (scrubbing is best-effort regex) |
+| **A.8.12** | Data leakage prevention | A dedicated `critical` severity tier flags active secret **exfiltration** — a credential / `.env` being transmitted off the machine (blocked in `enforce` mode); honeytokens fire an exfiltration alert on any match; broader exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
 | **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access | Log retention policy, tamper-evidence, time-source governance |
 | **A.8.16** | Monitoring activities | Continuous evaluation of every span against the rule set; live anomaly surfacing and alerting | SOC processes, correlation across other sources |
 | **A.8.23** | Web filtering / egress control | SSRF guard (`server/ssrf.ts`) DNS-resolves targets at call time and allows only globally-routable unicast addresses — blocking loopback, private, link-local, and `169.254.169.254` metadata; re-resolves on every request to defeat DNS rebinding | Proxy/filtering at the network layer |
@@ -183,8 +183,11 @@ deployer obligation. Control identifiers are taken from the published frameworks
   stored off the host.
 - **Secret & PII scrubbing.** On by default. Before any span is persisted, broadcast, or
   exported, `server/scrub.ts` redacts known secret formats (API keys, tokens, JWTs, cloud
-  credentials, private keys), home directory paths, OS usernames, and the local-part of
-  email addresses. Disable only with `CLAUDESEC_DISABLE_SCRUB=1`. Scrubbing is best-effort.
+  credentials, private keys, database connection-string credentials), home directory paths,
+  OS usernames, and the local-part of email addresses. The same scrubbing runs on alert
+  `matchedText`, so a `critical` exfiltration alert stores the secret *type / redacted shape*
+  only — never the live credential. Disable only with `CLAUDESEC_DISABLE_SCRUB=1`. Scrubbing
+  is best-effort.
 - **Retention.** `CLAUDESEC_MAX_SPANS` (count-based) and `CLAUDESEC_RETENTION_DAYS`
   (age-based) prune old data automatically; defaults are 50,000 spans and 30 days.
 - **Deletion.** Pruning is automatic; full wipe via `POST /api/reset` is **disabled by

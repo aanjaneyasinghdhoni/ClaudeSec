@@ -11,7 +11,10 @@
 // do NOT import anything from server.ts (it is the app entrypoint, not a
 // clean module).
 
-export type ExtraSeverity = 'low' | 'medium' | 'high';
+// `critical` is the highest tier, reserved for active secret EXFILTRATION — a
+// credential / `.env` being transmitted off the machine (piped/posted/uploaded/
+// scp'd to a network sink). A secret merely present in a file stays `high`.
+export type ExtraSeverity = 'low' | 'medium' | 'high' | 'critical';
 
 export interface ExtraRule {
   pattern: RegExp;
@@ -225,7 +228,7 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // SSH private key file reads (specific key names not already caught)
   { pattern: /\bcat\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key read via cat' },
   { pattern: /\bcp\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key copy' },
-  { pattern: /\bscp\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key remote copy' },
+  { pattern: /\bscp\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'critical', label: 'SSH private key remote copy' },
   { pattern: /\bbase64\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key base64 encoding' },
   { pattern: /\bstrings\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key strings extraction' },
   // /etc/shadow read (the existing rule matches access, add targeted read forms)
@@ -233,8 +236,8 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /\bunshadow\b/i, severity: 'high', label: 'Unshadow password file (passwd+shadow merge)' },
   { pattern: /john\s+.*--format[^\n]{0,60}shadow/i, severity: 'high', label: 'John-the-Ripper shadow hash crack' },
   // .env exfiltration (read + send patterns not caught by existing dotenv rule)
-  { pattern: /\benv\b[^\n]{0,40}\|\s*(curl|wget|nc|ncat|python|ruby)\b/i, severity: 'high', label: '.env / env vars piped to exfil tool' },
-  { pattern: /printenv[^\n]{0,60}\|\s*(curl|wget|nc|ncat)\b/i, severity: 'high', label: 'printenv output piped to exfil' },
+  { pattern: /\benv\b[^\n]{0,40}\|\s*(curl|wget|nc|ncat|python|ruby)\b/i, severity: 'critical', label: '.env / env vars piped to exfil tool' },
+  { pattern: /printenv[^\n]{0,60}\|\s*(curl|wget|nc|ncat)\b/i, severity: 'critical', label: 'printenv output piped to exfil' },
   { pattern: /\benv\s+\|\s*grep\s+-[iEP]{1,3}\s+['"]?(secret|token|key|pass|pwd|api)/i, severity: 'high', label: 'Env secret grep (targeted sweep)' },
   // git credential theft
   { pattern: /git\s+config\s+--(?:global|local|system)\s+.*credential/i, severity: 'high', label: 'git credential config read/write' },
@@ -256,8 +259,8 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /kubectl\s+config\s+(view|export)\b/i, severity: 'high', label: 'kubectl config view (credential dump)' },
   { pattern: /\b(cat|base64|cp|curl)\b[^\n]{0,60}\.kube\/config\b/i, severity: 'high', label: 'kubeconfig file direct read/copy' },
   // High-signal secret formats in exfil context
-  { pattern: /AKIA[0-9A-Z]{16}[^\n]{0,120}(curl|wget|nc|POST|exfil)/i, severity: 'high', label: 'AWS AKIA key in exfil context' },
-  { pattern: /ghp_[A-Za-z0-9]{36}[^\n]{0,120}(curl|wget|nc|POST)/i, severity: 'high', label: 'GitHub PAT in exfil context' },
+  { pattern: /AKIA[0-9A-Z]{16}[^\n]{0,120}(curl|wget|nc|POST|exfil)/i, severity: 'critical', label: 'AWS AKIA key in exfil context' },
+  { pattern: /ghp_[A-Za-z0-9]{36}[^\n]{0,120}(curl|wget|nc|POST)/i, severity: 'critical', label: 'GitHub PAT in exfil context' },
   { pattern: /xoxb-[A-Za-z0-9-]{40,}/i, severity: 'high', label: 'Slack bot token detected' },
   { pattern: /xoxp-[A-Za-z0-9-]{40,}/i, severity: 'high', label: 'Slack user OAuth token detected' },
   { pattern: /-----BEGIN OPENSSH PRIVATE KEY-----/, severity: 'high', label: 'OpenSSH private key block detected' },
@@ -390,25 +393,25 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // DNS exfil via dig with encoded subdomain
   { pattern: /dig\s+[+@\w\s]*[a-zA-Z0-9+\/=]{20,}\.[a-z.-]+/i, severity: 'high', label: 'DNS exfiltration via dig (encoded subdomain)' },
   // scp of sensitive dot-files or directories to remote
-  { pattern: /scp\s+[^|]*~\/\.(ssh|aws|env|config|gnupg|netrc)\S*\s+\w+@[\w.-]+:/i, severity: 'high', label: 'scp sensitive dotfile to remote host' },
+  { pattern: /scp\s+[^|]*~\/\.(ssh|aws|env|config|gnupg|netrc)\S*\s+\w+@[\w.-]+:/i, severity: 'critical', label: 'scp sensitive dotfile to remote host' },
   // scp of .env or secrets file to remote host
-  { pattern: /scp\s+[^|]*\.(env|pem|key|p12|pfx)\s+\w+@[\w.-]+:/i, severity: 'high', label: 'scp secrets/cert file to remote host' },
+  { pattern: /scp\s+[^|]*\.(env|pem|key|p12|pfx)\s+\w+@[\w.-]+:/i, severity: 'critical', label: 'scp secrets/cert file to remote host' },
   // rsync of sensitive dirs to remote
-  { pattern: /rsync\s+[^|]*~\/\.(ssh|aws|gnupg)\s+\w+@[\w.-]+:/i, severity: 'high', label: 'rsync sensitive dotdir to remote host' },
+  { pattern: /rsync\s+[^|]*~\/\.(ssh|aws|gnupg)\s+\w+@[\w.-]+:/i, severity: 'critical', label: 'rsync sensitive dotdir to remote host' },
   // tar piped to curl (archive and upload)
   { pattern: /tar\s+[czjJf]*\s*-?\s*[^|]+\|\s*curl\b/i, severity: 'high', label: 'tar archive piped to curl upload' },
   // base64 encode file then curl/wget
   { pattern: /base64\s+[^|]*\|\s*(curl|wget)\b/i, severity: 'high', label: 'base64 encoded file piped to curl/wget' },
   // base64 encode file then pipe to nc/netcat
-  { pattern: /base64\s+[^|]*\|\s*nc\b/i, severity: 'high', label: 'base64 encoded file piped to netcat' },
+  { pattern: /base64\s+[^|]*\|\s*nc\b/i, severity: 'critical', label: 'base64 encoded file piped to netcat' },
   // nc / netcat file transfer outbound with explicit remote host
-  { pattern: /nc\s+[^|]*-[we]\s+\d+\s+<\s*[\w.\/~-]+/i, severity: 'high', label: 'netcat file transfer to remote host' },
+  { pattern: /nc\s+[^|]*-[we]\s+\d+\s+<\s*[\w.\/~-]+/i, severity: 'critical', label: 'netcat file transfer to remote host' },
   // nc pipe outbound to remote (not localhost)
-  { pattern: /\|\s*nc\s+(?!localhost|127\.0\.0\.1)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\s+\d+/i, severity: 'high', label: 'pipe data to netcat remote IP' },
+  { pattern: /\|\s*nc\s+(?!localhost|127\.0\.0\.1)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\s+\d+/i, severity: 'critical', label: 'pipe data to netcat remote IP' },
   // uploading ~/.ssh directory/keys
-  { pattern: /curl\s+[^|]*(--data|--upload-file|-T)\s+[^|]*~\/\.ssh\//i, severity: 'high', label: 'curl upload of ~/.ssh content' },
+  { pattern: /curl\s+[^|]*(--data|--upload-file|-T)\s+[^|]*~\/\.ssh\//i, severity: 'critical', label: 'curl upload of ~/.ssh content' },
   // uploading .env file externally
-  { pattern: /curl\s+[^|]*(--data|--upload-file|-T|-d)\s+[^|]*\.env\b/i, severity: 'high', label: 'curl exfil of .env file' },
+  { pattern: /curl\s+[^|]*(--data|--upload-file|-T|-d)\s+[^|]*\.env\b/i, severity: 'critical', label: 'curl exfil of .env file' },
   // Telegram bot webhook used for exfil
   { pattern: /curl\s+[^|]*https?:\/\/api\.telegram\.org\/bot[\w:]+\/sendMessage/i, severity: 'high', label: 'Telegram bot API used for data exfil' },
   // Discord webhook POST
@@ -416,13 +419,13 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // Slack webhook POST with data
   { pattern: /curl\s+[^|]*-d\s+[^|]*https?:\/\/hooks\.slack\.com\/services\//i, severity: 'high', label: 'Slack webhook used for data exfil' },
   // wget to upload file to external
-  { pattern: /wget\s+[^|]*--post-file=[\w.\/~-]+\s+https?:\/\/(?!localhost|127\.0\.0\.1)/i, severity: 'high', label: 'wget --post-file exfiltration' },
+  { pattern: /wget\s+[^|]*--post-file=[\w.\/~-]+\s+https?:\/\/(?!localhost|127\.0\.0\.1)/i, severity: 'critical', label: 'wget --post-file exfiltration' },
   // python requests/urllib POST of file content to external
-  { pattern: /requests\.(post|put)\s*\([^)]*open\s*\([^)]*\.(env|pem|key|ssh)/i, severity: 'high', label: 'Python requests POST of sensitive file' },
+  { pattern: /requests\.(post|put)\s*\([^)]*open\s*\([^)]*\.(env|pem|key|ssh)/i, severity: 'critical', label: 'Python requests POST of sensitive file' },
   // exfil via /dev/tcp bash redirection to remote
   { pattern: /\/dev\/tcp\/(?!localhost|127\.0\.0\.1)[\w.-]+\/\d{2,5}/i, severity: 'high', label: 'bash /dev/tcp outbound connection for exfil' },
   // sftp put of sensitive file to remote
-  { pattern: /sftp\s+[^|]*put\s+[^|]*\.(env|pem|key|ssh|p12)\b/i, severity: 'high', label: 'sftp PUT of secrets/cert file' },
+  { pattern: /sftp\s+[^|]*put\s+[^|]*\.(env|pem|key|ssh|p12)\b/i, severity: 'critical', label: 'sftp PUT of secrets/cert file' },
   // curl upload entire home directory tarball
   { pattern: /tar\s+[^|]*~\s+[^|]*\|\s*curl\b/i, severity: 'high', label: 'home directory tarball upload via curl' },
   // xxd/hexdump piped to curl/nc for binary exfil
@@ -563,4 +566,21 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /\bptrace\b.*PTRACE_ATTACH/i, severity: 'high', label: 'ptrace ATTACH (process injection)' },
   { pattern: /\/proc\/[0-9]+\/mem\b/i, severity: 'high', label: 'direct /proc/PID/mem access (process memory write)' },
   { pattern: /echo\s+.+>>\s*\/root\/\.ssh\/authorized_keys/i, severity: 'high', label: 'root SSH authorized_keys append' },
+
+  // ── CRITICAL: active secret EXFILTRATION (credential transmitted off-machine) ──
+  // A secret merely present in a file stays 'high'; these patterns each pair a
+  // credential / .env / private key with a NETWORK SINK (pipe to curl|wget|nc,
+  // scp/rsync/sftp to a remote, requests.post, or a literal key in a POST body).
+  // .env.example is conventionally non-secret and is deliberately NOT matched:
+  // suffix groups enumerate real env variants (no "example") and a boundary char
+  // is consumed after the path so "cat .env.example | curl" cannot fire.
+  { pattern: /\.aws\/credentials\b[^|\n]{0,60}\|\s*(curl|wget|nc|ncat)\b/i, severity: 'critical', label: 'AWS credentials file piped to network sink' },
+  { pattern: /\b(cat|base64|strings|xxd)\b[^|\n]{0,40}(id_(rsa|ed25519|ecdsa|dsa)|\.pem)\b[^|\n]{0,20}\|\s*(curl|wget|nc|ncat)\b/i, severity: 'critical', label: 'SSH private key / PEM piped to network sink' },
+  { pattern: /curl\s+[^|\n]{0,160}(-d|--data(-raw|-binary)?)\s+[^|\n]{0,80}(AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{8,40}|ghp_[A-Za-z0-9]{20,40}|AIza[0-9A-Za-z_-]{20,40})[^|\n]{0,120}https?:\/\/(?!localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i, severity: 'critical', label: 'API key literal in curl POST to external host' },
+  { pattern: /rsync\s+[^|\n]{0,80}\.env(\.(local|production|prod|staging))?[\s'"][^|\n]{0,40}[\w.-]+@[\w.-]+:/i, severity: 'critical', label: '.env file rsync to remote host' },
+  { pattern: /base64\s+[^|\n]{0,60}(\.env|id_(rsa|ed25519|ecdsa|dsa)|\.pem|credentials)\b[^|\n]{0,40}\|\s*(curl|wget)\b/i, severity: 'critical', label: 'credential file base64-piped to curl/wget' },
+  { pattern: /curl\s+[^|\n]{0,200}-----BEGIN\s[A-Z ]{0,30}PRIVATE KEY-----/i, severity: 'critical', label: 'private key PEM in curl POST body' },
+  { pattern: /open\s*\(\s*['"][^'"\n]{0,80}(\.env|credentials|id_rsa|\.pem)[^'"\n]{0,20}['"][^\n]{0,200}(requests\.(post|put)|urllib\.request\.urlopen|urlopen)\s*\(/i, severity: 'critical', label: 'Python reads credential file then POSTs to network' },
+  { pattern: /\bcat\s+[^|\n]{0,40}\.env(\.(local|production|prod|dev|staging))?[\s'";>][^|\n]{0,20}\|\s*(curl|wget|nc|ncat)\b/i, severity: 'critical', label: '.env file read piped to network sink' },
+  { pattern: /curl\s+[^|\n]{0,80}(--upload-file|-T)\s+[^|\n]{0,60}(id_(rsa|ed25519|ecdsa|dsa)|\.pem)\b/i, severity: 'critical', label: 'curl upload of SSH private key / PEM' },
 ];

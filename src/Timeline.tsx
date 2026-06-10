@@ -64,7 +64,7 @@ export function Timeline({
   const SVG_H   = pagedTimed.length * ROW_H + AXIS_H + 8;
 
   const sevColor = (sev: Severity) =>
-    sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
+    sev === 'critical' ? '#f43f5e' : sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
 
   return (
     <div className="flex-1 overflow-auto p-5" style={{ background: 'var(--cs-bg-primary)' }}>

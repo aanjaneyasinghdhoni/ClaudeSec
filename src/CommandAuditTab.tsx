@@ -136,7 +136,8 @@ export function CommandAuditTab() {
                   </td>
                   <td className="px-3 py-2.5">
                     <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
-                      cmd.severity === 'high' ? 'bg-red-900/40 text-red-300'
+                      cmd.severity === 'critical' ? 'bg-rose-900/60 text-rose-200 border border-rose-500/60 animate-pulse'
+                      : cmd.severity === 'high' ? 'bg-red-900/40 text-red-300'
                       : cmd.severity === 'medium' ? 'bg-orange-900/40 text-orange-300'
                       : cmd.severity === 'low' ? 'bg-yellow-900/40 text-yellow-300'
                       : 'bg-slate-800 text-slate-500'

@@ -8,8 +8,10 @@
  *
  * Produces  rules-enforcement.json  (a GITIGNORED generated artifact) — a flat
  * array of { source, flags, severity, label, action } objects, where:
- *   action = 'block'  for severity === 'high'   (P0: the hook only blocks HIGH)
- *   action = 'alert'  for everything else       (monitor / alert only)
+ *   action = 'block'  for severity 'high' or 'critical'  (the hook blocks the
+ *                                                          two top tiers: high
+ *                                                          threats + active exfil)
+ *   action = 'alert'  for everything else                (monitor / alert only)
  *
  * Rule source: SEVERITY_RULES imported directly from server/detection.ts.
  * detection.ts is side-effect-free (no DB, no server setup), so importing it
@@ -35,7 +37,7 @@ interface EnforcementRule {
 }
 
 function toEnforcementRule(r: { pattern: RegExp; severity: string; label: string }): EnforcementRule {
-  const action = r.severity === 'high' ? 'block' : 'alert';
+  const action = (r.severity === 'high' || r.severity === 'critical') ? 'block' : 'alert';
   return {
     source: r.pattern.source,
     flags: r.pattern.flags,
@@ -53,10 +55,10 @@ function main(): void {
 
   console.log('ClaudeSec — build-enforcement-rules');
   console.log('-----------------------------------');
-  console.log(`  total rules    : ${all.length}`);
-  console.log(`  block (high)   : ${blockCount}`);
-  console.log(`  alert (other)  : ${all.length - blockCount}`);
-  console.log(`  written to     : ${OUT_PATH}`);
+  console.log(`  total rules        : ${all.length}`);
+  console.log(`  block (high+crit)  : ${blockCount}`);
+  console.log(`  alert (other)      : ${all.length - blockCount}`);
+  console.log(`  written to         : ${OUT_PATH}`);
 }
 
 main();
