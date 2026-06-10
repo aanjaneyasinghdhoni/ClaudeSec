@@ -10,11 +10,14 @@
  *   claudesec export [file]— download all spans as JSON (default: claudesec-export-<ts>.json)
  *   claudesec reset        — confirm + wipe all spans, sessions, and alerts
  *   claudesec open         — open dashboard in the default browser
+ *   claudesec install-hook — register the PreToolUse enforcement hook (asks first)
+ *   claudesec uninstall-hook — remove the enforcement hook entries
  */
 import { createInterface } from 'readline';
 import { execSync }        from 'child_process';
 import * as fs             from 'fs';
 import { installService, uninstallService, cleanupLegacyOtelEnv, platformSupport, servicePaths } from './service.js';
+import { installHook, uninstallHook } from './installHook.js';
 
 const PORT     = process.env.CLAUDESEC_PORT ?? '3000';
 const BASE_URL = `http://localhost:${PORT}`;
@@ -591,7 +594,13 @@ function printHelp() {
   \x1b[33mclaudesec top\x1b[0m [--by spans|threats|health] [--limit N]
   \x1b[33mclaudesec report\x1b[0m <sessionId|latest> [--out file.md]
 
-\x1b[1mEnforcement (cross-agent):\x1b[0m
+\x1b[1mEnforcement:\x1b[0m
+  \x1b[33mclaudesec install-hook\x1b[0m [--yes]    Register the PreToolUse enforcement hook with
+                                       Claude Code (asks before editing settings.json).
+                                       Blocking is fail-open by design; rule-based
+                                       blocking needs enforce mode (Enforce tab / CLAUDESEC_MODE).
+  \x1b[33mclaudesec uninstall-hook\x1b[0m [--purge]  Remove only our hook entries (--purge also
+                                       deletes ~/.claudesec/hooks).
   \x1b[33mclaudesec mcp-proxy\x1b[0m -- <mcp-server-cmd> [args...]   Gate any MCP server's
                                        tool calls against ClaudeSec rules (stdio).
                                        Point an agent's mcpServers config here instead
@@ -625,6 +634,8 @@ async function main() {
     case 'report':    await cmdReport(rest);          break;
     case 'processes':  await cmdProcesses(rest);        break;
     case 'bookmarks':  await cmdBookmarks(rest);        break;
+    case 'install-hook':   await installHook(rest);       break;
+    case 'uninstall-hook': await uninstallHook(rest);     break;
     case '--help':
     case '-h':
     case 'help':     printHelp();                    break;

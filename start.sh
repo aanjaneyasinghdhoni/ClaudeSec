@@ -239,6 +239,13 @@ echo
 echo "Starting ClaudeSec — dashboard at $URL"
 echo "(Press Ctrl-C to stop.)"
 echo
+# Optional next step: the dashboard only watches by default. To let ClaudeSec
+# BLOCK dangerous tool calls before they run, register the PreToolUse hook with
+# Claude Code. It asks before touching your settings and is fail-open by design.
+# We only print the hint — we never install it for you.
+echo "Tip: to block dangerous tool calls (not just watch), register the hook:"
+echo "       node cli/init.mjs install-hook"
+echo
 ( sleep 2; open_browser "$URL" ) >/dev/null 2>&1 &
 
 exec pnpm dev
