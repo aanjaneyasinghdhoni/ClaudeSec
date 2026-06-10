@@ -122,10 +122,12 @@ function listBackups(settingsFile: string): string[] {
       const matchers = ourEntries(settings).map((e: any) => e.matcher).sort();
       assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit']);
     });
-    check('fresh install: command runs the installed hook via node', () => {
+    check('fresh install: command runs the installed hook via node, path quoted', () => {
       const cmd = ourEntries(settings)[0].hooks[0].command;
-      assert.ok(cmd.startsWith('node '), `command was: ${cmd}`);
-      assert.ok(cmd.includes(path.join(s.home, 'hooks', 'claudesec-enforce.cjs')), cmd);
+      const hookPath = path.join(s.home, 'hooks', 'claudesec-enforce.cjs');
+      // Path must be double-quoted so a space in $HOME can't split the argument
+      // and silently disable the fail-open hook.
+      assert.strictEqual(cmd, `node "${hookPath}"`, `command was: ${cmd}`);
     });
     check('fresh install: copies hook script + rules snapshot next to it', () => {
       assert.ok(fs.existsSync(path.join(s.home, 'hooks', 'claudesec-enforce.cjs')), 'hook missing');
@@ -159,6 +161,38 @@ function listBackups(settingsFile: string): string[] {
     });
     check('re-run: a settings backup was taken on the second run', () => {
       assert.ok(listBackups(s.settings).length >= 1, 'expected at least one .bak- file');
+    });
+  } finally { cleanup(s); }
+}
+
+// ── Test 2b: a stale entry under an OLD matcher string is replaced, not orphaned
+{
+  const s = makeSandbox();
+  try {
+    // Seed a settings.json carrying our hook under a PREVIOUS matcher string
+    // (the editing matcher before NotebookEdit was added). The install must strip
+    // it — matching on the command, not the matcher — and leave exactly two.
+    fs.mkdirSync(path.dirname(s.settings), { recursive: true });
+    const staleHook = path.join(s.home, 'hooks', 'claudesec-enforce.cjs');
+    fs.writeFileSync(s.settings, JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'hook', command: `node "${staleHook}"` }] },
+        ],
+      },
+    }, null, 2));
+
+    const r = runCli(['install-hook', '--yes'], s.env);
+    check('stale-matcher: exits 0', () => assert.strictEqual(r.status, 0, r.stderr));
+
+    const settings = readJson(s.settings);
+    check('stale-matcher: exactly two of our entries remain (no orphaned third)', () => {
+      assert.strictEqual(ourEntries(settings).length, 2);
+      assert.strictEqual(preToolUse(settings).length, 2);
+    });
+    check('stale-matcher: the old Edit|Write|MultiEdit entry is gone', () => {
+      const matchers = ourEntries(settings).map((e: any) => e.matcher).sort();
+      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit']);
     });
   } finally { cleanup(s); }
 }
