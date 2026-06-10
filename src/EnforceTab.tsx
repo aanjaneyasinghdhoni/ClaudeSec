@@ -13,6 +13,10 @@ interface EnforceLogEvent {
   severity: string;
   command: string;
   wouldBlock: boolean;
+  // True when the call was actually denied (catastrophic floor or enforce rule).
+  // Optional for back-compat with events buffered before the server set it; the
+  // feed falls back to inferring it from mode.
+  blocked?: boolean;
 }
 
 type ModeSource = 'config-file' | 'env' | 'default';
@@ -448,7 +452,12 @@ export function EnforceTab() {
             </div>
           ) : (
             <div className="divide-y" style={{ borderColor: 'var(--cs-border)' }}>
-              {events.slice(0, 200).map((e, i) => (
+              {events.slice(0, 200).map((e, i) => {
+                // Key the pill off the explicit `blocked` flag. The catastrophic
+                // floor blocks even in monitor mode, so `mode` alone mislabels it;
+                // fall back to mode only for legacy events that lack the flag.
+                const wasBlocked = e.blocked ?? (e.mode === 'enforce');
+                return (
                 <div key={`${e.ts}-${i}`} className="px-4 py-2.5 flex items-start gap-3" style={{ borderColor: 'var(--cs-border)' }}>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 mt-0.5 ${SEV_BADGE[e.severity] ?? 'bg-slate-800 text-slate-400'}`}>{e.severity}</span>
                   <div className="min-w-0 flex-1">
@@ -457,19 +466,20 @@ export function EnforceTab() {
                       <span
                         className="text-[10px] px-1.5 py-0.5 rounded font-mono"
                         style={
-                          e.mode === 'enforce'
+                          wasBlocked
                             ? { background: 'rgba(244,63,94,0.15)', color: '#ff6b81' }
                             : { background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-faint)' }
                         }
                       >
-                        {e.mode === 'enforce' ? 'blocked' : 'would-block'}
+                        {wasBlocked ? 'blocked' : 'would-block'}
                       </span>
                     </div>
                     <code className="text-[11px] font-mono block truncate mt-0.5" style={{ color: 'var(--cs-text-muted)' }}>{e.command}</code>
                   </div>
                   <span className="text-[10px] font-mono shrink-0 mt-0.5" style={{ color: 'var(--cs-text-faint)' }} title={fmtTime(e.ts)}>{relTime(e.ts)}</span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
