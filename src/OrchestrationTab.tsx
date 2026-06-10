@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Terminal, FileText } from 'lucide-react';
+import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check } from 'lucide-react';
 import { socket } from './socket';
 import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
 import { ExperimentalBadge } from './ExperimentalBadge';
 import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
 import { useDebouncedCallback } from './lib/useDebouncedCallback';
+import { SpanSearchDrawer, type SpanSearchTarget } from './SpanSearchDrawer';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -96,9 +97,21 @@ function harnessShort(id: string) {
 
 function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: number; key?: React.Key }) {
   const [expanded, setExpanded] = useState(depth < 2);
+  const [copied, setCopied] = useState(false);
   const color = HARNESS_COLORS[node.harness] ?? '#64748b';
   const hasChildren = node.children.length > 0;
   const synthetic = node.synthetic === true;
+
+  // No `onSelectSession` prop reaches OrchestrationTab today, so "view session"
+  // is a copy-traceId affordance rather than a navigation. See the App-level
+  // wiring note at the bottom of this file.
+  const copyTrace = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard?.writeText(node.traceId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }).catch(() => {});
+  };
 
   return (
     <div>
@@ -140,13 +153,26 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
 
         {/* Inferred marker */}
         {synthetic && (
-          <span className="text-[10px] uppercase tracking-wide font-mono text-slate-500 bg-slate-800/60 border border-dashed border-slate-600 px-1.5 py-0.5 rounded shrink-0">
+          <span
+            className="text-[10px] uppercase tracking-wide font-mono text-slate-500 bg-slate-800/60 border border-dashed border-slate-600 px-1.5 py-0.5 rounded shrink-0"
+            title="Inferred grouping — the server guessed this parentage; no observed cross-trace spawn edge exists"
+          >
             inferred
           </span>
         )}
 
         {/* Stats pills */}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          {/* View session — copies the traceId until App wires real navigation. */}
+          <button
+            type="button"
+            onClick={copyTrace}
+            className="flex items-center gap-1 text-[10px] font-mono text-slate-500 hover:text-slate-300 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 px-1.5 py-0.5 rounded transition-colors"
+            title={`Copy trace ID ${node.traceId} (session navigation needs App-level wiring)`}
+          >
+            {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+            {copied ? 'copied' : 'trace'}
+          </button>
           <span className="text-xs text-slate-500 font-mono">{node.spanCount} spans</span>
           {node.threatCount > 0 && (
             <span className="text-xs text-red-400 font-mono font-bold bg-red-950/40 px-1.5 py-0.5 rounded">
@@ -256,6 +282,7 @@ function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
 export function OrchestrationTab() {
   const [data, setData] = useState<OrchData>({ agents: [], edges: [], tools: [], spawnTree: [] });
   const [toolView, setToolView] = useState<'table' | 'heatmap'>('table');
+  const [drawer, setDrawer] = useState<SpanSearchTarget | null>(null);
 
   const fetchData = () =>
     fetch('/api/orchestration')
@@ -507,7 +534,9 @@ export function OrchestrationTab() {
                   return (
                     <tr
                       key={`${tool.toolName}::${tool.harness}`}
-                      className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
+                      onClick={() => setDrawer({ query: tool.toolName, title: tool.toolName, kind: 'Tool' })}
+                      className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors cursor-pointer"
+                      title="View spans for this tool"
                     >
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
@@ -552,6 +581,9 @@ export function OrchestrationTab() {
       <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
         <FileAccessPanel />
       </div>
+
+      {/* Tool drill-down drawer — opened by clicking a tool-inventory row. */}
+      <SpanSearchDrawer target={drawer} onClose={() => setDrawer(null)} />
     </div>
   );
 }

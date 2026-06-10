@@ -22,7 +22,9 @@ interface PinnedSession {
 export function BookmarksTab({
   onSelectSession,
 }: {
-  onSelectSession?: (traceId: string) => void;
+  // `spanId` is optional: passed for a span bookmark so the caller can select
+  // and highlight that span once the scoped graph loads.
+  onSelectSession?: (traceId: string, spanId?: string) => void;
 }) {
   const [bookmarks,    setBookmarks]    = useState<BookmarkRow[]>([]);
   const [pinnedSessions, setPinnedSessions] = useState<PinnedSession[]>([]);
@@ -216,9 +218,9 @@ export function BookmarksTab({
                     </code>
                     {bm.traceId && (
                       <button
-                        onClick={() => onSelectSession?.(bm.traceId)}
+                        onClick={() => onSelectSession?.(bm.traceId, bm.spanId)}
                         className="flex items-center gap-1 text-xs text-slate-500 hover:text-blue-400 transition-colors"
-                        title="Jump to session"
+                        title="Jump to this span in the session"
                       >
                         <ExternalLink className="w-3 h-3" />
                         <span className="font-mono truncate max-w-[120px]">{bm.traceId.slice(0, 12)}…</span>

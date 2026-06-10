@@ -75,6 +75,10 @@ export interface RouteContext {
     matchedText: string;
     traceId: string;
   }) => Promise<void>;
+  /** Scrub free-form enforcement-log text (home paths, secrets) using the live
+   *  scrubOptions; honours CLAUDESEC_DISABLE_SCRUB, same as the span pipeline
+   *  (owned by index.ts). */
+  scrubEnforceText?: (s: string) => string;
   /** Append an enforcement-log event to the in-memory ring buffer (owned by index.ts). */
   appendEnforceLog?: (evt: EnforceLogEvent) => void;
   /** Read the most-recent N enforcement-log events, newest first (owned by index.ts). */

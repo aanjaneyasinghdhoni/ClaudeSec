@@ -1,6 +1,10 @@
-import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers, Sparkles, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers, Sparkles, Loader2, Undo2 } from 'lucide-react';
 import { socket } from './socket';
+
+// How long a just-triaged row lingers (greyed, with an Undo affordance) before
+// it drops out of the list. Long enough to read "Dismissed — Undo" and react.
+const UNDO_WINDOW_MS = 5000;
 
 type Severity = 'none' | 'low' | 'medium' | 'high';
 type SeverityFilter = 'all' | 'high' | 'medium' | 'low';
@@ -19,6 +23,18 @@ type JudgeState =
   | { status: 'loading' }
   | { status: 'done'; result: JudgeResult }
   | { status: 'error'; message: string };
+
+// A row that was just dismissed / marked FP. It stays rendered (greyed, with an
+// Undo button) for UNDO_WINDOW_MS so the action reads as deliberate feedback
+// rather than an instant vanish. `row` is the snapshot to keep showing while
+// the real list no longer returns it; `patch` is what was applied (so Undo can
+// send the inverse). `fingerprint` is set when the action targeted a group.
+interface PendingTriage {
+  kind: 'dismissed' | 'fp';
+  row: AlertRow;
+  patch: { dismissed?: boolean; fp?: boolean };
+  fingerprint?: string;
+}
 
 const JUDGE_VERDICT_STYLE: Record<JudgeVerdict, string> = {
   malicious:  'bg-red-900/40 text-red-300 border border-red-700/50',
@@ -84,6 +100,10 @@ export function AlertsTab() {
   const [showDismissed,   setShowDismissed]   = useState(false);
   const [groupByRule,     setGroupByRule]     = useState(false);
   const [triaging,        setTriaging]        = useState<Set<number>>(new Set());
+  // Rows lingering in the undo window, keyed by alert id. Survive a refetch so
+  // the user sees the greyed "Undo" affordance instead of an instant vanish.
+  const [pending,         setPending]         = useState<Record<number, PendingTriage>>({});
+  const undoTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   // LLM-as-judge: off unless a judge URL is configured. judgeStates is keyed by
   // alert id so each row tracks its own on-demand verdict.
   const [judgeEnabled,    setJudgeEnabled]    = useState(false);
@@ -117,17 +137,64 @@ export function AlertsTab() {
     return () => { socket.off('alerts-update', handler); };
   }, [severityFilter, showDismissed, groupByRule]);
 
-  const triage = async (id: number, patch: { dismissed?: boolean; fp?: boolean }) => {
+  // Clear any in-flight undo timers when the component unmounts.
+  useEffect(() => {
+    const timers = undoTimers.current;
+    return () => { for (const t of Object.values(timers)) clearTimeout(t); };
+  }, []);
+
+  const patchAlert = (id: number, body: { dismissed?: boolean; fp?: boolean; fingerprint?: string }) =>
+    fetch(`/api/alerts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  // Drop a lingering row from the undo window and resync with the server.
+  const finalizePending = (id: number) => {
+    const t = undoTimers.current[id];
+    if (t) { clearTimeout(t); delete undoTimers.current[id]; }
+    setPending(prev => { const next = { ...prev }; delete next[id]; return next; });
+    fetchAlerts(severityFilter, showDismissed, groupByRule);
+  };
+
+  const triage = async (alert: AlertRow, patch: { dismissed?: boolean; fp?: boolean }) => {
+    const id = alert.id;
+    // In the grouped view a row stands in for every duplicate sharing its
+    // fingerprint — send it so the server hits them all, not just MIN(id).
+    const fingerprint = groupByRule ? alert.fingerprint : undefined;
+    // Turning dismiss/FP *on* removes the row from the default list; keep it
+    // visible with an Undo affordance. Toggling *off* (restore / unmark) leaves
+    // the row in place, so just refetch as before.
+    const isRemoval = patch.dismissed === true || patch.fp === true;
+
     setTriaging(prev => new Set(prev).add(id));
     try {
-      await fetch(`/api/alerts/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      fetchAlerts(severityFilter, showDismissed, groupByRule);
+      await patchAlert(id, { ...patch, ...(fingerprint ? { fingerprint } : {}) });
+      if (isRemoval) {
+        const kind: PendingTriage['kind'] = patch.fp === true ? 'fp' : 'dismissed';
+        setPending(prev => ({ ...prev, [id]: { kind, row: alert, patch, fingerprint } }));
+        const existing = undoTimers.current[id];
+        if (existing) clearTimeout(existing);
+        undoTimers.current[id] = setTimeout(() => finalizePending(id), UNDO_WINDOW_MS);
+      } else {
+        fetchAlerts(severityFilter, showDismissed, groupByRule);
+      }
     } catch {}
     setTriaging(prev => { const s = new Set(prev); s.delete(id); return s; });
+  };
+
+  // Reverse a just-applied dismiss/FP and pull the row back into the list.
+  const undoTriage = async (id: number) => {
+    const p = pending[id];
+    if (!p) return;
+    const inverse: { dismissed?: boolean; fp?: boolean } = {};
+    if (p.patch.dismissed !== undefined) inverse.dismissed = false;
+    if (p.patch.fp !== undefined)        inverse.fp = false;
+    try {
+      await patchAlert(id, { ...inverse, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}) });
+    } catch {}
+    finalizePending(id);
   };
 
   const handleClear = async () => {
@@ -168,6 +235,13 @@ export function AlertsTab() {
     try { return new Date(ts).toLocaleTimeString(); }
     catch { return ts; }
   };
+
+  // The list the server returns no longer includes rows we just dismissed/FP'd,
+  // but we keep them on screen during the undo window. Merge any pending rows
+  // back in (deduped by id) at their original position so they linger greyed.
+  const fetchedIds  = new Set(alerts.map(a => a.id));
+  const lingering   = Object.values(pending).filter(p => !fetchedIds.has(p.row.id)).map(p => p.row);
+  const displayAlerts = [...alerts, ...lingering];
 
   return (
     <div className="flex-1 flex flex-col min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
@@ -242,7 +316,7 @@ export function AlertsTab() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto p-4">
-        {alerts.length === 0 ? (
+        {displayAlerts.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
             <ShieldOff className="w-8 h-8 text-slate-700" />
             <p className="text-sm font-medium text-slate-500">No alerts yet</p>
@@ -266,7 +340,8 @@ export function AlertsTab() {
               </tr>
             </thead>
             <tbody>
-              {alerts.map(alert => {
+              {displayAlerts.map(alert => {
+                const pend        = pending[alert.id];
                 const isDismissed = !!alert.dismissed;
                 const isFP        = !!alert.fp;
                 const isTriaging  = triaging.has(alert.id);
@@ -276,7 +351,7 @@ export function AlertsTab() {
                   <React.Fragment key={alert.id}>
                   <tr
                     className={`transition-colors ${
-                      isDismissed
+                      pend || isDismissed
                         ? 'opacity-40 bg-slate-900/30'
                         : 'hover:bg-slate-800/30'
                     }`}
@@ -332,6 +407,21 @@ export function AlertsTab() {
                       )}
                     </td>
                     <td className="px-4 py-2.5">
+                      {pend ? (
+                        // Undo window: confirm the action took, give a way back.
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                            {pend.kind === 'fp' ? 'Marked FP' : 'Dismissed'}
+                          </span>
+                          <button
+                            onClick={() => undoTriage(alert.id)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-sky-400 hover:bg-sky-900/30 hover:text-sky-300 transition-colors"
+                            title="Undo"
+                          >
+                            <Undo2 className="w-3 h-3" /> Undo
+                          </button>
+                        </div>
+                      ) : (
                       <div className="flex items-center gap-1">
                         {/* Analyze with LLM (only when the optional judge is configured) */}
                         {judgeEnabled && (
@@ -349,7 +439,7 @@ export function AlertsTab() {
                         {/* Dismiss toggle */}
                         <button
                           disabled={isTriaging}
-                          onClick={() => triage(alert.id, { dismissed: !isDismissed })}
+                          onClick={() => triage(alert, { dismissed: !isDismissed })}
                           className={`p-1 rounded transition-colors ${
                             isDismissed
                               ? 'bg-slate-700 text-slate-300 hover:bg-slate-600'
@@ -362,7 +452,7 @@ export function AlertsTab() {
                         {/* False-positive toggle */}
                         <button
                           disabled={isTriaging}
-                          onClick={() => triage(alert.id, { fp: !isFP })}
+                          onClick={() => triage(alert, { fp: !isFP })}
                           className={`p-1 rounded transition-colors ${
                             isFP
                               ? 'bg-orange-900/40 text-orange-400 hover:bg-orange-900/60'
@@ -373,6 +463,7 @@ export function AlertsTab() {
                           <AlertCircle className="w-3 h-3" />
                         </button>
                       </div>
+                      )}
                     </td>
                   </tr>
                   {judgeState && (

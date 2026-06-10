@@ -176,22 +176,39 @@ function mapClaudeRecord(record: any, harness: HarnessKind, emit: (event: Watche
     const rawInput = inputTokens + cacheCreate + cacheRead;
     if (rawInput > 0 || outputTokens > 0) {
       const model = typeof message.model === 'string' ? message.model : '';
-      if (model && record?.uuid) {
+      // Claude Code writes ONE JSONL line per assistant content block, and every
+      // line for the same assistant turn repeats the SAME message.usage verbatim
+      // (verified: byte-identical usage across all lines that share a message.id).
+      // Each line has its own record.uuid, so keying the llm_request span on the
+      // transcript-line uuid lets INSERT OR IGNORE store a duplicate cost row per
+      // block — inflating token totals (~45-60% extra output tokens measured).
+      //
+      // Fix: key the span on the API RESPONSE identity (message.id), so all the
+      // repeated lines collapse to a single row via the PRIMARY KEY conflict.
+      // message.id is always present on real Claude assistant records; fall back
+      // to record.uuid only if it is somehow absent (keeps old behaviour, never
+      // crashes). We also persist message.id as `gen_ai.response.id` so query-time
+      // dedupe can group on the response even for older/other ingest paths.
+      const responseId = typeof message.id === 'string' && message.id ? message.id : '';
+      const dedupeKey = responseId || (record?.uuid ? String(record.uuid) : '');
+      if (model && dedupeKey) {
+        const rawAttrs: Record<string, unknown> = {
+          'gen_ai.request.model': model,
+          'llm.model': model,
+          'gen_ai.usage.input_tokens': inputTokens,
+          'gen_ai.usage.cache_read_input_tokens': cacheRead,
+          'gen_ai.usage.cache_creation_input_tokens': cacheCreate,
+          'gen_ai.usage.output_tokens': outputTokens,
+        };
+        if (responseId) rawAttrs['gen_ai.response.id'] = responseId;
         emit({
           kind: 'span',
           span: {
-            spanId: `${record.uuid}:llm`,
+            spanId: `${dedupeKey}:llm`,
             traceId,
             parentId: '',
             name: 'llm_request',
-            rawAttrs: {
-              'gen_ai.request.model': model,
-              'llm.model': model,
-              'gen_ai.usage.input_tokens': inputTokens,
-              'gen_ai.usage.cache_read_input_tokens': cacheRead,
-              'gen_ai.usage.cache_creation_input_tokens': cacheCreate,
-              'gen_ai.usage.output_tokens': outputTokens,
-            },
+            rawAttrs,
             harnessId: harness.id,
             harnessName: harness.name,
             startNano,
@@ -199,6 +216,9 @@ function mapClaudeRecord(record: any, harness: HarnessKind, emit: (event: Watche
           },
         });
       }
+      // NOTE: the `usage` event is a live running counter for the dashboard ticker
+      // and is intentionally left as-is here — the persisted spans (deduped by
+      // message.id above) are the source of truth for the cost aggregates.
       emit({ kind: 'usage', tokensIn: rawInput, tokensOut: outputTokens });
     }
   }

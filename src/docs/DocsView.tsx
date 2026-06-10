@@ -1,6 +1,14 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import { docsNav, docsOrder, getDocPage, defaultDocSlug, slugifyHeading } from './docsRegistry';
+
+/** The sidebar group a page belongs to (registry/sidebar structure), or null if ungrouped. */
+function groupForSlug(slug: string): string | null {
+  for (const g of docsNav) {
+    if (g.pages.some(p => p.slug === slug)) return g.group;
+  }
+  return null;
+}
 import { DocsMDX, DocsNavProvider } from './mdxComponents';
 
 const HASH_PREFIX = '#/docs/';
@@ -158,10 +166,82 @@ function DocsToc({
   );
 }
 
+function DocsBreadcrumb({
+  slug,
+  canGoBack,
+  navigate,
+}: {
+  slug: string;
+  canGoBack: boolean;
+  navigate: (s: string) => void;
+}) {
+  const page = getDocPage(slug);
+  if (!page) return null;
+  const group = groupForSlug(slug);
+  const isLanding = slug === defaultDocSlug;
+
+  const crumb = 'transition-colors hover:text-[var(--cs-text-base)]';
+
+  return (
+    <div className="flex items-center gap-3 mb-6 flex-wrap">
+      <button
+        type="button"
+        onClick={() => window.history.back()}
+        disabled={!canGoBack}
+        className="flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-lg transition-colors shrink-0"
+        style={{
+          border: '1px solid var(--cs-border)',
+          background: 'var(--cs-bg-surface)',
+          color: canGoBack ? 'var(--cs-text-muted)' : 'var(--cs-text-faint)',
+          opacity: canGoBack ? 1 : 0.45,
+          cursor: canGoBack ? 'pointer' : 'not-allowed',
+        }}
+        aria-label="Go back"
+      >
+        <ArrowLeft className="w-3.5 h-3.5" />
+        Back
+      </button>
+
+      <nav
+        className="flex items-center gap-1.5 text-xs min-w-0 flex-wrap"
+        style={{ color: 'var(--cs-text-faint)' }}
+        aria-label="Breadcrumb"
+      >
+        {isLanding ? (
+          <span aria-current="page" style={{ color: 'var(--cs-text-base)' }}>Docs</span>
+        ) : (
+          <button type="button" onClick={() => navigate(defaultDocSlug)} className={crumb}>
+            Docs
+          </button>
+        )}
+        {!isLanding && group && (
+          <>
+            <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--cs-text-faint)' }} />
+            <span>{group}</span>
+          </>
+        )}
+        {!isLanding && (
+          <>
+            <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--cs-text-faint)' }} />
+            <span aria-current="page" className="truncate" style={{ color: 'var(--cs-text-base)' }}>
+              {page.title}
+            </span>
+          </>
+        )}
+      </nav>
+    </div>
+  );
+}
+
 export function DocsView({ onClose }: { onClose: () => void }) {
   const [slug, setSlug] = useState<string>(() => readHashSlug());
   const [query, setQuery] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Count slug changes within this docs session. After the first navigation there is
+  // a prior docs entry in history, so window.history.back() returns to a docs page.
+  const visitsRef = useRef(0);
+  const [canGoBack, setCanGoBack] = useState(false);
 
   useEffect(() => {
     const onHash = () => setSlug(readHashSlug());
@@ -171,8 +251,12 @@ export function DocsView({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     if (slug && window.location.hash !== HASH_PREFIX + slug) {
+      // Assigning location.hash pushes a new history entry (never replaces),
+      // so the Back button and browser history stay in sync.
       window.location.hash = HASH_PREFIX + slug;
     }
+    visitsRef.current += 1;
+    if (visitsRef.current > 1) setCanGoBack(true);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [slug]);
 
@@ -262,6 +346,7 @@ export function DocsView({ onClose }: { onClose: () => void }) {
             <div className="docs-prose max-w-3xl mx-auto px-8 py-8">
               {page ? (
                 <>
+                  <DocsBreadcrumb slug={slug} canGoBack={canGoBack} navigate={navigate} />
                   <Suspense fallback={<p className="text-sm" style={{ color: 'var(--cs-text-faint)' }}>Loading…</p>}>
                     <DocsNavProvider value={navCtx}>
                       <DocsMDX>{LazyDoc ? <LazyDoc /> : null}</DocsMDX>
