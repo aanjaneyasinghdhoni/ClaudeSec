@@ -65,7 +65,7 @@
   "scripts": {
     "dev": "tsx server/index.ts",
     "init": "tsx cli/init.ts",
-    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts && tsx tests/installHookTest.ts",
+    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts && tsx tests/installHookTest.ts && tsx tests/enforceStatusTest.ts",
     "prebuild": "pnpm test",
     "build": "vite build",
     "preview": "vite preview",

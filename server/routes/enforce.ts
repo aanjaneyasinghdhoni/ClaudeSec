@@ -1,6 +1,7 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
 import type { RouteContext } from './context.js';
+import { resolveEffectiveMode, detectHookStatus } from '../enforceStatus.js';
 
 type EnforceAction = 'alert' | 'block';
 
@@ -88,12 +89,22 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
   // mirrored enforce-config.json file (fail-open). Changing it here re-writes
   // that file and broadcasts so the dashboard stays in sync.
   app.get('/api/enforce/config', (_req, res) => {
+    // `mode` is the dashboard's CONFIGURED toggle (the server's DB value, also
+    // mirrored to enforce-config.json). `effectiveMode` is what the hook will
+    // ACTUALLY run after applying the file → env → default precedence — these can
+    // differ (e.g. CLAUDESEC_MODE=enforce loses to a monitor config file), so we
+    // surface both plus the source that won. Read-only and fail-safe: a missing
+    // settings file or container just narrows what we can assert, never throws.
+    const { effectiveMode, modeSource } = resolveEffectiveMode();
     res.json({
       mode:          getEnforceMode(),
       overrides:     getEnforceOverrides(),
       configFile:    enforceConfigFile,
       envMode:       process.env.CLAUDESEC_MODE ?? null,
       bypassEnabled: process.env.CLAUDESEC_HOOKS_BYPASS === '1',
+      effectiveMode,
+      modeSource,
+      hookStatus:    detectHookStatus(),
     });
   });
 
