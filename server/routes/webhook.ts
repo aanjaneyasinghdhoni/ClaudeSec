@@ -47,7 +47,7 @@ export function registerWebhookRoutes(app: Express, ctx: RouteContext): void {
       return res.status(400).json({ error: `Webhook URL rejected: ${(err as Error).message}` }) as any;
     }
     setConfig.run('webhook.url', url.trim());
-    if (threshold && ['low', 'medium', 'high'].includes(threshold)) {
+    if (threshold && ['low', 'medium', 'high', 'critical'].includes(threshold)) {
       setConfig.run('webhook.threshold', threshold);
     }
     // Audit the change — record the redacted URL only, never the raw secret URL.

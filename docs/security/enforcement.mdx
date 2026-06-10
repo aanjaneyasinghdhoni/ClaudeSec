@@ -5,7 +5,7 @@ description: "Block an agent's tool call before it runs, using the same rule set
 
 Detection tells you what an agent *already did*. **Enforcement** can stop a tool call *before it runs* — using the same rule library, wired into Claude Code as a **PreToolUse hook** (`.claude/hooks/claudesec-enforce.cjs`).
 
-When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload against the high-severity block rules and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent).
+When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload against the high- and critical-severity block rules and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent).
 
 <Warning>
   The hook is the **Claude Code layer** — it is agent-specific and bypassable (see [Bypass](#bypass)), **not** an OS-level sandbox. It also **fails open**: any error, missing config, or unparseable input results in *allow*, so a broken enforcement config can never lock you out. For agents that aren't Claude Code, the same rules are enforced at the **MCP wire level** — see [Cross-agent enforcement](#cross-agent-enforcement-mcp-proxy).
@@ -49,7 +49,7 @@ The hook runs in one of two modes, and **`monitor` is the default**:
 | Mode | What it does |
 |------|--------------|
 | `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the always-on *catastrophic-6 floor*. |
-| `enforce` | Actually **denies** high-severity command / file tool calls, in addition to the catastrophic floor. |
+| `enforce` | Actually **denies** high- and critical-severity command / file tool calls, in addition to the catastrophic floor. The critical tier is active secret *exfiltration*. |
 
 ### The catastrophic-6 floor
 
@@ -135,7 +135,7 @@ The PreToolUse hook only reaches **Claude Code**. To enforce the *same* rules fo
 
 The proxy speaks raw [JSON-RPC 2.0 over stdio](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports). It is a transparent pipe for `initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, and all responses; it intercepts **only** `tools/call`. For each call it builds the matchable text `toolName + ' ' + JSON.stringify(arguments)` and evaluates it exactly like the hook:
 
-- **`enforce`** + a high-severity `block` rule (or the catastrophic floor) matches → the call is **not** forwarded; the agent gets a `tools/call` result with `isError: true` and an explanatory message (a clean, model-readable refusal — not a transport error), and a would-block is logged to the dashboard.
+- **`enforce`** + a high- or critical-severity `block` rule (or the catastrophic floor) matches → the call is **not** forwarded; the agent gets a `tools/call` result with `isError: true` and an explanatory message (a clean, model-readable refusal — not a transport error), and a would-block is logged to the dashboard.
 - **`monitor`** (default) + match → logs a would-block, then forwards normally.
 - no match → forwards.
 

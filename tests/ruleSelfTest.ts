@@ -33,7 +33,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Types
 // ---------------------------------------------------------------------------
 
-type Severity = 'low' | 'medium' | 'high';
+type Severity = 'low' | 'medium' | 'high' | 'critical';
 
 interface Rule {
   pattern: RegExp;
@@ -297,6 +297,13 @@ const BENIGN: string[] = [
   'fs.readFileSync(".env.example", "utf8")',
   'loadDotenv({ path: ".env.example" })',
   '# .env.example — copy to .env and fill in values',
+  // .env.example is the conventional non-secret template; copying / committing /
+  // even piping it must NEVER trip the critical exfil tier.
+  'cat .env.example > .env',
+  'git add .env.example',
+  'git push origin main  # ships .env.example template',
+  'cat .env.example | grep DATABASE_URL',
+  'curl -sSL https://example.com/install.sh -o setup.sh',
   'const schema = z.object({ DATABASE_URL: z.string() })',
   '// TODO: add password validation before storing',
   'label: "Enter your password:"',
@@ -389,10 +396,23 @@ async function checkRule(
   if (!(r.pattern instanceof RegExp)) {
     reasons.push({ kind: 'invalid', detail: 'pattern is not a RegExp' });
   }
-  if (!['low', 'medium', 'high'].includes(r.severity as string)) {
+  if (!['low', 'medium', 'high', 'critical'].includes(r.severity as string)) {
     reasons.push({
       kind: 'invalid',
-      detail: `severity "${r.severity}" is not one of: low, medium, high`,
+      detail: `severity "${r.severity}" is not one of: low, medium, high, critical`,
+    });
+  }
+  // critical is reserved for active EXFILTRATION, never host destruction: a
+  // critical rule must NOT reuse a catastrophic-floor label. This keeps the
+  // exfil tier and the always-on destruction floor cleanly separated.
+  if (
+    r.severity === 'critical' &&
+    typeof r.label === 'string' &&
+    CATASTROPHIC_DETECTION_LABELS.has(r.label.trim())
+  ) {
+    reasons.push({
+      kind: 'invalid',
+      detail: `critical severity must not reuse a catastrophic-floor label ("${r.label}")`,
     });
   }
   if (typeof r.label !== 'string' || r.label.trim().length === 0) {

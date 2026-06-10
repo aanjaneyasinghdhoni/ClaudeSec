@@ -26,6 +26,11 @@ export function styleNodeBySeverity(n: Node): Node {
     shadow = '0 0 24px rgba(var(--cs-accent-rgb),0.2), 0 4px 16px rgba(0,0,0,0.3)';
     nodeWidth = 200;
     nodeHeight = 60;
+  } else if (sev === 'critical') {
+    borderColor = '#f43f5e';
+    shadow = '0 0 28px rgba(244,63,94,0.45), 0 4px 16px rgba(0,0,0,0.3)';
+    nodeWidth = 200;
+    nodeHeight = 56;
   } else if (sev === 'high') {
     borderColor = '#ff3b5c';
     shadow = '0 0 24px rgba(255,59,92,0.3), 0 4px 16px rgba(0,0,0,0.3)';
@@ -76,7 +81,7 @@ export function applyRadialLayout(nodes: Node[], edges: Edge[]): Node[] {
   const highIds = new Set<string>();
   nodes.forEach(n => {
     const sev = (n.data as any).severity;
-    if (sev === 'high') { threatIds.add(n.id); highIds.add(n.id); }
+    if (sev === 'critical' || sev === 'high') { threatIds.add(n.id); highIds.add(n.id); }
     else if (sev === 'medium') { threatIds.add(n.id); }
     else if (sev === 'low') { threatIds.add(n.id); }
   });

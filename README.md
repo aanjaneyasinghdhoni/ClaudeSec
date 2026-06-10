@@ -10,7 +10,7 @@
 Claude Code, GitHub Copilot CLI, and Codex all write full session transcripts to disk as they
 work. ClaudeSec tails those transcripts in real time — across every repo on your machine — and
 surfaces what your agents are actually doing: every tool call, every command, every file touched,
-scored live against ~630 built-in threat-detection rules. Nothing ever leaves your computer.
+scored live against ~639 built-in threat-detection rules. Nothing ever leaves your computer.
 
 ---
 
@@ -45,9 +45,11 @@ Two alternatives, same script:
 
 - **Live timeline & orchestration** — tool calls streaming in with nanosecond durations, per-agent
   tool inventory, a command-audit trail, and a sensitive-file-access panel.
-- **~630 built-in threat rules** (~183 core + ~447 extra) — HIGH / MEDIUM / LOW regex rules for
-  prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration, SSRF,
-  container escape, and more. RE2-compiled (linear-time), with a ReDoS self-test gate.
+- **~639 built-in threat rules** (~183 core + ~456 extra) — CRITICAL / HIGH / MEDIUM / LOW regex
+  rules for prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration,
+  SSRF, container escape, and more. The CRITICAL tier is reserved for active secret *exfiltration*
+  — a credential or `.env` being transmitted off the machine. RE2-compiled (linear-time), with a
+  ReDoS self-test gate.
 - **Enforcement** — an opt-in Claude Code PreToolUse hook and a cross-agent MCP proxy can block a
   tool call *before it runs*. Register the hook with one command (`node cli/init.mjs install-hook`);
   the dashboard then confirms it's wired up. `monitor` by default (with an always-on catastrophic

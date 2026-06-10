@@ -265,7 +265,7 @@ export function RateLimitSection() {
 export function WebhookSection() {
   const [url,         setUrl]         = useState('');
   const [urlPreview,  setUrlPreview]  = useState<string | null>(null);
-  const [threshold,   setThreshold]   = useState<'low' | 'medium' | 'high'>('high');
+  const [threshold,   setThreshold]   = useState<'low' | 'medium' | 'high' | 'critical'>('high');
   const [configured,  setConfigured]  = useState(false);
   const [testMsg,     setTestMsg]     = useState('');
   const [testOk,      setTestOk]      = useState<boolean | null>(null);
@@ -356,12 +356,13 @@ export function WebhookSection() {
           <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Min Threshold</label>
           <select
             value={threshold}
-            onChange={e => setThreshold(e.target.value as 'low' | 'medium' | 'high')}
+            onChange={e => setThreshold(e.target.value as 'low' | 'medium' | 'high' | 'critical')}
             className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500"
           >
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="critical">Critical</option>
           </select>
         </div>
       </div>

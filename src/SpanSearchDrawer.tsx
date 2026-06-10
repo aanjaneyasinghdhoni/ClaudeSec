@@ -16,7 +16,7 @@ interface SpanRow {
   traceId: string;
   name: string;
   harness: string;
-  severity: 'none' | 'low' | 'medium' | 'high';
+  severity: 'none' | 'low' | 'medium' | 'high' | 'critical';
   attributes: string;
   startNano: string;
   endNano: string;
@@ -41,7 +41,8 @@ function harnessColor(harness: string): string {
 }
 
 function severityClasses(severity: string): string {
-  return severity === 'high'   ? 'bg-red-900/60 text-red-300 border-red-700' :
+  return severity === 'critical' ? 'bg-rose-900/60 text-rose-200 border-rose-500 animate-pulse' :
+         severity === 'high'   ? 'bg-red-900/60 text-red-300 border-red-700' :
          severity === 'medium' ? 'bg-orange-900/60 text-orange-300 border-orange-700' :
          severity === 'low'    ? 'bg-yellow-900/60 text-yellow-300 border-yellow-700' :
          'bg-green-900/60 text-green-300 border-green-700';

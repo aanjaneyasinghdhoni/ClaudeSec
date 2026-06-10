@@ -29,9 +29,9 @@ export function registerRuleRoutes(app: Express, ctx: RouteContext): void {
     if (!pattern || !severity || !label) {
       return res.status(400).json({ error: 'pattern, severity, and label are required' }) as any;
     }
-    const validSeverities: Severity[] = ['low', 'medium', 'high'];
+    const validSeverities: Severity[] = ['low', 'medium', 'high', 'critical'];
     if (!validSeverities.includes(severity as Severity)) {
-      return res.status(400).json({ error: 'severity must be low, medium, or high' }) as any;
+      return res.status(400).json({ error: 'severity must be low, medium, high, or critical' }) as any;
     }
     // Bound user-supplied regex length to mitigate catastrophic-backtracking
     // (ReDoS) before it is ever compiled and run against ingested spans.

@@ -64,8 +64,11 @@ export interface ScanResult {
 }
 
 // Injected detector — matches detectSeverity's return shape (subset we use).
+// The engine can return `critical` (active exfiltration); the static config
+// scanner keeps its own 3-tier scale and folds critical into its top tier
+// (`high`) when surfacing a suspicious launch command.
 export interface DetectFn {
-  (text: string): { severity: 'none' | 'low' | 'medium' | 'high'; matchedLabel: string; matchedText: string };
+  (text: string): { severity: 'none' | 'low' | 'medium' | 'high' | 'critical'; matchedLabel: string; matchedText: string };
 }
 
 // ── Bounds (the scan must stay fast even with hundreds of skills) ────────────
@@ -436,7 +439,7 @@ export function scanMcpAndSkills(detect: DetectFn, rootsArg?: string[]): ScanRes
         addFinding({
           ...ref,
           kind: 'suspicious-command',
-          severity: (hit.severity === 'high' ? 'high' : hit.severity === 'medium' ? 'medium' : 'low'),
+          severity: (hit.severity === 'critical' || hit.severity === 'high' ? 'high' : hit.severity === 'medium' ? 'medium' : 'low'),
           label: hit.matchedLabel,
           detail: `Launch command "${srv.command ?? ''}" matched a threat rule.`,
           excerpt: clampExcerpt(cmdLine, idx >= 0 ? { start: idx, len: hit.matchedText.length } : undefined),

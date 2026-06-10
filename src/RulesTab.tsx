@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Shield, Trash2, Plus, FlaskConical, Clock, X } from 'lucide-react';
 import { socket } from './socket';
-
-type Severity = 'none' | 'low' | 'medium' | 'high';
+import type { Severity } from './shared/types';
 
 interface RuleRow {
   id: string;
@@ -27,6 +26,7 @@ interface RulesResponse {
 }
 
 const SEV_BADGE: Record<string, string> = {
+  critical: 'bg-rose-900/60 text-rose-200 border border-rose-500/60 animate-pulse',
   high:   'bg-red-900/40 text-red-300 border border-red-700/40',
   medium: 'bg-orange-900/40 text-orange-300 border border-orange-700/40',
   low:    'bg-yellow-900/40 text-yellow-300 border border-yellow-700/40',

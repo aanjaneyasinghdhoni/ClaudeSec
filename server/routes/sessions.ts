@@ -35,9 +35,12 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
         COALESCE(se.notes, '')       AS notes,
         COUNT(DISTINCT s.spanId) AS spanCount,
         SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
-        MAX(CASE s.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
+        MAX(CASE s.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
         GROUP_CONCAT(DISTINCT s.harness) AS harnesses,
-        SUM(CASE WHEN s.severity = 'high'   THEN 1 ELSE 0 END) AS threatHigh,
+        -- critical is the exfiltration tier above high; fold it into the high
+        -- bucket so a confirmed exfil still penalizes health and surfaces in the
+        -- breakdown instead of falling through to the green/none default.
+        SUM(CASE WHEN s.severity IN ('high', 'critical') THEN 1 ELSE 0 END) AS threatHigh,
         SUM(CASE WHEN s.severity = 'medium' THEN 1 ELSE 0 END) AS threatMedium,
         SUM(CASE WHEN s.severity = 'low'    THEN 1 ELSE 0 END) AS threatLow,
         COUNT(DISTINCT a.id) AS alertCount

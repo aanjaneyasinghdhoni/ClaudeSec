@@ -229,7 +229,8 @@ function WebhookPanel() {
               onChange={e => setThreshold(e.target.value)}
               className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 focus:outline-none"
             >
-              <option value="high">HIGH only</option>
+              <option value="critical">CRITICAL only</option>
+              <option value="high">HIGH+</option>
               <option value="medium">MEDIUM+</option>
               <option value="low">All alerts</option>
             </select>

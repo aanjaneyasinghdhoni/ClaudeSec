@@ -11,7 +11,7 @@ interface SpanRow {
   traceId: string;
   name: string;
   harness: string;
-  severity: 'none' | 'low' | 'medium' | 'high';
+  severity: 'none' | 'low' | 'medium' | 'high' | 'critical';
   attributes: string;
   startNano: string;
   endNano: string;
@@ -38,13 +38,14 @@ const HARNESS_COLORS: Record<string, string> = {
   'unknown':     '#64748b',
 };
 
-const SEVERITY_OPTIONS = ['', 'high', 'medium', 'low', 'none'] as const;
+const SEVERITY_OPTIONS = ['', 'critical', 'high', 'medium', 'low', 'none'] as const;
 const SEVERITY_LABELS: Record<string, string> = {
-  '':       'All',
-  'high':   'HIGH',
-  'medium': 'MED',
-  'low':    'LOW',
-  'none':   'OK',
+  '':         'All',
+  'critical': 'CRIT',
+  'high':     'HIGH',
+  'medium':   'MED',
+  'low':      'LOW',
+  'none':     'OK',
 };
 
 // ---------------------------------------------------------------------------
@@ -68,11 +69,13 @@ function harnessColor(harness: string): string {
 
 function SeverityBadge({ severity }: { severity: string }) {
   const cls =
+    severity === 'critical' ? 'bg-rose-900/60 text-rose-200 border-rose-500 animate-pulse' :
     severity === 'high'   ? 'bg-red-900/60 text-red-300 border-red-700' :
     severity === 'medium' ? 'bg-orange-900/60 text-orange-300 border-orange-700' :
     severity === 'low'    ? 'bg-yellow-900/60 text-yellow-300 border-yellow-700' :
     'bg-green-900/60 text-green-300 border-green-700';
   const label =
+    severity === 'critical' ? 'CRIT' :
     severity === 'high'   ? 'HIGH' :
     severity === 'medium' ? 'MED' :
     severity === 'low'    ? 'LOW' :

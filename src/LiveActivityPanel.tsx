@@ -101,7 +101,8 @@ export function LiveActivityPanel({ open, onClose }: { open: boolean; onClose: (
                     {agent.tool && (
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <span className={`px-1.5 py-0.5 rounded text-[11px] font-mono font-medium ${
-                          agent.severity === 'high' ? 'bg-red-900/40 text-red-300'
+                          agent.severity === 'critical' ? 'bg-rose-900/60 text-rose-200 animate-pulse'
+                          : agent.severity === 'high' ? 'bg-red-900/40 text-red-300'
                           : agent.severity === 'medium' ? 'bg-orange-900/40 text-orange-300'
                           : 'bg-slate-800 text-slate-400'
                         }`}>

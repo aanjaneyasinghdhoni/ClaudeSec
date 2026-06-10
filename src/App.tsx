@@ -461,10 +461,12 @@ export default function App() {
       syncWorkflows(n);
       setGraphWindow(windowed ? { shown: shown ?? n.length, total: total ?? 0 } : null);
 
-      // Desktop notifications for new HIGH severity spans
+      // Desktop notifications for new HIGH and CRITICAL severity spans
+      // (critical is the higher exfiltration tier — it must notify too).
       if (notifyEnabledRef.current) {
+        const isAlerting = (s: unknown) => s === 'high' || s === 'critical';
         const highSpans = n.filter(
-          node => (node.data as any).severity === 'high' && !seenHighIds.current.has(node.id),
+          node => isAlerting((node.data as any).severity) && !seenHighIds.current.has(node.id),
         );
         highSpans.forEach(node => {
           const label = String(node.data.label ?? '');
@@ -473,7 +475,8 @@ export default function App() {
           // revoked between checks, or constructor blocked on mobile). Never let
           // a notification failure break the graph-update handler.
           try {
-            new Notification('ClaudeSec — HIGH Alert', {
+            const sevLabel = (node.data as any).severity === 'critical' ? 'CRITICAL' : 'HIGH';
+            new Notification(`ClaudeSec — ${sevLabel} Alert`, {
               body: `${label}${rule ? ': ' + rule : ''}`,
               tag:  node.id,
             });
@@ -482,8 +485,8 @@ export default function App() {
           }
           seenHighIds.current.add(node.id);
         });
-        // Also mark already-known high spans so we don't re-fire on later updates
-        n.filter(node => (node.data as any).severity === 'high')
+        // Also mark already-known high/critical spans so we don't re-fire on later updates
+        n.filter(node => isAlerting((node.data as any).severity))
           .forEach(node => seenHighIds.current.add(node.id));
       }
     };
@@ -632,10 +635,11 @@ export default function App() {
   }, [workflows, filterMode, harnessFilter, search, activeSession, hideNone, timeRange]);
 
   const counts = useMemo(() => ({
-    ok:     workflows.filter(w => w.severity === 'none').length,
-    low:    workflows.filter(w => w.severity === 'low').length,
-    medium: workflows.filter(w => w.severity === 'medium').length,
-    high:   workflows.filter(w => w.severity === 'high').length,
+    ok:       workflows.filter(w => w.severity === 'none').length,
+    low:      workflows.filter(w => w.severity === 'low').length,
+    medium:   workflows.filter(w => w.severity === 'medium').length,
+    high:     workflows.filter(w => w.severity === 'high').length,
+    critical: workflows.filter(w => w.severity === 'critical').length,
   }), [workflows]);
 
   const metrics = useMemo(() => {
@@ -1043,7 +1047,7 @@ export default function App() {
               </button>
               {sessions.filter(s => labelFilter === 'all' || (s.label ?? 'normal') === labelFilter).map(s => {
                 const sev = SEV_RANK[s.maxSeverityRank] ?? 'none';
-                const sevCol = sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
+                const sevCol = sev === 'critical' ? '#f43f5e' : sev === 'high' ? '#ef4444' : sev === 'medium' ? '#f97316' : sev === 'low' ? '#eab308' : '#22c55e';
                 const isActive  = activeSession === s.traceId;
                 const isEditing = editingSession === s.traceId;
                 const isPinned  = !!s.pinned;
@@ -1315,6 +1319,7 @@ export default function App() {
                 {counts.low    > 0 && <span style={{ color: '#ffb224' }}>{counts.low}<span style={{ opacity: 0.5 }}>low</span></span>}
                 {counts.medium > 0 && <span style={{ color: '#f97316' }}>{counts.medium}<span style={{ opacity: 0.5 }}>med</span></span>}
                 {counts.high   > 0 && <span style={{ color: '#ff3b5c' }}>{counts.high}<span style={{ opacity: 0.5 }}>hi</span></span>}
+                {counts.critical > 0 && <span className="animate-pulse font-bold" style={{ color: '#f43f5e' }}>{counts.critical}<span style={{ opacity: 0.6 }}>crit</span></span>}
               </div>
             </div>
 
@@ -1583,7 +1588,8 @@ export default function App() {
                       style={{ background: HARNESS_COLORS[sp.harness] ?? '#64748b' }}
                     />
                     <span style={{
-                      color: sp.severity === 'high' ? '#ff3b5c' :
+                      color: sp.severity === 'critical' ? '#f43f5e' :
+                        sp.severity === 'high' ? '#ff3b5c' :
                         sp.severity === 'medium' ? '#f97316' :
                         sp.severity === 'low' ? '#ffb224' : 'var(--cs-text-muted)'
                     }}>

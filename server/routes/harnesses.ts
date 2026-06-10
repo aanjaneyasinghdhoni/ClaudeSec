@@ -11,9 +11,11 @@ export function registerHarnessRoutes(app: Express, _ctx: RouteContext): void {
         s.harness,
         COUNT(s.spanId)                                                          AS spanCount,
         COUNT(DISTINCT s.traceId)                                                AS sessionCount,
-        SUM(CASE s.severity WHEN 'high'   THEN 1 ELSE 0 END)                    AS threatHigh,
-        SUM(CASE s.severity WHEN 'medium' THEN 1 ELSE 0 END)                    AS threatMedium,
-        SUM(CASE s.severity WHEN 'low'    THEN 1 ELSE 0 END)                    AS threatLow,
+        -- Fold the critical exfiltration tier into the high bucket so a confirmed
+        -- exfil counts against the agent's profile instead of vanishing.
+        SUM(CASE WHEN s.severity IN ('high', 'critical') THEN 1 ELSE 0 END)     AS threatHigh,
+        SUM(CASE WHEN s.severity = 'medium' THEN 1 ELSE 0 END)                  AS threatMedium,
+        SUM(CASE WHEN s.severity = 'low'    THEN 1 ELSE 0 END)                  AS threatLow,
         MIN(s.startNano)                                                         AS firstSeenNano,
         MAX(s.startNano)                                                         AS lastSeenNano
       FROM spans s

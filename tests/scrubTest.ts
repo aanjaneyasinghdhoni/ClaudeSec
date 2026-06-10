@@ -332,6 +332,44 @@ check('detectSecrets returns empty for benign text', () => {
   assert.deepStrictEqual(detectSecrets('npm run build && npm test'), []);
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// 11. Database connection strings — inline user:password@ credentials must be
+//     redacted (a dumped .env routinely carries these).
+// ───────────────────────────────────────────────────────────────────────────
+
+check('mongodb connection-string credentials gone', () => {
+  const out = scrubText('mongodb://dbuser:S3cretP%40ss@cluster0.mongodb.net/app', OPTS);
+  assert.ok(!out.includes('S3cretP%40ss'), `password leaked: ${JSON.stringify(out)}`);
+  assert.ok(out.includes('mongodb://‹redacted›:‹redacted›@'), `got ${JSON.stringify(out)}`);
+});
+
+check('postgres connection-string credentials gone', () => {
+  const out = scrubText('postgres://admin:hunter2longpass@db.internal:5432/prod', OPTS);
+  assert.ok(!out.includes('hunter2longpass'), `password leaked: ${JSON.stringify(out)}`);
+  assert.ok(out.includes('postgres://‹redacted›:‹redacted›@'), `got ${JSON.stringify(out)}`);
+});
+
+check('postgresql connection-string credentials gone', () => {
+  const out = scrubText('postgresql://svc:p4ssw0rdValue@10.0.0.5/db', OPTS);
+  assert.ok(!out.includes('p4ssw0rdValue'), `password leaked: ${JSON.stringify(out)}`);
+});
+
+check('mysql connection-string credentials gone', () => {
+  const out = scrubText('mysql://root:tooManySecrets@127.0.0.1:3306/shop', OPTS);
+  assert.ok(!out.includes('tooManySecrets'), `password leaked: ${JSON.stringify(out)}`);
+  assert.ok(out.includes('mysql://‹redacted›:‹redacted›@'), `got ${JSON.stringify(out)}`);
+});
+
+check('redis connection-string credentials gone', () => {
+  const out = scrubText('redis://default:R3disPassWord@redis.example.com:6379', OPTS);
+  assert.ok(!out.includes('R3disPassWord'), `password leaked: ${JSON.stringify(out)}`);
+});
+
+// A connection string WITHOUT inline credentials must pass through untouched —
+// the host alone is not a secret and over-scrubbing would corrupt config dumps.
+assertUnchanged('credential-less mongodb url unchanged', 'mongodb://cluster0.example.net:27017/app');
+assertUnchanged('credential-less redis url unchanged', 'redis://cache.internal:6379');
+
 // ---------------------------------------------------------------------------
 // Report + exit
 // ---------------------------------------------------------------------------

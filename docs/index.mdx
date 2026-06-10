@@ -5,7 +5,7 @@ description: "A zero-config, fully-local security observatory for your AI coding
 
 ## What is ClaudeSec?
 
-ClaudeSec is a **zero-config, local-first security observatory** for AI coding agents. It watches every Claude Code, GitHub Copilot CLI, and Codex session already running on your machine — across every repo — and surfaces what your agents are actually doing: every tool call, every command, every file touched, scored live against ~630 built-in threat-detection rules.
+ClaudeSec is a **zero-config, local-first security observatory** for AI coding agents. It watches every Claude Code, GitHub Copilot CLI, and Codex session already running on your machine — across every repo — and surfaces what your agents are actually doing: every tool call, every command, every file touched, scored live against ~639 built-in threat-detection rules.
 
 No environment variables. No restarting your terminal. Nothing ever leaves your computer.
 
@@ -43,8 +43,8 @@ That's it — open **http://localhost:3000**. See the [Quickstart](/quickstart) 
   <Card title="Zero-config capture" icon="bolt">
     Tails on-disk transcripts for Claude Code, GitHub Copilot CLI, and Codex — real tool names, full command text, durations, and token usage, with no setup.
   </Card>
-  <Card title="630 threat rules" icon="shield-halved">
-    HIGH / MEDIUM / LOW regex rules covering prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration, and recon — evaluated on every span.
+  <Card title="639 threat rules" icon="shield-halved">
+    CRITICAL / HIGH / MEDIUM / LOW regex rules covering prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration, and recon — evaluated on every span. The CRITICAL tier flags active secret exfiltration off the machine.
   </Card>
   <Card title="Honeytokens & secret scrubbing" icon="user-secret">
     Plant canary strings that fire HIGH alerts on exfiltration. Known secret shapes are redacted before anything is stored, broadcast, or exported.
@@ -87,7 +87,7 @@ flowchart LR
     CX --> W
     REMOTE["Remote / CI agents"] -->|"OTLP POST /v1/traces"| ING
     W --> ING["ingestSpan()"]
-    ING --> RULES["~630 rules + secret scrub"]
+    ING --> RULES["~639 rules + secret scrub"]
     RULES --> DB[("SQLite · spans.db · 0600")]
     DB --> IO["Socket.io"]
     IO --> UI["Dashboard · 127.0.0.1:3000"]

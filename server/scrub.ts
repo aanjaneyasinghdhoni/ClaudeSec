@@ -66,6 +66,11 @@ const SECRET_PATTERNS: SecretPattern[] = [
   { re: /dop_v1_[a-f0-9]{64}/g, replacement: '[redacted:digitalocean]' },
   { re: /key-[0-9a-f]{32}/g, replacement: '[redacted:mailgun]' },
 
+  // Database connection strings with inline credentials — redact the
+  // `user:password@` portion so a dumped .env never persists live DB creds.
+  // Bounded character classes (no `.*`) keep these linear-time / non-backtracking.
+  { re: /(mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|rediss|amqp|amqps):\/\/[^\s:/@]{1,128}:[^\s:/@]{1,256}@/gi, replacement: (_m, scheme) => `${scheme}://‹redacted›:‹redacted›@` },
+
   { re: /(authorization)(\s*[:=]\s*['"]?)((?:bearer|basic|token|digest)\s+)?\S+/gi, replacement: (_m, k, sep, scheme) => `${k}${sep}${scheme ? scheme : ''}‹redacted›` },
   { re: /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, replacement: 'Bearer ‹redacted›' },
 
