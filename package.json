@@ -51,8 +51,11 @@
     "rules-enforcement.json",
     "cli/init.ts",
     "cli/init.mjs",
+    "cli/installHook.ts",
+    "cli/hooks/claudesec-enforce.cjs",
     "cli/mcp-proxy.ts",
     "cli/service.ts",
+    "scripts/build-enforcement-rules.ts",
     "src/harnesses.ts",
     "dist"
   ],
@@ -62,7 +65,7 @@
   "scripts": {
     "dev": "tsx server/index.ts",
     "init": "tsx cli/init.ts",
-    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts",
+    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts && tsx tests/installHookTest.ts",
     "prebuild": "pnpm test",
     "build": "vite build",
     "preview": "vite preview",

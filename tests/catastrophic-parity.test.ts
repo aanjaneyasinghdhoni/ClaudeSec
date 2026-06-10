@@ -2,10 +2,15 @@
  * tests/catastrophic-parity.test.ts
  *
  * Security control: assert that the catastrophic-6 floor patterns are identical
- * across all three enforcement sources:
- *   1. .claude/hooks/block-catastrophic.cjs  (RULES array)
- *   2. .claude/hooks/claudesec-enforce.cjs   (CATASTROPHIC array)
- *   3. server/enforceEval.ts                 (CATASTROPHIC export)
+ * across every enforcement source:
+ *   1. server/enforceEval.ts                 (CATASTROPHIC export)   — tracked
+ *   2. cli/hooks/claudesec-enforce.cjs       (CATASTROPHIC array)    — tracked, ships
+ *   3. .claude/hooks/block-catastrophic.cjs  (RULES array)          — local-only
+ *   4. .claude/hooks/claudesec-enforce.cjs   (CATASTROPHIC array)   — local-only
+ *
+ * The two tracked sources are REQUIRED (they ship to every clone). The two
+ * .claude/hooks/ copies are OPTIONAL — local-only, gitignored — so a clean
+ * clone / CI / Docker build skips them gracefully.
  *
  * Extracts patterns by raw text parsing (no imports) so all three are compared
  * apples-to-apples on source+flags strings, not engine-normalized RegExp objects.
@@ -75,13 +80,18 @@ function extractPatterns(filePath: string): string[] {
 // Sources
 // ---------------------------------------------------------------------------
 
-/** server/enforceEval.ts is REQUIRED (tracked). The two hook files are
- *  OPTIONAL — local-only, gitignored. A clean clone / CI / Docker build
- *  will not have them; skip gracefully instead of failing the build. */
+/** server/enforceEval.ts and cli/hooks/claudesec-enforce.cjs are REQUIRED — both
+ *  are tracked and ship to every clone. The two .claude/hooks/ copies are
+ *  OPTIONAL — local-only, gitignored. A clean clone / CI / Docker build will
+ *  not have them; skip gracefully instead of failing the build. */
 const REQUIRED_SOURCES: { name: string; file: string }[] = [
   {
     name: 'server/enforceEval.ts',
     file: path.join(REPO_ROOT, 'server', 'enforceEval.ts'),
+  },
+  {
+    name: 'cli/hooks/claudesec-enforce.cjs',
+    file: path.join(REPO_ROOT, 'cli', 'hooks', 'claudesec-enforce.cjs'),
   },
 ];
 
