@@ -81,7 +81,9 @@ export function installPaths(): InstallPaths {
 
 /** Build the two settings entries that run our installed hook. */
 function hookEntries(installedHook: string) {
-  const command = `node ${installedHook}`;
+  // Quote the path: an unquoted $HOME with a space would split the argument and,
+  // because the hook is fail-open, silently disable enforcement.
+  const command = `node "${installedHook}"`;
   const make = (matcher: string) => ({
     matcher,
     hooks: [{ type: 'hook', command }],
@@ -94,7 +96,8 @@ function appendLog(p: InstallPaths, action: string, target: string): void {
   try {
     fs.mkdirSync(p.homeDir, { recursive: true });
     const line = `${new Date().toISOString()}\t${action}\t${target}\n`;
-    fs.appendFileSync(p.logFile, line);
+    // 0600 to match the repo's posture for local telemetry (spans.db).
+    fs.appendFileSync(p.logFile, line, { mode: 0o600 });
   } catch {
     // logging must never gate the operation
   }
@@ -179,29 +182,23 @@ function isOurEntry(entry: any): boolean {
 /**
  * Merge our two entries into settings.PreToolUse, preserving everything else.
  * Returns true if the settings object changed (so the caller knows to write).
+ *
+ * Strategy: strip EVERY entry that points at our hook, then append the two fresh
+ * ones. Matching on the command (not the matcher string) means a future change to
+ * our matcher set can't strand a stale ClaudeSec entry next to a new one — the old
+ * one is always removed first.
  */
 function mergeEntries(settings: any, installedHook: string): boolean {
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
   const pre = settings.hooks.PreToolUse;
   const list: any[] = Array.isArray(pre) ? pre : [];
-  settings.hooks.PreToolUse = list;
 
-  let changed = false;
-  for (const entry of hookEntries(installedHook)) {
-    const existingIdx = list.findIndex(
-      e => isOurEntry(e) && e.matcher === entry.matcher,
-    );
-    if (existingIdx >= 0) {
-      // Refresh the command in place (path may have changed) — no duplicate.
-      const cur = JSON.stringify(list[existingIdx]);
-      list[existingIdx] = entry;
-      if (JSON.stringify(list[existingIdx]) !== cur) changed = true;
-    } else {
-      list.push(entry);
-      changed = true;
-    }
-  }
-  return changed;
+  const before = JSON.stringify(list);
+  const kept = list.filter(e => !isOurEntry(e));
+  kept.push(...hookEntries(installedHook));
+  settings.hooks.PreToolUse = kept;
+
+  return JSON.stringify(kept) !== before;
 }
 
 /** Remove ONLY our entries from settings.PreToolUse. Returns true if changed. */
@@ -221,7 +218,11 @@ function removeEntries(settings: any): boolean {
 
 function writeSettings(file: string, settings: any): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
+  // 0600 to match Claude Code's own settings perms and our spans.db posture. The
+  // `mode` option only applies when the file is CREATED, so chmod after the write
+  // to also tighten a pre-existing, looser settings.json.
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
 }
 
 /** Copy the tracked hook + freshly-built snapshot into ~/.claudesec/hooks/. */

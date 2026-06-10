@@ -222,12 +222,21 @@ function run(input) {
   if (toolName === 'Bash') {
     bashCmd = String(ti.command || '');
     matchText = bashCmd;
-  } else if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
+  } else if (
+    toolName === 'Edit' ||
+    toolName === 'Write' ||
+    toolName === 'MultiEdit' ||
+    toolName === 'NotebookEdit'
+  ) {
     const parts = [];
     if (ti.file_path) parts.push(String(ti.file_path));
     if (ti.path) parts.push(String(ti.path));
     if (ti.content) parts.push(String(ti.content));
     if (ti.new_string) parts.push(String(ti.new_string));
+    // NotebookEdit names its target/content differently from the text editors:
+    // the new cell source is `new_source` and the file is `notebook_path`.
+    if (ti.notebook_path) parts.push(String(ti.notebook_path));
+    if (ti.new_source) parts.push(String(ti.new_source));
     if (Array.isArray(ti.edits)) {
       for (const e of ti.edits) {
         if (e && e.new_string) parts.push(String(e.new_string));
