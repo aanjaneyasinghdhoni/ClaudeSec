@@ -17,7 +17,8 @@ scored live against ~639 built-in threat-detection rules. Nothing ever leaves yo
 ## Run it
 
 From a fresh clone, one command does everything — checks Node, enables pnpm, installs deps on
-first run, prints which agents it can see, and opens the dashboard:
+first run, builds and serves the production app (zero-config), prints which agents it can see,
+and opens the dashboard:
 
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
