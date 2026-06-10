@@ -21,6 +21,9 @@ coverage/
 *.sqlite3
 exports/
 
+# Local working notes — excluded from the repo and the in-app docs build
+docs/_local/
+
 # Server- and build-generated artifacts
 rules-enforcement.json
 enforce-config.json

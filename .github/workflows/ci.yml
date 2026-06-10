@@ -36,6 +36,10 @@ jobs:
             echo "ERROR: database/data file is tracked in git — remove it and add to .gitignore"
             exit 1
           fi
+          if git ls-files docs/_local | grep -q .; then
+            echo "ERROR: docs/_local/ holds local working notes and must never be tracked"
+            exit 1
+          fi
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level high
