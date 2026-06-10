@@ -12,7 +12,7 @@ import {
   ChevronDown, MoreHorizontal, HelpCircle, Menu,
 } from 'lucide-react';
 import { socket } from './socket';
-import { CategoryNav, type Category, CATEGORIES } from './CategoryNav';
+import { CategoryNav, CATEGORIES } from './CategoryNav';
 import { DocsView } from './docs/DocsView';
 import { CommandPalette } from './docs/CommandPalette';
 import { ContextSidebar } from './ContextSidebar';
@@ -39,10 +39,11 @@ import type { Severity } from './shared/types';
 import { applyLayout, type LayoutMode } from './lib/graphLayout';
 import { useDebouncedCallback } from './lib/useDebouncedCallback';
 import { toMs, formatSpanName } from './lib/format';
+import { useRouteNav } from './lib/useRouteNav';
 import { Timeline } from './Timeline';
 import {
   type FilterMode, type Tab, type Workflow, type SessionLabel, type Session, type TickerSpan,
-  CATEGORY_TABS, categoryForTab,
+  CATEGORY_TABS,
   LABEL_COLORS, HARNESS_COLORS, HARNESS_NAMES, SEVERITY_LABEL, SEVERITY_COLORS, SEV_RANK,
 } from './dashboardTypes';
 
@@ -83,11 +84,14 @@ export default function App() {
   const [graphWindow, setGraphWindow] = useState<{ shown: number; total: number } | null>(null);
 
   // ── UI state ──────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab]           = useState<Tab>('timeline');
-  const [activeCategory, setActiveCategory] = useState<Category>('observe');
-  // Open straight into docs when the page is loaded on a '#/docs/...' deep link
-  // (e.g. a reload while reading docs), so the view matches the URL on mount.
-  const [docsOpen, setDocsOpen] = useState(() => window.location.hash.startsWith('#/docs'));
+  // Navigation (category, tab, docs) is derived from the URL — the address bar is
+  // the single source of truth, so every view is deep-linkable and survives a
+  // refresh. Filters and selections deliberately stay in component state below:
+  // they change constantly and a trace id is meaningless in another operator's DB.
+  const {
+    activeTab, activeCategory, docsOpen, docsSlug,
+    navigateTab, navigateCategory, openDocs, closeDocs,
+  } = useRouteNav();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
   // When jumping to a span bookmark, the scoped graph loads asynchronously; hold
@@ -105,33 +109,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // When category changes, jump to its first tab
-  // Docs renders in place of the dashboard tabs (not alongside them) and is the
-  // only view that drives window.location.hash. Leaving docs therefore has to do
-  // two things the tab state can't do on its own: drop the DocsView and clear the
-  // stale '#/docs/<slug>' the address bar is still showing. Every navigation
-  // funnels through handleCategoryChange / handleTabChange, so calling this from
-  // both guarantees any tab or rail click also exits docs.
-  const closeDocs = () => {
-    setDocsOpen(false);
-    if (window.location.hash.startsWith('#/docs')) {
-      history.replaceState(null, '', window.location.pathname + window.location.search);
-    }
-  };
-
-  const handleCategoryChange = (cat: Category) => {
-    closeDocs();
-    setActiveCategory(cat);
-    const firstTab = CATEGORY_TABS[cat][0];
-    if (firstTab) setActiveTab(firstTab.id);
-  };
-
-  // Keep category in sync when tab is set directly
-  const handleTabChange = (tab: Tab) => {
-    closeDocs();
-    setActiveTab(tab);
-    setActiveCategory(categoryForTab(tab));
-  };
   const [layoutMode, setLayoutMode]         = useState<LayoutMode>('radial');
 
   // ── Data state ────────────────────────────────────────────────────────────
@@ -766,7 +743,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           {/* Hamburger — opens contextual sidebar drawer (below lg only) */}
           <button
-            onClick={() => { closeDocs(); setSidebarOpen(true); }}
+            onClick={() => setSidebarOpen(true)}
             className="lg:hidden -ml-1 inline-flex items-center justify-center w-11 h-11 rounded-lg transition-all"
             style={{ color: 'var(--cs-text-muted)' }}
             aria-label="Open sidebar"
@@ -911,7 +888,7 @@ export default function App() {
 
           {/* Docs */}
           <button
-            onClick={() => setDocsOpen(true)}
+            onClick={() => openDocs(docsSlug ?? '')}
             className="p-1.5 rounded-lg transition-all"
             style={{ color: docsOpen ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}
             title="Documentation"
@@ -930,8 +907,7 @@ export default function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onSelect={slug => {
-          window.location.hash = '#/docs/' + slug;
-          setDocsOpen(true);
+          openDocs(slug);
           setPaletteOpen(false);
         }}
       />
@@ -939,7 +915,7 @@ export default function App() {
       <div className="flex-1 flex lg:overflow-hidden min-h-0 relative">
 
         {/* ── Category Rail (hidden below md — replaced by bottom tab bar) ── */}
-        <CategoryNav active={activeCategory} onChange={handleCategoryChange} alertCount={alertCount} onOpenDocs={() => setDocsOpen(true)} docsActive={docsOpen} />
+        <CategoryNav active={activeCategory} onChange={navigateCategory} alertCount={alertCount} onOpenDocs={() => openDocs(docsSlug ?? '')} docsActive={docsOpen} />
 
         {/* Drawer scrim — tap to close (below lg only) */}
         {sidebarOpen && (
@@ -951,7 +927,7 @@ export default function App() {
         )}
 
         {docsOpen ? (
-          <DocsView onClose={closeDocs} />
+          <DocsView slug={docsSlug ?? ''} onClose={closeDocs} onNavigate={openDocs} />
         ) : (
         <>
         {/* ── Contextual Sidebar (static in-row at >=lg, off-canvas drawer below) ── */}
@@ -959,7 +935,7 @@ export default function App() {
           category={activeCategory}
           alertCount={alertCount}
           activeTab={activeTab}
-          onTabChange={(tab) => handleTabChange(tab as Tab)}
+          onTabChange={(tab) => navigateTab(tab as Tab)}
           timeRange={timeRange}
           onTimeRangeChange={setTimeRange}
           isOpen={sidebarOpen}
@@ -1392,7 +1368,7 @@ export default function App() {
             {CATEGORY_TABS[activeCategory].map(tab => (
               <button
                 key={tab.id}
-                onClick={() => handleTabChange(tab.id)}
+                onClick={() => navigateTab(tab.id)}
                 className={`sub-tab-btn relative px-3 py-2 text-[11px] font-medium flex items-center gap-1.5 whitespace-nowrap ${
                   activeTab === tab.id ? 'tab-active' : ''
                 }`}
@@ -1488,10 +1464,10 @@ export default function App() {
             <OrchestrationTab
               onSelectSession={traceId => {
                 setActiveSession(traceId);
-                // Use handleTabChange (not setActiveTab) so the category rail
-                // stays in sync with the active tab — matching the BookmarksTab
-                // pattern that fixed the "frozen rail" desync.
-                handleTabChange('timeline');
+                // Navigate to the timeline route so the category rail, sub-tabs
+                // and the URL all stay in sync — matching the BookmarksTab pattern
+                // that fixed the "frozen rail" desync.
+                navigateTab('timeline');
               }}
             />
           )}
@@ -1514,7 +1490,7 @@ export default function App() {
           {/* Harnesses view */}
           {activeTab === 'harnesses' && (
             <HarnessTab
-              onFilterHarness={h => { setHarnessFilter(h); if (h) setActiveTab('timeline'); }}
+              onFilterHarness={h => { setHarnessFilter(h); if (h) navigateTab('timeline'); }}
               activeFilter={harnessFilter}
             />
           )}
@@ -1533,8 +1509,8 @@ export default function App() {
             <ProcessesTab
               onSelectSession={traceId => {
                 setActiveSession(traceId);
-                // handleTabChange keeps the nav rail's category in sync.
-                handleTabChange('timeline');
+                // Navigating to the timeline route keeps the nav rail's category in sync.
+                navigateTab('timeline');
               }}
             />
           )}
@@ -1544,10 +1520,10 @@ export default function App() {
             <BookmarksTab
               onSelectSession={(traceId, spanId) => {
                 setActiveSession(traceId);
-                // Use handleTabChange (not setActiveTab) so the category rail,
-                // sub-tabs and sidebar stay in sync — otherwise the rail keeps
-                // showing 'review' and the jump looks like a no-op.
-                handleTabChange('timeline');
+                // Navigate to the timeline route so the category rail, sub-tabs
+                // and sidebar stay in sync — otherwise the rail keeps showing
+                // 'review' and the jump looks like a no-op.
+                navigateTab('timeline');
                 // For a span bookmark, remember the span so it gets selected and
                 // highlighted once the scoped graph for this session loads.
                 setPendingSpanSelect(spanId ?? null);
@@ -1630,7 +1606,7 @@ export default function App() {
           return (
             <button
               key={cat.id}
-              onClick={() => { setSidebarOpen(false); handleCategoryChange(cat.id); }}
+              onClick={() => { setSidebarOpen(false); navigateCategory(cat.id); }}
               className="category-btn relative flex-1 flex flex-col items-center justify-center gap-0.5 min-h-[56px] py-1.5"
               style={{ color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}
               aria-current={isActive ? 'page' : undefined}
