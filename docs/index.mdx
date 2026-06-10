@@ -17,7 +17,7 @@ No environment variables. No restarting your terminal. Nothing ever leaves your 
 
 ## Install
 
-Clone the repo and run the one-command starter — it installs dependencies, starts the dashboard, and begins watching every agent on your machine right away:
+Clone the repo and run the one-command starter — it installs dependencies, builds and serves the production app (zero-config), and begins watching every agent on your machine right away:
 
 ```bash
 git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
@@ -25,12 +25,13 @@ cd ClaudeSec
 ./start.sh
 ```
 
-Prefer to run the steps yourself? They are:
+Prefer to run the steps yourself? Install, then either build and serve the production app, or run the dev server with hot reload:
 
 ```bash
 corepack enable
 pnpm install
-pnpm dev
+pnpm build && pnpm start   # production build, served from dist/
+# or: pnpm dev              # dev server with hot reload
 ```
 
 That's it — open **http://localhost:3000**. See the [Quickstart](/quickstart) for what happens next, including how to run it as a background service.

@@ -5,8 +5,10 @@
 # Two audiences, both zero-config (no .env file required):
 #
 #   ./start.sh            Local (humans): clone -> running dashboard in one
-#                         command. Tails your on-disk agent transcripts live
-#                         and tells you which agents it can see.
+#                         command. Builds the production app on first run (and
+#                         whenever sources change), then serves it. Tails your
+#                         on-disk agent transcripts live and tells you which
+#                         agents it can see.
 #
 #   ./start.sh --docker   Docker (servers): runs `docker compose up` (headless).
 #                         Docker ingests via OTLP only — it cannot read your
@@ -26,9 +28,10 @@
 set -euo pipefail
 
 # --- Always operate from the repo root -------------------------------------
-# Every later step (node_modules check, pnpm install, pnpm dev, docker compose)
-# assumes the current directory is the repo root. Resolve the script's own
-# directory and cd into it so `./start.sh` works no matter where it's invoked.
+# Every later step (node_modules check, pnpm install, vite build, pnpm start,
+# docker compose) assumes the current directory is the repo root. Resolve the
+# script's own directory and cd into it so `./start.sh` works no matter where
+# it's invoked.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -55,9 +58,11 @@ ClaudeSec — start the local security observatory for your AI coding agents.
 
 USAGE:
   ./start.sh            Run the full local dashboard (zero-config).
-                        Installs deps if needed, shows which agents are
-                        detected, opens http://localhost:3000, and tails your
-                        Claude Code / Codex / Copilot CLI transcripts live.
+                        Installs deps if needed, builds the production app on
+                        first run (and whenever sources change), then serves it,
+                        shows which agents are detected, opens
+                        http://localhost:3000, and tails your Claude Code /
+                        Codex / Copilot CLI transcripts live.
 
   ./start.sh --docker   Run via Docker (`docker compose up`, headless).
                         Docker ingests via OTLP only — no local-transcript
@@ -231,9 +236,40 @@ if [ -n "$missing" ]; then
 fi
 echo
 
-# 5) Start the dashboard ----------------------------------------------------
-# `pnpm dev` runs the server in the FOREGROUND and blocks, so we print the URL
-# and (best-effort) open the browser first. The browser open is backgrounded
+# 5) Build the production app if needed -------------------------------------
+# End users get the PRODUCTION build, never a dev server (Vite HMR with no
+# prebuilt dist), so editing source without rebuilding can't silently serve
+# stale assets. We build on-device from in-repo source only — no network fetch.
+#
+# Rebuild only when necessary so repeat launches stay fast: when there's no
+# prior build (dist/index.html missing), or when any tracked source is newer
+# than that build. `find ... -newer` prints a path for each stale file, so a
+# non-empty result means "something changed since the last build".
+#
+# Note: we call `pnpm exec vite build` (NOT `pnpm build`) on purpose — `pnpm
+# build` fires the `prebuild` hook, which runs the full test gate. That gate is
+# for CI, not for an end user launching the app, so we bypass it here.
+needs_build=""
+if [ ! -f dist/index.html ]; then
+  needs_build="1"
+elif [ -n "$(find src server docs index.html vite.config.* package.json -type f -newer dist/index.html 2>/dev/null)" ]; then
+  needs_build="1"
+fi
+
+if [ -n "$needs_build" ]; then
+  echo "Building the app (first run / sources changed)…"
+  if ! pnpm exec vite build; then
+    echo "Error: the production build failed — not starting the server." >&2
+    echo "Fix the build error above and retry ./start.sh." >&2
+    exit 1
+  fi
+  echo
+fi
+
+# 6) Start the dashboard ----------------------------------------------------
+# `pnpm start` runs the server in PRODUCTION mode (NODE_ENV=production), serving
+# the freshly-built dist/. It runs in the FOREGROUND and blocks, so we print the
+# URL and (best-effort) open the browser first. The browser open is backgrounded
 # with a short delay so the port is listening by the time it fires; it's fully
 # guarded so a missing opener never aborts the run.
 echo "Starting ClaudeSec — dashboard at $URL"
@@ -248,4 +284,4 @@ echo "       node cli/init.mjs install-hook"
 echo
 ( sleep 2; open_browser "$URL" ) >/dev/null 2>&1 &
 
-exec pnpm dev
+exec pnpm start
