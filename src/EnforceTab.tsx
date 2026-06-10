@@ -15,13 +15,34 @@ interface EnforceLogEvent {
   wouldBlock: boolean;
 }
 
+type ModeSource = 'config-file' | 'env' | 'default';
+type HookInstalled = 'yes' | 'no' | 'unknown';
+
+interface HookStatus {
+  installed: HookInstalled;
+  scopes: string[];
+}
+
 interface EnforceConfig {
   mode: EnforceMode;
   overrides: Record<string, EnforceAction>;
   configFile?: string;
   envMode?: string | null;
   bypassEnabled?: boolean;
+  // The mode the hook will actually run, after file → env → default precedence,
+  // and which layer supplied it. May differ from `mode` (the configured toggle).
+  effectiveMode?: EnforceMode;
+  modeSource?: ModeSource;
+  // Whether a PreToolUse hook running our enforcer is registered in Claude Code.
+  // 'unknown' inside a container (host settings aren't visible there).
+  hookStatus?: HookStatus;
 }
+
+const SCOPE_LABEL: Record<string, string> = {
+  user: 'user settings',
+  project: 'project settings',
+  'project-local': 'project-local settings',
+};
 
 const SEV_BADGE: Record<string, string> = {
   high:   'bg-red-900/40 text-red-300 border border-red-700/40',
@@ -79,7 +100,11 @@ export function EnforceTab() {
       setEvents(prev => [evt, ...prev].slice(0, LOG_LIMIT));
     };
     const onConfig = (c: { mode: EnforceMode; overrides: Record<string, EnforceAction> }) => {
+      // Apply the live mode/overrides immediately for snappy UI, then refetch so
+      // the derived truths (effectiveMode / modeSource / hookStatus) re-resolve
+      // against the new config-file state rather than going stale.
       setConfig(prev => (prev ? { ...prev, mode: c.mode, overrides: c.overrides } : prev));
+      fetchConfig();
     };
     socket.on('enforce-log', onLog);
     socket.on('enforce-config', onConfig);
@@ -87,7 +112,7 @@ export function EnforceTab() {
       socket.off('enforce-log', onLog);
       socket.off('enforce-config', onConfig);
     };
-  }, []);
+  }, [fetchConfig]);
 
   // Tick every 5s so relative timestamps stay fresh.
   useEffect(() => {
@@ -97,6 +122,28 @@ export function EnforceTab() {
 
   const mode = config?.mode ?? 'monitor';
   const isEnforce = mode === 'enforce';
+
+  // ── Honest standing-state derivation ──────────────────────────────────────
+  // The configured toggle (`mode`) is NOT necessarily what the hook runs. The
+  // hook resolves file → env → default; the server reports the resolved value as
+  // `effectiveMode` plus the `modeSource` that won. Fall back to the toggle only
+  // when the server hasn't reported one (older server / fetch in flight).
+  const effectiveMode: EnforceMode = config?.effectiveMode ?? mode;
+  const modeSource: ModeSource = config?.modeSource ?? 'config-file';
+  const effEnforce = effectiveMode === 'enforce';
+
+  const hookInstalled: HookInstalled = config?.hookStatus?.installed ?? 'unknown';
+  const hookScopes = config?.hookStatus?.scopes ?? [];
+
+  // A live feed proves the hook FIRED, never that blocking is wired up correctly —
+  // so green is earned ONLY when enforce is effective AND a hook is registered.
+  const protectionActive = effEnforce && hookInstalled === 'yes';
+
+  // The precedence trap: an operator set CLAUDESEC_MODE but the config file's mode
+  // is what the hook actually obeys, and the two disagree. Name it explicitly.
+  const envMode = config?.envMode ?? null;
+  const envTrap =
+    !!envMode && modeSource === 'config-file' && envMode !== effectiveMode;
 
   const setMode = async (next: EnforceMode) => {
     if (saving || next === mode) return;
@@ -114,6 +161,9 @@ export function EnforceTab() {
       }
       const updated = await res.json();
       setConfig(prev => (prev ? { ...prev, mode: updated.mode, overrides: updated.overrides } : prev));
+      // The toggle just rewrote enforce-config.json, which is the top precedence
+      // layer — refetch so effectiveMode / modeSource re-resolve against it.
+      fetchConfig();
     } catch (e) {
       setError((e as Error).message || 'Failed to update mode');
     } finally {
@@ -151,33 +201,141 @@ export function EnforceTab() {
           </span>
         </div>
 
-        {/* Mode banner + toggle */}
+        {/* Mode banner + toggle. Colour treatment follows the EFFECTIVE state, not
+            the toggle: green is reserved for protectionActive (enforce effective
+            AND a hook registered); enforce-without-a-hook is red-but-not-green. */}
         <div
           className="rounded-2xl p-4 sm:p-5 flex flex-col gap-4"
           style={{
-            background: isEnforce ? 'rgba(244,63,94,0.06)' : 'var(--cs-bg-surface)',
-            border: `1px solid ${isEnforce ? 'rgba(244,63,94,0.30)' : 'var(--cs-border)'}`,
+            background: protectionActive
+              ? 'rgba(34,197,94,0.06)'
+              : effEnforce
+                ? 'rgba(244,63,94,0.06)'
+                : 'var(--cs-bg-surface)',
+            border: `1px solid ${
+              protectionActive
+                ? 'rgba(34,197,94,0.30)'
+                : effEnforce
+                  ? 'rgba(244,63,94,0.30)'
+                  : 'var(--cs-border)'
+            }`,
           }}
         >
           <div className="flex items-start gap-3">
-            {isEnforce
-              ? <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" style={{ color: '#ff3b5c' }} />
-              : <Eye className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--cs-accent)' }} />}
+            {protectionActive
+              ? <ShieldCheck className="w-5 h-5 shrink-0 mt-0.5" style={{ color: '#22c55e' }} />
+              : effEnforce
+                ? <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" style={{ color: '#ff3b5c' }} />
+                : <Eye className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--cs-accent)' }} />}
             <div className="min-w-0 flex-1">
+              {/* Standing-state headline — honest, never "you are protected". */}
               <div className="text-sm font-semibold mb-1" style={{ color: 'var(--cs-text-base)' }}>
-                {isEnforce ? 'Enforce mode — high-severity tool calls are BLOCKED' : 'Monitor mode — logging only, nothing is blocked'}
+                {protectionActive
+                  ? 'Blocking enabled (fail-open by design)'
+                  : effEnforce
+                    ? 'Enforce mode — high-severity tool calls are BLOCKED'
+                    : 'Monitor mode — logging only, nothing is blocked'}
               </div>
               <p className="text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
-                {isEnforce
-                  ? 'The PreToolUse hook denies Bash / Edit / Write / MultiEdit calls that match a high-severity rule. The always-on catastrophic floor (rm -rf /, fork bombs, reverse shells, etc.) blocks in either mode.'
+                {effEnforce
+                  ? 'The PreToolUse hook denies Bash / Edit / Write / MultiEdit calls that match a high-severity rule. The always-on catastrophic floor (rm -rf /, fork bombs, reverse shells, etc.) blocks in either mode. Fail-open: if the hook errors, the call is allowed through.'
                   : 'The hook records "would-block" events for high-severity matches but allows every call. Flip to Enforce to actually deny them. The catastrophic floor still blocks the 6 most dangerous commands regardless of mode.'}
               </p>
+
+              {/* Three distinct truths: configured toggle, effective mode + source,
+                  and hook registration. */}
+              <div className="mt-3 flex flex-col gap-1 text-[11px]" style={{ color: 'var(--cs-text-muted)' }}>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span style={{ color: 'var(--cs-text-faint)' }}>Configured mode:</span>
+                  <span className="font-mono font-semibold" style={{ color: 'var(--cs-text-base)' }}>{mode}</span>
+                </div>
+                {/* Only call out the effective mode when the config file is NOT the
+                    source, or when it disagrees with the configured toggle — when
+                    they agree there is nothing surprising to flag. */}
+                {(modeSource !== 'config-file' || effectiveMode !== mode) && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span style={{ color: 'var(--cs-text-faint)' }}>Effective mode (what the hook runs):</span>
+                    <span className="font-mono font-semibold" style={{ color: effEnforce ? '#ff6b81' : 'var(--cs-text-base)' }}>{effectiveMode}</span>
+                    <span style={{ color: 'var(--cs-text-faint)' }}>
+                      from {modeSource === 'config-file' ? 'enforce-config.json' : modeSource === 'env' ? 'CLAUDESEC_MODE env' : 'the monitor default'}
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span style={{ color: 'var(--cs-text-faint)' }}>Hook registered:</span>
+                  {hookInstalled === 'yes' ? (
+                    <span className="font-semibold" style={{ color: '#22c55e' }}>
+                      yes{hookScopes.length > 0 && ` (${hookScopes.map(s => SCOPE_LABEL[s] ?? s).join(', ')})`}
+                    </span>
+                  ) : hookInstalled === 'no' ? (
+                    <span className="font-semibold" style={{ color: '#ff6b81' }}>no</span>
+                  ) : (
+                    <span className="font-semibold" style={{ color: '#ffb224' }}>unknown (container)</span>
+                  )}
+                </div>
+              </div>
+
               <p className="text-[11px] mt-2 font-mono" style={{ color: 'var(--cs-text-faint)' }}>
                 Bypass any single run with <span style={{ color: 'var(--cs-accent)' }}>CLAUDESEC_HOOKS_BYPASS=1</span>.
                 {config?.bypassEnabled && <span style={{ color: '#ffb224' }}> Bypass is currently ACTIVE in this server's env — the hook allows everything.</span>}
               </p>
             </div>
           </div>
+
+          {/* ── Honest warnings ──────────────────────────────────────────────
+              No hook registered → nothing can be blocked OR observed via hooks,
+              regardless of mode. Red when enforce is effective (false sense of
+              blocking), amber in monitor. */}
+          {hookInstalled === 'no' && (
+            <div
+              className="rounded-xl p-3 flex items-start gap-2.5"
+              style={{
+                background: effEnforce ? 'rgba(244,63,94,0.08)' : 'rgba(255,178,36,0.08)',
+                border: `1px solid ${effEnforce ? 'rgba(244,63,94,0.35)' : 'rgba(255,178,36,0.35)'}`,
+              }}
+            >
+              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" style={{ color: effEnforce ? '#ff3b5c' : '#ffb224' }} />
+              <div className="min-w-0 flex-1 text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
+                <span className="font-semibold" style={{ color: effEnforce ? '#ff6b81' : '#ffb224' }}>
+                  No Claude Code hook is registered.
+                </span>{' '}
+                The dashboard cannot block or observe agent tool calls through the PreToolUse hook —
+                events in the feed below, if any, do not prove blocking works. Register it by running{' '}
+                <code className="font-mono px-1 py-0.5 rounded" style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)' }}>node cli/init.mjs install-hook</code>{' '}
+                from the ClaudeSec directory, then restart Claude Code.
+              </div>
+            </div>
+          )}
+
+          {/* The env/config precedence trap — name it explicitly. */}
+          {envTrap && (
+            <div
+              className="rounded-xl p-3 flex items-start gap-2.5"
+              style={{ background: 'rgba(255,178,36,0.08)', border: '1px solid rgba(255,178,36,0.35)' }}
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" style={{ color: '#ffb224' }} />
+              <div className="min-w-0 flex-1 text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
+                <code className="font-mono px-1 py-0.5 rounded" style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)' }}>CLAUDESEC_MODE={envMode}</code>{' '}
+                is set, but <code className="font-mono px-1 py-0.5 rounded" style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)' }}>enforce-config.json</code>{' '}
+                (mode: <span className="font-mono font-semibold" style={{ color: 'var(--cs-text-base)' }}>{effectiveMode}</span>) takes precedence.
+                The env value is being ignored by the hook.
+              </div>
+            </div>
+          )}
+
+          {/* Container: host settings aren't visible, so registration is unverifiable. */}
+          {hookInstalled === 'unknown' && (
+            <div
+              className="rounded-xl p-3 flex items-start gap-2.5"
+              style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--cs-text-faint)' }} />
+              <div className="min-w-0 flex-1 text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
+                Running inside a container — Claude Code hook registration can't be verified from here,
+                since the host's settings aren't mounted. Confirm the hook on the host if you rely on hook-based enforcement.
+              </div>
+            </div>
+          )}
 
           {/* Segmented toggle */}
           <div className="flex items-center gap-3 flex-wrap">
@@ -208,9 +366,10 @@ export function EnforceTab() {
               </button>
             </div>
             {saving && <span className="text-[11px]" style={{ color: 'var(--cs-text-faint)' }}>Saving…</span>}
-            {config?.envMode && (
+            {envMode && (
               <span className="text-[11px] font-mono" style={{ color: 'var(--cs-text-faint)' }}>
-                env CLAUDESEC_MODE={config.envMode} (file overrides env)
+                env CLAUDESEC_MODE={envMode}
+                {modeSource === 'env' ? ' (in effect)' : ' (overridden by enforce-config.json)'}
               </span>
             )}
           </div>
@@ -273,7 +432,7 @@ export function EnforceTab() {
           {events.length === 0 ? (
             <div className="px-4 py-10 text-center text-xs" style={{ color: 'var(--cs-text-faint)' }}>
               No enforcement events yet. When a tool call matches a high-severity rule, it appears here
-              {isEnforce ? ' (and is blocked).' : ' as a would-block.'}
+              {protectionActive ? ' (and is blocked).' : ' as a would-block.'}
             </div>
           ) : (
             <div className="divide-y" style={{ borderColor: 'var(--cs-border)' }}>
