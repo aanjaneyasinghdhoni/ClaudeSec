@@ -85,7 +85,9 @@ export default function App() {
   // ── UI state ──────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab]           = useState<Tab>('timeline');
   const [activeCategory, setActiveCategory] = useState<Category>('observe');
-  const [docsOpen, setDocsOpen] = useState(false);
+  // Open straight into docs when the page is loaded on a '#/docs/...' deep link
+  // (e.g. a reload while reading docs), so the view matches the URL on mount.
+  const [docsOpen, setDocsOpen] = useState(() => window.location.hash.startsWith('#/docs'));
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
   // When jumping to a span bookmark, the scoped graph loads asynchronously; hold
@@ -104,7 +106,21 @@ export default function App() {
   }, []);
 
   // When category changes, jump to its first tab
+  // Docs renders in place of the dashboard tabs (not alongside them) and is the
+  // only view that drives window.location.hash. Leaving docs therefore has to do
+  // two things the tab state can't do on its own: drop the DocsView and clear the
+  // stale '#/docs/<slug>' the address bar is still showing. Every navigation
+  // funnels through handleCategoryChange / handleTabChange, so calling this from
+  // both guarantees any tab or rail click also exits docs.
+  const closeDocs = () => {
+    setDocsOpen(false);
+    if (window.location.hash.startsWith('#/docs')) {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  };
+
   const handleCategoryChange = (cat: Category) => {
+    closeDocs();
     setActiveCategory(cat);
     const firstTab = CATEGORY_TABS[cat][0];
     if (firstTab) setActiveTab(firstTab.id);
@@ -112,6 +128,7 @@ export default function App() {
 
   // Keep category in sync when tab is set directly
   const handleTabChange = (tab: Tab) => {
+    closeDocs();
     setActiveTab(tab);
     setActiveCategory(categoryForTab(tab));
   };
@@ -745,7 +762,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           {/* Hamburger — opens contextual sidebar drawer (below lg only) */}
           <button
-            onClick={() => { setDocsOpen(false); setSidebarOpen(true); }}
+            onClick={() => { closeDocs(); setSidebarOpen(true); }}
             className="lg:hidden -ml-1 inline-flex items-center justify-center w-11 h-11 rounded-lg transition-all"
             style={{ color: 'var(--cs-text-muted)' }}
             aria-label="Open sidebar"
@@ -930,7 +947,7 @@ export default function App() {
         )}
 
         {docsOpen ? (
-          <DocsView onClose={() => setDocsOpen(false)} />
+          <DocsView onClose={closeDocs} />
         ) : (
         <>
         {/* ── Contextual Sidebar (static in-row at >=lg, off-canvas drawer below) ── */}
@@ -1607,7 +1624,7 @@ export default function App() {
           return (
             <button
               key={cat.id}
-              onClick={() => { setDocsOpen(false); setSidebarOpen(false); handleCategoryChange(cat.id); }}
+              onClick={() => { setSidebarOpen(false); handleCategoryChange(cat.id); }}
               className="category-btn relative flex-1 flex flex-col items-center justify-center gap-0.5 min-h-[56px] py-1.5"
               style={{ color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}
               aria-current={isActive ? 'page' : undefined}
