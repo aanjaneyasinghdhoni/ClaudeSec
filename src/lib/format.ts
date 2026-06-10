@@ -23,3 +23,11 @@ export function formatSpanName(raw: string): string {
   if (raw.startsWith('process/')) return raw;
   return raw;
 }
+
+// Compact token counts (e.g. 140,839,947 → "140.84M") so large numbers stay
+// readable. Keep the exact value in a `title` tooltip at the call site.
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}

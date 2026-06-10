@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Activity } from 'lucide-react';
 import { socket } from './socket';
+import { formatTokens } from './lib/format';
 
 // ---------------------------------------------------------------------------
 // Constants — redefined inline (do not import from App.tsx)
@@ -154,10 +155,12 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
         </div>
       )}
 
-      {/* Token bar */}
+      {/* Token bar — compact display, exact value in tooltip */}
       {(stats.tokensIn > 0 || stats.tokensOut > 0) && (
         <p className="text-[11px] font-mono text-slate-400">
-          ↑ {stats.tokensIn.toLocaleString()}&nbsp;&nbsp;↓ {stats.tokensOut.toLocaleString()}
+          <span title={`${stats.tokensIn.toLocaleString()} tokens in`}>↑ {formatTokens(stats.tokensIn)}</span>
+          &nbsp;&nbsp;
+          <span title={`${stats.tokensOut.toLocaleString()} tokens out`}>↓ {formatTokens(stats.tokensOut)}</span>
         </p>
       )}
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Download, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { formatTokens } from './lib/format';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -118,15 +119,17 @@ interface MetricRowProps {
   bVal: number;
   lowerIsBetter?: boolean;
   format?: (n: number) => string;
+  // Exact value shown in a tooltip when `format` is lossy (e.g. compact tokens).
+  titleFormat?: (n: number) => string;
 }
 
-function MetricRow({ label, aVal, bVal, lowerIsBetter = false, format }: MetricRowProps): React.ReactElement {
+function MetricRow({ label, aVal, bVal, lowerIsBetter = false, format, titleFormat }: MetricRowProps): React.ReactElement {
   const fmt = format ?? ((n: number) => n.toLocaleString());
   return (
     <tr className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
       <td className="px-3 py-2 text-[11px] text-slate-500 whitespace-nowrap">{label}</td>
-      <td className="px-3 py-2 text-xs font-mono text-slate-200 text-right">{fmt(aVal)}</td>
-      <td className="px-3 py-2 text-xs font-mono text-slate-200 text-right">{fmt(bVal)}</td>
+      <td className="px-3 py-2 text-xs font-mono text-slate-200 text-right" title={titleFormat?.(aVal)}>{fmt(aVal)}</td>
+      <td className="px-3 py-2 text-xs font-mono text-slate-200 text-right" title={titleFormat?.(bVal)}>{fmt(bVal)}</td>
       <td className="px-3 py-2 text-right">
         <DeltaBadge aVal={aVal} bVal={bVal} lowerIsBetter={lowerIsBetter} />
       </td>
@@ -318,8 +321,8 @@ export function ComparePanel({ aId, bId, onClose }: Props): React.ReactElement {
                     <MetricRow label="HIGH threats" aVal={data.a.threatHigh}     bVal={data.b.threatHigh}     lowerIsBetter />
                     <MetricRow label="MED threats"  aVal={data.a.threatMedium}   bVal={data.b.threatMedium}   lowerIsBetter />
                     <MetricRow label="LOW threats"  aVal={data.a.threatLow}      bVal={data.b.threatLow}      lowerIsBetter />
-                    <MetricRow label="Tokens In"    aVal={data.a.tokensIn}       bVal={data.b.tokensIn} />
-                    <MetricRow label="Tokens Out"   aVal={data.a.tokensOut}      bVal={data.b.tokensOut} />
+                    <MetricRow label="Tokens In"    aVal={data.a.tokensIn}       bVal={data.b.tokensIn}    format={formatTokens} titleFormat={n => `${n.toLocaleString()} tokens`} />
+                    <MetricRow label="Tokens Out"   aVal={data.a.tokensOut}      bVal={data.b.tokensOut}   format={formatTokens} titleFormat={n => `${n.toLocaleString()} tokens`} />
                     <MetricRow
                       label="Avg Duration"
                       aVal={data.a.avgDurationMs}

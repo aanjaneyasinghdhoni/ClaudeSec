@@ -1,23 +1,7 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
-import type { Severity } from '../../src/shared/types.js';
 import type { RouteContext } from './context.js';
-
-interface SpanRecord {
-  spanId: string;
-  traceId: string;
-  parentId: string;
-  name: string;
-  protocol: string;
-  reason: string;
-  severity: Severity;
-  harness: string;
-  attributes: string;
-  startNano: string;
-  endNano: string;
-}
-
-const getAllSpans = db.prepare(`SELECT * FROM spans`);
+import { dedupedUsageRows } from './costs.js';
 
 export function registerHarnessRoutes(app: Express, _ctx: RouteContext): void {
   // ── Harness profiles (full per-agent stats) ──────────────────────────────
@@ -37,20 +21,21 @@ export function registerHarnessRoutes(app: Express, _ctx: RouteContext): void {
       ORDER BY spanCount DESC
     `).all() as any[];
 
-    // Compute token totals per harness by iterating attributes
+    // Token totals per harness, on the SAME basis as /api/costs: de-duplicated
+    // LLM usage (exact response-id dedupe + the legacy time/usage heuristic) with
+    // demo traces excluded, and cache tokens folded into the input total so the
+    // HarnessTab figures agree with the CostTab. Without this, the old code summed
+    // every duplicate transcript line and ignored cache reads/writes, so the two
+    // tabs disagreed and the totals were inflated.
     const tokenMap = new Map<string, { tokensIn: number; tokensOut: number }>();
-    const allSpans = getAllSpans.all() as SpanRecord[];
-    for (const span of allSpans) {
-      try {
-        const a = JSON.parse(span.attributes);
-        const ti = Number(a['gen_ai.usage.input_tokens']  ?? a['llm.usage.input_tokens']  ?? 0);
-        const to = Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
-        if (!ti && !to) continue;
-        const entry = tokenMap.get(span.harness) ?? { tokensIn: 0, tokensOut: 0 };
-        entry.tokensIn  += ti;
-        entry.tokensOut += to;
-        tokenMap.set(span.harness, entry);
-      } catch {}
+    for (const u of dedupedUsageRows()) {
+      const ti = u.tokensIn + u.cacheRead + u.cacheWrite;
+      const to = u.tokensOut;
+      if (!ti && !to) continue;
+      const entry = tokenMap.get(u.harness) ?? { tokensIn: 0, tokensOut: 0 };
+      entry.tokensIn  += ti;
+      entry.tokensOut += to;
+      tokenMap.set(u.harness, entry);
     }
 
     const harnesses = rows.map(r => {

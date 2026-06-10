@@ -88,6 +88,9 @@ export default function App() {
   const [docsOpen, setDocsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedNode, setSelectedNode]     = useState<Node | null>(null);
+  // When jumping to a span bookmark, the scoped graph loads asynchronously; hold
+  // the target span id here and let an effect select it once `nodes` contains it.
+  const [pendingSpanSelect, setPendingSpanSelect] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -124,6 +127,9 @@ export default function App() {
   const activeSessionRef = useRef(activeSession);
   useEffect(() => { activeSessionRef.current = activeSession; }, [activeSession]);
   const [connectionStatus, setConnectionStatus] = useState<'live' | 'idle' | 'setup'>('setup');
+  // Surfaces a small "failed to load" notice when a core fetch (sessions / graph)
+  // rejects, instead of letting the promise reject unhandled in the console.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [timelineIntroShown, setTimelineIntroShown] = useState(
     () => localStorage.getItem('claudesec-timeline-intro-dismissed') !== 'true'
   );
@@ -160,6 +166,10 @@ export default function App() {
   // ── Import ────────────────────────────────────────────────────────────────
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importStatus, setImportStatus] = useState<{ msg: string; ok: boolean } | null>(null);
+
+  // ── Copy Mermaid feedback ─────────────────────────────────────────────────
+  // 'copied' / 'error' shows for ~2s on the menu item, then resets to idle.
+  const [mermaidCopy, setMermaidCopy] = useState<'idle' | 'copied' | 'error'>('idle');
 
   // ── Theme (s53) ───────────────────────────────────────────────────────────
   const [liveActivityOpen, setLiveActivityOpen] = useState(false);
@@ -264,6 +274,10 @@ export default function App() {
   const fetchSessions = () =>
     fetch('/api/sessions').then(r => r.json()).then(({ sessions: s }) => {
       setSessions(s ?? []);
+      setLoadError(null);
+    }).catch((err: unknown) => {
+      console.warn('ClaudeSec: failed to load sessions', err);
+      setLoadError('Failed to load sessions');
     });
 
   const fetchAlertCount = () =>
@@ -340,6 +354,11 @@ export default function App() {
         layoutGraph(n, e);
         syncWorkflows(n);
         setGraphWindow(windowed ? { shown: shown ?? n.length, total: total ?? 0 } : null);
+        setLoadError(null);
+      })
+      .catch((err: unknown) => {
+        console.warn('ClaudeSec: failed to load graph', err);
+        setLoadError('Failed to load activity graph');
       });
     // Independent of the graph fetch above; fire concurrently rather than awaiting it.
     fetchSessions();
@@ -347,6 +366,18 @@ export default function App() {
   }, [activeSession]);
 
   useEffect(() => { prevWorkflows.current = workflows; }, [workflows]);
+
+  // Resolve a pending span-bookmark jump: once the scoped graph has loaded and
+  // `nodes` contains the target span, select it (which highlights it in the
+  // timeline / detail panel) and clear the pending marker.
+  useEffect(() => {
+    if (!pendingSpanSelect) return;
+    const target = nodes.find(n => n.id === pendingSpanSelect);
+    if (target) {
+      setSelectedNode(target);
+      setPendingSpanSelect(null);
+    }
+  }, [pendingSpanSelect, nodes]);
 
   // Fetch annotations when a span is selected
   useEffect(() => {
@@ -401,6 +432,11 @@ export default function App() {
             layoutGraph(sn, se);
             syncWorkflows(sn);
             setGraphWindow(null); // a single session is shown in full
+            setLoadError(null);
+          })
+          .catch((err: unknown) => {
+            console.warn('ClaudeSec: failed to refresh session graph', err);
+            setLoadError('Failed to refresh session activity');
           });
         return;
       }
@@ -416,10 +452,17 @@ export default function App() {
         highSpans.forEach(node => {
           const label = String(node.data.label ?? '');
           const rule  = String((node.data as any).attributes?.['claudesec.threat.rule'] ?? '');
-          new Notification('ClaudeSec — HIGH Alert', {
-            body: `${label}${rule ? ': ' + rule : ''}`,
-            tag:  node.id,
-          });
+          // Some browsers throw on `new Notification(...)` (e.g. permission
+          // revoked between checks, or constructor blocked on mobile). Never let
+          // a notification failure break the graph-update handler.
+          try {
+            new Notification('ClaudeSec — HIGH Alert', {
+              body: `${label}${rule ? ': ' + rule : ''}`,
+              tag:  node.id,
+            });
+          } catch (err) {
+            console.warn('ClaudeSec: desktop notification failed', err);
+          }
           seenHighIds.current.add(node.id);
         });
         // Also mark already-known high spans so we don't re-fire on later updates
@@ -732,6 +775,21 @@ export default function App() {
           </div>
         )}
 
+        {/* Data load error — surfaced instead of an unhandled promise rejection */}
+        {loadError && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium z-50 shadow-lg backdrop-blur-md bg-red-900/80 text-red-200 border border-red-700/50">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            {loadError}
+            <button
+              onClick={() => setLoadError(null)}
+              className="ml-1 p-0.5 rounded hover:bg-red-800/60 transition-colors"
+              aria-label="Dismiss"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         {/* Right cluster: actions, grouped */}
         <div className="flex items-center gap-0.5">
           {/* Notification toggle */}
@@ -778,14 +836,23 @@ export default function App() {
                 </button>
                 <div style={{ borderTop: '1px solid var(--cs-border)', margin: '2px 0' }} />
                 <button onClick={async () => {
-                    setShowExportMenu(false);
                     const params = activeSession ? `?session=${activeSession}` : '';
-                    const res = await fetch(`/api/graph/mermaid${params}`);
-                    const text = await res.text();
-                    await navigator.clipboard.writeText(text);
+                    try {
+                      const res = await fetch(`/api/graph/mermaid${params}`);
+                      const text = await res.text();
+                      await navigator.clipboard.writeText(text);
+                      setMermaidCopy('copied');
+                    } catch (err) {
+                      console.warn('ClaudeSec: copy Mermaid failed', err);
+                      setMermaidCopy('error');
+                    }
+                    // Keep the menu open briefly so the inline feedback is seen,
+                    // then reset and close.
+                    setTimeout(() => { setMermaidCopy('idle'); setShowExportMenu(false); }, 2000);
                   }}
                   className="w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-slate-800/50" style={{ color: 'var(--cs-text-muted)' }}>
-                  <Layers className="w-3.5 h-3.5" /> Copy Mermaid
+                  <Layers className="w-3.5 h-3.5" />
+                  {mermaidCopy === 'copied' ? 'Copied!' : mermaidCopy === 'error' ? 'Copy failed' : 'Copy Mermaid'}
                 </button>
                 <button onClick={() => {
                     setShowExportMenu(false);
@@ -993,9 +1060,12 @@ export default function App() {
                     {!isPinned && isActive && <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-white/60" />}
                     {s.healthScore !== undefined && !isActive && (
                       <span
+                        // Align badge colors with the letter-grade bands
+                        // (90/75/60/40): green = A (>=90), yellow = B/C (>=60),
+                        // red = D/F (<60). Previously 80/50, which disagreed.
                         className={`shrink-0 text-[11px] font-mono font-bold px-1 rounded ${
-                          s.healthScore >= 80 ? 'text-green-400 bg-green-900/30'
-                            : s.healthScore >= 50 ? 'text-yellow-400 bg-yellow-900/30'
+                          s.healthScore >= 90 ? 'text-green-400 bg-green-900/30'
+                            : s.healthScore >= 60 ? 'text-yellow-400 bg-yellow-900/30'
                             : 'text-red-400 bg-red-900/30'
                         }`}
                         title={`Health score: ${s.healthScore}/100`}
@@ -1439,9 +1509,15 @@ export default function App() {
           {/* Bookmarks view */}
           {activeTab === 'bookmarks' && (
             <BookmarksTab
-              onSelectSession={traceId => {
+              onSelectSession={(traceId, spanId) => {
                 setActiveSession(traceId);
-                setActiveTab('timeline');
+                // Use handleTabChange (not setActiveTab) so the category rail,
+                // sub-tabs and sidebar stay in sync — otherwise the rail keeps
+                // showing 'review' and the jump looks like a no-op.
+                handleTabChange('timeline');
+                // For a span bookmark, remember the span so it gets selected and
+                // highlighted once the scoped graph for this session loads.
+                setPendingSpanSelect(spanId ?? null);
               }}
             />
           )}

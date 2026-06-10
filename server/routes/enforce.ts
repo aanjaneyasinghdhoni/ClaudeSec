@@ -18,6 +18,7 @@ const setConfig = db.prepare(`INSERT OR REPLACE INTO config (key, value) VALUES 
 export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
   const {
     io,
+    scrubEnforceText,
     appendEnforceLog,
     readEnforceLog,
     enforceLogCount,
@@ -38,6 +39,15 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
     );
   }
 
+  // The PreToolUse hook forwards the matched command/content verbatim — it only
+  // collapses whitespace and truncates, it does NOT redact. So the text can
+  // carry the maintainer's `/Users/<name>/…` home path and any secrets present
+  // in the tool input. Run it through the same scrubber the span pipeline uses
+  // (home paths → /Users/***, API keys → ‹redacted›, …) so stored + broadcast
+  // data is clean at rest. Identity fallback if no scrubber is wired (fail-safe
+  // to current behavior is never desired here, but ctx always supplies one).
+  const scrub = (s: string): string => (scrubEnforceText ? scrubEnforceText(s) : s);
+
   // ── Enforcement event log (PreToolUse hook feed) ──────────────────────────
   // The opt-in claudesec-enforce.cjs hook POSTs "would-block" / "blocked"
   // events here so the dashboard can show enforcement activity. Stored in an
@@ -47,9 +57,11 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
     const evt: EnforceLogEvent = {
       ts:         Date.now(),
       mode:       typeof b.mode === 'string' ? b.mode.slice(0, 32) : 'monitor',
-      label:      typeof b.label === 'string' ? b.label.slice(0, 256) : '(unlabeled)',
+      label:      typeof b.label === 'string' ? scrub(b.label).slice(0, 256) : '(unlabeled)',
       severity:   typeof b.severity === 'string' ? b.severity.slice(0, 16) : 'high',
-      command:    typeof b.command === 'string' ? b.command.slice(0, 1000) : '',
+      // Scrub BEFORE truncating so a secret straddling the 1000-char cut is
+      // still fully redacted by the time the boundary is applied.
+      command:    typeof b.command === 'string' ? scrub(b.command).slice(0, 1000) : '',
       wouldBlock: b.wouldBlock !== false,
     };
     appendEnforceLog(evt);
@@ -60,7 +72,14 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
   app.get('/api/enforce-log', (req, res) => {
     const raw = Number(req.query.limit);
     const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), enforceLogMax) : 100;
-    const events = readEnforceLog(limit); // most-recent first
+    // Defensive (belt-and-suspenders): the write path above already scrubs, but
+    // re-scrub on read so any event buffered before this fix — or written while
+    // a scrubber was momentarily absent — can never be returned unredacted.
+    const events = readEnforceLog(limit).map(e => ({
+      ...e,
+      label:   scrub(e.label),
+      command: scrub(e.command),
+    })); // most-recent first
     res.json({ events, total: enforceLogCount() });
   });
 

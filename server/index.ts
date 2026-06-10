@@ -2481,6 +2481,12 @@ service:
   // ── Enforcement event log + config (PreToolUse hook feed) ──────────────────
   registerEnforceRoutes(app, {
     io,
+    // Scrub free-form enforcement-log text the same way span text is scrubbed
+    // before insert: the PreToolUse hook forwards the matched command/content
+    // verbatim (home paths, secrets included), so it must pass through the live
+    // scrubOptions — honouring CLAUDESEC_DISABLE_SCRUB — before it is stored or
+    // broadcast.
+    scrubEnforceText: (s: string) => scrubText(s, scrubOptions),
     appendEnforceLog: (evt: EnforceLogEvent) => {
       enforceLog.push(evt);
       if (enforceLog.length > ENFORCE_LOG_MAX) {
