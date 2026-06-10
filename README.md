@@ -49,8 +49,9 @@ Two alternatives, same script:
   prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration, SSRF,
   container escape, and more. RE2-compiled (linear-time), with a ReDoS self-test gate.
 - **Enforcement** — an opt-in Claude Code PreToolUse hook and a cross-agent MCP proxy can block a
-  tool call *before it runs*. `monitor` by default (with an always-on catastrophic floor); `enforce`
-  actively denies. Fail-open by design.
+  tool call *before it runs*. Register the hook with one command (`node cli/init.mjs install-hook`);
+  the dashboard then confirms it's wired up. `monitor` by default (with an always-on catastrophic
+  floor); `enforce` actively denies. Fail-open by design.
 - **MCP / skill scanner** — statically scans installed MCP server configs and Claude skills for
   tool-poisoning, prompt injection, hardcoded secrets, and suspicious launch commands.
 - **Honeytokens** — plant canary strings; any span containing one fires a HIGH exfiltration alert.

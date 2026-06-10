@@ -11,6 +11,37 @@ When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool 
   The hook is the **Claude Code layer** — it is agent-specific and bypassable (see [Bypass](#bypass)), **not** an OS-level sandbox. It also **fails open**: any error, missing config, or unparseable input results in *allow*, so a broken enforcement config can never lock you out. For agents that aren't Claude Code, the same rules are enforced at the **MCP wire level** — see [Cross-agent enforcement](#cross-agent-enforcement-mcp-proxy).
 </Warning>
 
+## Install the hook
+
+The hook is **not registered for you** — Claude Code only runs a PreToolUse hook that exists in its settings. One command wires it up. From a clone:
+
+```bash
+node cli/init.mjs install-hook
+```
+
+This is **consent-gated**: before it touches anything, it prints the exact target file and the exact JSON it will add, then waits for a `y/N` confirmation (pass `--yes` to skip the prompt in a trusted script). Here's what it does, in order:
+
+1. **Builds the rules snapshot locally.** It runs `scripts/build-enforcement-rules.ts` against your in-repo rule source to generate a fresh `rules-enforcement.json`. This is a pure local build — **no network call, ever** — so the hook blocks exactly the rules in *your* checkout.
+2. **Copies the hook + snapshot** into `~/.claudesec/hooks/` (`claudesec-enforce.cjs` and its `rules-enforcement.json`, side by side).
+3. **Backs up your settings first.** If `~/.claude/settings.json` already exists, it's copied to a timestamped `.bak-<ts>` before any write.
+4. **Merges two PreToolUse entries** into `~/.claude/settings.json` — one matching `Bash`, one matching `Edit|Write|MultiEdit|NotebookEdit`. Every other key, hook, and matcher in your settings is preserved untouched.
+5. **Logs the action** to `~/.claudesec/install.log`.
+
+It is **idempotent**: re-running refreshes the copied hook and snapshot and never duplicates the settings entries. Restart Claude Code afterward so it loads the hook.
+
+<Note>
+  Installing the hook turns on **pre-execution blocking**, but the honest framing still holds: the hook is **fail-open by design** — if it errors, the tool call is allowed through. The catastrophic floor always blocks; rule-based blocking only takes effect once enforce mode is also on (see [Modes](#modes)).
+</Note>
+
+### Uninstall
+
+```bash
+node cli/init.mjs uninstall-hook            # remove only ClaudeSec's settings entries
+node cli/init.mjs uninstall-hook --purge    # also delete ~/.claudesec/hooks/
+```
+
+Uninstall removes **only** ClaudeSec's own two PreToolUse entries — everything else in your settings stays. It backs up `settings.json` first, the same way install does. Add `--purge` to also delete the copied hook and snapshot under `~/.claudesec/hooks/`. Restart Claude Code to drop the hook.
+
 ## Modes
 
 The hook runs in one of two modes, and **`monitor` is the default**:
@@ -52,11 +83,31 @@ curl -X PUT http://localhost:3000/api/enforce/config \
   -d '{"mode":"enforce"}'
 ```
 
-Or set `CLAUDESEC_MODE=enforce` in the hook's environment. The mirrored config file wins over the env var; both default to `monitor`.
+Or set `CLAUDESEC_MODE=enforce` in the hook's environment.
+
+### Mode precedence
+
+The hook resolves its mode with a **fixed, deterministic order**. The first layer that supplies a valid `monitor`/`enforce` value wins:
+
+1. **`enforce-config.json`** — the file the dashboard toggle writes (highest precedence).
+2. **`CLAUDESEC_MODE`** — the environment variable.
+3. **`monitor`** — the default when neither of the above is set.
+
+The consequence trips people up: **the config file wins over the env var.** If you set `CLAUDESEC_MODE=enforce` but `enforce-config.json` says `monitor`, the hook runs `monitor` — the env value is ignored. The **Enforce** tab surfaces this directly: when the env var is being overridden by the config file, it shows a warning naming both values, so a stale config can't silently leave you in the wrong mode.
 
 <Note>
   Per-rule overrides let you promote an `alert` rule to `block` (or demote a `block` rule to `alert`) without rebuilding the rule snapshot — `PUT /api/enforce/config` accepts an `overrides` map of `ruleLabel → "alert" | "block"`.
 </Note>
+
+### Reading the Enforce tab honestly
+
+The **Enforce** tab is built to never show a comforting green when nothing can actually be blocked. It separates three distinct truths, all served by `GET /api/enforce/config`:
+
+- **Configured mode** — the dashboard toggle (`monitor`/`enforce`).
+- **Effective mode + winning source** — what the hook *actually* runs after the precedence above, labelled with where it came from (`enforce-config.json`, `CLAUDESEC_MODE env`, or the monitor default). When the configured toggle and the effective mode disagree, the tab calls it out.
+- **Hook registration** — whether a PreToolUse entry running our enforcer is present in your Claude Code settings (`yes` / `no` / `unknown`), and in which scopes (user / project / project-local).
+
+There is **no false green**. The standing "Blocking enabled (fail-open by design)" state appears **only** when enforce is the effective mode **and** a hook is registered. If no hook is registered, the tab warns that it can neither block nor observe tool calls through the hook — a live would-block feed proves the hook *fired*, never that blocking is correctly wired. Inside a container the host's settings aren't visible, so registration reads `unknown` (a neutral note, not a misleading `no`) — container detection is Docker-only.
 
 ## The would-block / block feed
 
