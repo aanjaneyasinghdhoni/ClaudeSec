@@ -1462,7 +1462,17 @@ export default function App() {
           )}
 
           {/* Orchestration view */}
-          {activeTab === 'orchestration' && <OrchestrationTab />}
+          {activeTab === 'orchestration' && (
+            <OrchestrationTab
+              onSelectSession={traceId => {
+                setActiveSession(traceId);
+                // Use handleTabChange (not setActiveTab) so the category rail
+                // stays in sync with the active tab — matching the BookmarksTab
+                // pattern that fixed the "frozen rail" desync.
+                handleTabChange('timeline');
+              }}
+            />
+          )}
 
           {/* Alerts view */}
           {activeTab === 'alerts' && <AlertsTab />}

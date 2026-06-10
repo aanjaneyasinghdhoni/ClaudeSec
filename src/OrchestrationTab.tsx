@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check } from 'lucide-react';
+import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check, ExternalLink } from 'lucide-react';
 import { socket } from './socket';
 import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
@@ -95,22 +95,33 @@ function harnessShort(id: string) {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: number; key?: React.Key }) {
+function SpawnTreeItem({
+  node,
+  depth = 0,
+  onSelectSession,
+}: {
+  node: SpawnTreeNode;
+  depth?: number;
+  key?: React.Key;
+  onSelectSession?: (traceId: string) => void;
+}) {
   const [expanded, setExpanded] = useState(depth < 2);
   const [copied, setCopied] = useState(false);
   const color = HARNESS_COLORS[node.harness] ?? '#64748b';
   const hasChildren = node.children.length > 0;
   const synthetic = node.synthetic === true;
 
-  // No `onSelectSession` prop reaches OrchestrationTab today, so "view session"
-  // is a copy-traceId affordance rather than a navigation. See the App-level
-  // wiring note at the bottom of this file.
   const copyTrace = (e: React.MouseEvent) => {
     e.stopPropagation();
     navigator.clipboard?.writeText(node.traceId).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     }).catch(() => {});
+  };
+
+  const viewSession = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelectSession?.(node.traceId);
   };
 
   return (
@@ -163,12 +174,24 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
 
         {/* Stats pills */}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          {/* View session — copies the traceId until App wires real navigation. */}
+          {/* Navigate to the timeline for this session. */}
+          {onSelectSession && (
+            <button
+              type="button"
+              onClick={viewSession}
+              className="flex items-center gap-1 text-[10px] font-mono text-slate-400 hover:text-slate-100 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 px-1.5 py-0.5 rounded transition-colors"
+              title={`View session ${node.traceId} in the timeline`}
+            >
+              <ExternalLink className="w-3 h-3" />
+              view
+            </button>
+          )}
+          {/* Copy the raw trace ID as a secondary affordance. */}
           <button
             type="button"
             onClick={copyTrace}
             className="flex items-center gap-1 text-[10px] font-mono text-slate-500 hover:text-slate-300 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 px-1.5 py-0.5 rounded transition-colors"
-            title={`Copy trace ID ${node.traceId} (session navigation needs App-level wiring)`}
+            title={`Copy trace ID ${node.traceId}`}
           >
             {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
             {copied ? 'copied' : 'trace'}
@@ -191,7 +214,7 @@ function SpawnTreeItem({ node, depth = 0 }: { node: SpawnTreeNode; depth?: numbe
       {expanded && hasChildren && (
         <div className="border-l border-slate-800 ml-[20px]">
           {node.children.map(child => (
-            <SpawnTreeItem key={child.traceId} node={child} depth={depth + 1} />
+            <SpawnTreeItem key={child.traceId} node={child} depth={depth + 1} onSelectSession={onSelectSession} />
           ))}
         </div>
       )}
@@ -279,7 +302,7 @@ function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function OrchestrationTab() {
+export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (traceId: string) => void }) {
   const [data, setData] = useState<OrchData>({ agents: [], edges: [], tools: [], spawnTree: [] });
   const [toolView, setToolView] = useState<'table' | 'heatmap'>('table');
   const [drawer, setDrawer] = useState<SpanSearchTarget | null>(null);
@@ -450,7 +473,7 @@ export function OrchestrationTab() {
               </div>
             )}
             {spawnTree.map(root => (
-              <SpawnTreeItem key={root.traceId} node={root} depth={0} />
+              <SpawnTreeItem key={root.traceId} node={root} depth={0} onSelectSession={onSelectSession} />
             ))}
           </div>
         )}
