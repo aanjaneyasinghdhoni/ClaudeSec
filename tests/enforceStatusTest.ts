@@ -28,13 +28,28 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-import { resolveEffectiveMode, detectHookStatus } from '../server/enforceStatus.js';
+import { resolveEffectiveMode, detectHookStatus, HOOK_FILENAME as STATUS_HOOK_FILENAME } from '../server/enforceStatus.js';
+import { HOOK_FILENAME as INSTALL_HOOK_FILENAME } from '../cli/installHook.js';
 
 let passed = 0;
 const failures: string[] = [];
 function check(name: string, fn: () => void): void {
   try { fn(); passed++; } catch (e) { failures.push(`${name}: ${(e as Error).message}`); }
 }
+
+// ── HOOK_FILENAME parity ───────────────────────────────────────────────────────
+// Both modules declare this constant independently to keep server/ free of any
+// runtime dependency on cli/. This assertion is the compile-time safety net:
+// renaming the hook file in one place without updating the other would silently
+// break detection, so we catch it here at the test level — the same pattern as
+// the repo's catastrophic-parity test.
+check('HOOK_FILENAME parity: server/enforceStatus matches cli/installHook', () => {
+  assert.strictEqual(
+    STATUS_HOOK_FILENAME,
+    INSTALL_HOOK_FILENAME,
+    `HOOK_FILENAME mismatch: server/enforceStatus.ts has '${STATUS_HOOK_FILENAME}', cli/installHook.ts has '${INSTALL_HOOK_FILENAME}'`,
+  );
+});
 
 // ── Sandbox helpers ───────────────────────────────────────────────────────────
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-enfstatus-'));
