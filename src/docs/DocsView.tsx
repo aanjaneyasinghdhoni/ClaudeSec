@@ -11,17 +11,6 @@ function groupForSlug(slug: string): string | null {
 }
 import { DocsMDX, DocsNavProvider } from './mdxComponents';
 
-const HASH_PREFIX = '#/docs/';
-
-function readHashSlug(): string {
-  const h = window.location.hash;
-  if (h.startsWith(HASH_PREFIX)) {
-    const s = decodeURIComponent(h.slice(HASH_PREFIX.length)).split('#')[0];
-    if (s && getDocPage(s)) return s;
-  }
-  return defaultDocSlug;
-}
-
 interface TocEntry {
   id: string;
   text: string;
@@ -233,34 +222,32 @@ function DocsBreadcrumb({
   );
 }
 
-export function DocsView({ onClose }: { onClose: () => void }) {
-  const [slug, setSlug] = useState<string>(() => readHashSlug());
+export function DocsView({ slug: routeSlug, onClose, onNavigate }: {
+  slug: string;
+  onClose: () => void;
+  onNavigate: (slug: string) => void;
+}) {
+  // The router owns the URL; resolve the route's slug to a real page, falling back
+  // to the landing doc for an empty or unknown slug so a bad link never blanks.
+  const slug = routeSlug && getDocPage(routeSlug) ? routeSlug : defaultDocSlug;
   const [query, setQuery] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Count slug changes within this docs session. After the first navigation there is
-  // a prior docs entry in history, so window.history.back() returns to a docs page.
+  // Count slug changes within this docs session. Each intra-docs navigation pushes
+  // a history entry, so after the first one window.history.back() returns to a
+  // docs page rather than leaving the docs view entirely.
   const visitsRef = useRef(0);
   const [canGoBack, setCanGoBack] = useState(false);
 
   useEffect(() => {
-    const onHash = () => setSlug(readHashSlug());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-
-  useEffect(() => {
-    if (slug && window.location.hash !== HASH_PREFIX + slug) {
-      // Assigning location.hash pushes a new history entry (never replaces),
-      // so the Back button and browser history stay in sync.
-      window.location.hash = HASH_PREFIX + slug;
-    }
     visitsRef.current += 1;
     if (visitsRef.current > 1) setCanGoBack(true);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [slug]);
 
-  const navigate = useCallback((s: string) => { if (getDocPage(s)) setSlug(s); }, []);
+  // Intra-docs links go through the router (push) so the Back button walks docs
+  // history. Ignore unknown slugs so a stray link can't navigate to a blank page.
+  const navigate = useCallback((s: string) => { if (getDocPage(s)) onNavigate(s); }, [onNavigate]);
 
   const page = getDocPage(slug);
   const LazyDoc = useMemo(() => (page ? React.lazy(page.load) : null), [slug]);
