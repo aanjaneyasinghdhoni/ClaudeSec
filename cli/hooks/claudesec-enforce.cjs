@@ -8,6 +8,10 @@
  *     catastrophic-6 floor is the ONLY thing that blocks in monitor mode.
  *   • Fail-OPEN: any error / unparseable input / missing snapshot → exit 0.
  *   • Bypass: CLAUDESEC_HOOKS_BYPASS=1 → allow everything, exit 0.
+ *   • Blocks are logged before exit: every deny (catastrophic floor or enforce
+ *     rule) flushes the event to the dashboard, then exits 2. Logging is
+ *     best-effort and can NEVER turn a block into an allow — the exit is
+ *     guaranteed even if the POST fails (see blockAndLog / postMonitorLog).
  *
  * Claude Code PreToolUse protocol: reads JSON on stdin; exit 2 + stderr = DENY;
  * exit 0 = ALLOW. Dependency-free (Node built-ins only).
@@ -39,9 +43,24 @@ const CATASTROPHIC = [
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|disk|hd|mmcblk)/i, why: 'overwriting a raw disk device (dd of=/dev/...)' },
 ];
 
-function deny(reason) {
-  process.stderr.write(reason.endsWith('\n') ? reason : reason + '\n');
-  process.exit(2); // exit 2 => deny, stderr shown to Claude
+/**
+ * Block the tool call: show `reason` to Claude, flush a log event to the
+ * dashboard, then exit 2 (deny). Logging is best-effort and must NEVER turn a
+ * block into an allow, so the exit is guaranteed three ways:
+ *   1. postMonitorLog calls its callback exactly once (on response / error /
+ *      timeout, with a ~400ms backstop) → exit 2 via the callback.
+ *   2. postMonitorLog itself swallows every error internally.
+ *   3. If anything here throws synchronously before the callback is armed, the
+ *      catch still exits 2.
+ * The catastrophic floor therefore always blocks even if the POST never lands.
+ */
+function blockAndLog(reason, payload) {
+  try {
+    process.stderr.write(reason.endsWith('\n') ? reason : reason + '\n');
+    postMonitorLog(payload, () => process.exit(2));
+  } catch (_) {
+    process.exit(2); // a logging failure can never become an allow
+  }
 }
 
 /** Resolve the rules-enforcement.json snapshot path. */
@@ -255,9 +274,20 @@ function run(input) {
   if (bashCmd) {
     for (const r of CATASTROPHIC) {
       if (r.re.test(bashCmd)) {
-        deny(
+        // It WAS blocked (blocked: true), in whatever the resolved mode is — the
+        // floor fires even in monitor. Catastrophic entries carry only { re, why },
+        // so synthesize a label/severity for the feed.
+        return blockAndLog(
           `⛔ ClaudeSec guard BLOCKED this command: ${r.why}.\n` +
           `If this is truly intentional, re-run with CLAUDESEC_HOOKS_BYPASS=1 set.`,
+          {
+            mode: resolveMode(),
+            label: 'Catastrophic: ' + r.why,
+            severity: 'high',
+            command: redact(bashCmd),
+            blocked: true,
+            wouldBlock: true,
+          },
         );
       }
     }
@@ -275,9 +305,18 @@ function run(input) {
   if (hit) {
     const enforce = resolveMode() === 'enforce';
     if (enforce) {
-      deny(
+      // Blocked → log it (blocked: true), then exit 2 after the POST settles.
+      return blockAndLog(
         `ClaudeSec [enforce] blocked: ${hit.label}. ` +
         `Bypass: CLAUDESEC_HOOKS_BYPASS=1`,
+        {
+          mode: 'enforce',
+          label: hit.label,
+          severity: hit.severity,
+          command: redact(matchText),
+          blocked: true,
+          wouldBlock: true,
+        },
       );
     }
     // Monitor (DEFAULT): log "would-block", then ALLOW. Never block here.
@@ -289,6 +328,7 @@ function run(input) {
         label: hit.label,
         severity: hit.severity,
         command: redact(matchText),
+        blocked: false,
         wouldBlock: true,
       },
       () => process.exit(0),

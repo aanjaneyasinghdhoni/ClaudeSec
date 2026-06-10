@@ -12,6 +12,10 @@ interface EnforceLogEvent {
   severity:   string;
   command:    string;   // already redacted/truncated by the hook
   wouldBlock: boolean;
+  // Whether the call was actually DENIED (catastrophic floor or enforce rule),
+  // vs. a monitor "would-block". The catastrophic floor blocks even while mode
+  // is 'monitor', so this can be true regardless of `mode` — the UI keys off it.
+  blocked:    boolean;
 }
 
 const setConfig = db.prepare(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`);
@@ -64,6 +68,10 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
       // still fully redacted by the time the boundary is applied.
       command:    typeof b.command === 'string' ? scrub(b.command).slice(0, 1000) : '',
       wouldBlock: b.wouldBlock !== false,
+      // Honest "blocked" flag from the hook. Back-compat: legacy events that
+      // predate this field infer it from mode, preserving the old behavior where
+      // an 'enforce' event meant a real block.
+      blocked:    typeof b.blocked === 'boolean' ? b.blocked : (typeof b.mode === 'string' && b.mode === 'enforce'),
     };
     appendEnforceLog(evt);
     io.emit('enforce-log', evt);
