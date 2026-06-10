@@ -32,8 +32,13 @@ export type EnforceMode = 'monitor' | 'enforce';
 export type ModeSource = 'config-file' | 'env' | 'default';
 export type HookInstalled = 'yes' | 'no' | 'unknown';
 
-/** The same substring the installer keys its entries on (cli/installHook.ts). */
-const HOOK_FILENAME = 'claudesec-enforce.cjs';
+/**
+ * The substring that identifies our hook command in a settings entry.
+ * Exported so the test suite can assert it matches the installer's copy —
+ * a test-level parity check is the right tool here (keeping server/ free of
+ * any runtime dependency on cli/, same pattern as the catastrophic-parity test).
+ */
+export const HOOK_FILENAME = 'claudesec-enforce.cjs';
 
 export interface EffectiveModeResolution {
   /** The mode the hook will actually use. */
@@ -72,7 +77,17 @@ export function resolveEffectiveMode(): EffectiveModeResolution {
   return { effectiveMode: 'monitor', modeSource: 'default' };
 }
 
-/** Running inside a container? Then host Claude Code settings aren't visible. */
+/**
+ * Running inside a container? Then host Claude Code settings aren't visible.
+ *
+ * Detection is Docker-only (presence of /.dockerenv) by design: it is the one
+ * reliable, cross-platform signal available without root or extra tooling.
+ * Non-Docker runtimes (Podman rootless, nspawn, etc.) will report false here,
+ * which means they proceed to the normal file-based hook scan — if the host
+ * settings aren't mounted, that scan returns 'no' rather than 'unknown'.
+ * Erring toward 'no' is the safe direction: the Enforce tab will show the
+ * "no hook registered" warning rather than silently suppressing it.
+ */
 function inContainer(): boolean {
   try {
     return fs.existsSync('/.dockerenv');

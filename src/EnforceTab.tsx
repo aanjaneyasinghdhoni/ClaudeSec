@@ -132,7 +132,13 @@ export function EnforceTab() {
   const modeSource: ModeSource = config?.modeSource ?? 'config-file';
   const effEnforce = effectiveMode === 'enforce';
 
-  const hookInstalled: HookInstalled = config?.hookStatus?.installed ?? 'unknown';
+  // Null means config hasn't loaded yet (or the fetch failed permanently).
+  // We distinguish null from 'unknown' so transient/error states don't trigger
+  // the container warning — that banner should only fire when the server has
+  // positively reported 'unknown' (i.e. it detected it is inside a container).
+  const hookInstalled: HookInstalled | null = config
+    ? (config.hookStatus?.installed ?? 'unknown')
+    : null;
   const hookScopes = config?.hookStatus?.scopes ?? [];
 
   // A live feed proves the hook FIRED, never that blocking is wired up correctly —
@@ -283,10 +289,13 @@ export function EnforceTab() {
           </div>
 
           {/* ── Honest warnings ──────────────────────────────────────────────
+              All three warning banners are gated on hookInstalled being non-null
+              so they don't fire during the initial fetch or on a fetch failure —
+              a missing config is not the same as "running in a container".
               No hook registered → nothing can be blocked OR observed via hooks,
               regardless of mode. Red when enforce is effective (false sense of
               blocking), amber in monitor. */}
-          {hookInstalled === 'no' && (
+          {hookInstalled !== null && hookInstalled === 'no' && (
             <div
               className="rounded-xl p-3 flex items-start gap-2.5"
               style={{
@@ -307,8 +316,9 @@ export function EnforceTab() {
             </div>
           )}
 
-          {/* The env/config precedence trap — name it explicitly. */}
-          {envTrap && (
+          {/* The env/config precedence trap — name it explicitly.
+              Only render once config is loaded (hookInstalled non-null). */}
+          {hookInstalled !== null && envTrap && (
             <div
               className="rounded-xl p-3 flex items-start gap-2.5"
               style={{ background: 'rgba(255,178,36,0.08)', border: '1px solid rgba(255,178,36,0.35)' }}
@@ -323,8 +333,10 @@ export function EnforceTab() {
             </div>
           )}
 
-          {/* Container: host settings aren't visible, so registration is unverifiable. */}
-          {hookInstalled === 'unknown' && (
+          {/* Container: host settings aren't visible, so registration is unverifiable.
+              Gated on non-null: we only show this when the server positively
+              reported 'unknown' — not while config is still loading or failed. */}
+          {hookInstalled !== null && hookInstalled === 'unknown' && (
             <div
               className="rounded-xl p-3 flex items-start gap-2.5"
               style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}

@@ -38,7 +38,10 @@ const REPO_ROOT = path.resolve(here, '..');
 
 // Substring that identifies OUR hook command in a settings entry. Used for both
 // idempotency (skip if present) and uninstall (remove only ours).
-const HOOK_FILENAME = 'claudesec-enforce.cjs';
+// Exported so the test suite can assert parity with server/enforceStatus.ts —
+// the two modules declare this independently to keep the runtime dependency
+// graph clean (server/ never imports from cli/).
+export const HOOK_FILENAME = 'claudesec-enforce.cjs';
 
 // The two PreToolUse matchers we register. Bash is split out from the editing
 // tools because the catastrophic floor only inspects Bash commands; the editing
