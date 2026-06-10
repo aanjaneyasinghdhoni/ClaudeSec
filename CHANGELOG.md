@@ -22,6 +22,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now redacted before persistence, so a dumped `.env` no longer stores live DB
   passwords. As with every alert, `critical` exfiltration alerts store only the
   scrubbed/redacted matched text — never the live secret.
+- One-command enforcement hook install — `node cli/init.mjs install-hook` builds
+  the rules snapshot locally from the repo's rule source (no network), copies the
+  dependency-free PreToolUse hook to `~/.claudesec/hooks/`, and registers it in
+  `~/.claude/settings.json`. Consent is mandatory: the installer prints the exact
+  JSON it will write and asks before touching anything, backs up the previous
+  settings file, and is idempotent on re-run. `uninstall-hook` removes only
+  ClaudeSec's entries; `--purge` also deletes the installed files.
+- An honest Enforce tab. It now reports three distinct facts — the configured
+  mode, the effective mode the hook actually runs (with which precedence layer
+  won: `enforce-config.json` → `CLAUDESEC_MODE` → default), and whether the hook
+  is registered in any Claude Code settings scope. Green is reserved for the one
+  case where blocking is real: enforce effective *and* a hook registered.
+  A missing hook or an env var silently overridden by the config file shows a
+  loud warning instead of a false green.
+- Blocked tool calls now appear in the Enforce feed. Previously only
+  monitor-mode "would block" events were reported; a real block wrote its denial
+  to the terminal and exited without telling the server. Blocks are logged
+  before the hook exits — a slow or failed report can never turn a block into an
+  allow — and the feed distinguishes *blocked* from *would block*.
+- URL routing for the whole dashboard — every view is a real URL
+  (`#/<category>/<tab>` for tabs, `#/docs/<slug>` for docs), so a refresh
+  restores the exact view, back/forward work, and any tab can be deep-linked.
+  Existing docs links keep working.
+- A local operator audit log that records every config-mutating action
+  (scrubbed and size-capped, exposed through a read-only API), plus per-rule
+  toggles to disable individual detection rules — except the catastrophic
+  floor, which can never be turned off.
+- Session navigation from the orchestration spawn tree — clicking a spawned
+  agent jumps straight to its session timeline.
+- File-access drill-down — rows group by folder and repository, tool and file
+  rows open a span-detail drawer, and the 100-row display cap is gone.
+
+### Fixed
+
+- Costs no longer double-count. API usage is keyed on the message id and
+  deduped at query time, so transcript lines that repeat the same API response
+  are counted once; harness token totals share the same basis, and demo traces
+  are excluded from aggregates.
+- False-positive alerts are kept out of the default alert list and the nav
+  badge, dismissing a grouped alert covers all of its duplicates, and dismissal
+  has a short undo window.
+- `./start.sh` builds and serves the production app instead of starting a dev
+  server, so the dashboard you open is the real production bundle. The build
+  runs on-device from in-repo source with no network fetch.
+- Docs navigation: switching tabs while reading docs now actually leaves the
+  docs view and clears the stale `#/docs/...` URL, docs gained a breadcrumb and
+  back button, and the nav rail stays in sync when jumping to a session from
+  the Processes or Bookmarks views.
+- The installed hook path is quoted — a space in `$HOME` would otherwise split
+  the command and, because the hook fails open, silently disable enforcement.
+  NotebookEdit cell content is now inspected like every other editing tool.
+- `/api/health`, `/api/export`, and the MCP server report the released version
+  read from `package.json` instead of a hardcoded string.
+
+### Performance
+
+- Dashboard queries (costs, heatmap, orchestration, metrics) aggregate in SQL
+  instead of loading every span into memory, backed by new composite indexes;
+  MCP search routes through the full-text index; socket-triggered refetches are
+  debounced and redundant graph layouts skipped, so event bursts no longer
+  stampede the dashboard.
+
+### Changed
+
+- The README now leads with the one-command start and links to the in-app docs
+  for everything else, instead of duplicating them.
 
 ## [1.1.0] - 2026-06-09
 
