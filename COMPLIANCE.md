@@ -55,7 +55,7 @@ controls in any framework belong to the **deployer**. The split is summarized be
 | **Data at rest** | DB file created `0600` (owner-only); secret scrubbing before persistence | Disk/volume encryption (full-disk, LUKS, or equivalent); filesystem ACLs; backup protection |
 | **Data minimization & retention** | Secret/PII scrubbing on by default; count- and age-based pruning (`CLAUDESEC_MAX_SPANS`, `CLAUDESEC_RETENTION_DAYS`) | Set retention to match policy; document lawful basis; honor data-subject requests |
 | **Detection content** | ~630 maintained rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
-| **Enforcement** | Opt-in PreToolUse hook + cross-agent MCP proxy; `monitor` default, `enforce` available | Decide policy; understand fail-open scope; layer an OS sandbox for hard isolation |
+| **Enforcement** | Opt-in PreToolUse hook (one-command installer) + cross-agent MCP proxy; `monitor` default, `enforce` available; dashboard surfaces hook-registration status (no false green) | Decide policy; understand fail-open scope; layer an OS sandbox for hard isolation |
 | **Governance** | Audit-quality event logs and reporting to feed a program | Policies, risk register, roles/accountability, training, vendor management, audits |
 
 > **Read this first:** [`.github/SECURITY.md`](.github/SECURITY.md) states plainly that
@@ -82,7 +82,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **CC6.7** | Transmission of data protected | Optional bearer-token auth on remote API/OTLP; SSRF guard blocks egress to private/loopback/metadata ranges | **TLS in transit** (terminate at a reverse proxy) — not provided by the tool |
 | **CC7.1** | Vulnerability & malware detection | ~630 threat rules covering credential theft, reverse shells, supply-chain attacks, exfiltration, cloud-metadata SSRF, container escape; MCP/skill static scanner | Endpoint EDR, host vulnerability scanning, patch cadence |
 | **CC7.2** | Monitoring for security events | Real-time span ingestion + live alerting; Prometheus `/metrics`; webhook delivery of HIGH alerts; honeytokens | Central SIEM, alert triage SLAs, on-call rotation |
-| **CC7.3 / CC7.4** | Incident evaluation, containment & response | Per-session security reports (`cli/init.mjs report`); enforcement hook/proxy can block a tool call before it runs (`enforce` mode) | Documented IR plan, runbooks, post-incident reviews |
+| **CC7.3 / CC7.4** | Incident evaluation, containment & response | Per-session security reports (`cli/init.mjs report`); enforcement hook/proxy can block a tool call before it runs (`enforce` mode), and the dashboard verifies the hook is registered before claiming blocking is active | Documented IR plan, runbooks, post-incident reviews |
 | **CC8.1** | Authorized, tested changes | The project's own SDLC: SHA-pinned GitHub Actions, `pnpm install --frozen-lockfile`, type-check + build gates, ReDoS rule self-test gate as a `prebuild` step | The deployer's own change-management process |
 
 ### 3.2 ISO/IEC 27001:2022 (Annex A)
@@ -115,7 +115,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 |---|---|---|---|
 | **MEASURE — MS-3.1 / MS-3.2** | AI risk tracked over time | Continuous post-deployment monitoring of agent behavior; per-session health scoring surfaces degradation and anomalous activity | Defining metrics/thresholds; periodic review cadence |
 | **MEASURE — MS-2.4** | Security & privacy assessed | Detection of credential theft, exfiltration, prompt-injection patterns in agent activity; MCP/skill scanner | Formal pre-deployment evaluation of the deployer's AI systems |
-| **MANAGE — MG-2.3** | Emergency interventions | `enforce` mode + always-on catastrophic floor (e.g. `rm -rf /`, fork bombs, piped RCE) act as a tool-call-level intervention; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority |
+| **MANAGE — MG-2.3** | Emergency interventions | `enforce` mode + always-on catastrophic floor (e.g. `rm -rf /`, fork bombs, piped RCE) act as a tool-call-level intervention, with the dashboard verifying the hook is registered before claiming blocking is active; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority |
 | **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail | Incident log, severity classification, post-incident review |
 | **GOVERN — GV-1.x / GV-4.x** | Policies, cross-functional escalation | (Tool provides evidence inputs only) | **Deployer obligation** — policies, accountability, escalation paths are organizational, not tool features |
 
@@ -126,7 +126,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **A.6.2.6** | AI system operation and monitoring | Real-time, continuous monitoring of AI agent operations with alerting on anomalies | Defining alert thresholds and remediation processes |
 | **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call sufficient for incident investigation and audit | Log retention periods and access controls per policy |
 | **A.8.4** | Communication of incidents | Webhook delivery of HIGH-severity alerts to Slack/Discord/JSON endpoints; per-session reports | Notification thresholds, regulatory/affected-party reporting |
-| **A.9.2** | Processes for responsible use of AI systems | Enforcement layer can gate agent tool calls against an acceptable-use rule set (`monitor`/`enforce`) | The acceptable-use policy itself and human-oversight procedures |
+| **A.9.2** | Processes for responsible use of AI systems | Enforcement layer can gate agent tool calls against an acceptable-use rule set (`monitor`/`enforce`), with the dashboard verifying the hook is registered before claiming blocking is active | The acceptable-use policy itself and human-oversight procedures |
 | **A.2.2 / A.3.2 / A.5.2** | AI policy, roles, impact assessment | (Deployer obligation) | **Deployer owns** the AIMS, policy, RACI, and AI impact assessments |
 
 **EU AI Act**
@@ -221,7 +221,14 @@ deployer obligation. Control identifiers are taken from the published frameworks
 - **Enforcement, honestly scoped.** The PreToolUse hook and MCP proxy are an
   **agent-specific** enforcement layer, **not an OS sandbox**. Both **fail open**: any
   error, missing config, or unparseable input results in *allow*. The hook is bypassable
-  (`CLAUDESEC_HOOKS_BYPASS=1`).
+  (`CLAUDESEC_HOOKS_BYPASS=1`). A one-command, consent-gated installer
+  (`claudesec install-hook` / `uninstall-hook`) registers and removes the hook; its rules
+  snapshot is built from in-repo rule source at install time (no network). Mode precedence
+  is deterministic and documented (`enforce-config.json` → `CLAUDESEC_MODE` → `monitor`
+  default) and surfaced on the dashboard, which also **verifies the hook is registered** and
+  will not show a "blocking active" state unless enforce is effective *and* a hook is
+  present (no false green). The hook's always-on catastrophic floor is parity-tested in the
+  test gate (`tests/catastrophic-parity.test.ts` covers `cli/hooks/claudesec-enforce.cjs`).
 
 ---
 
