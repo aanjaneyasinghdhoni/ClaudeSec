@@ -1511,7 +1511,8 @@ export default function App() {
             <ProcessesTab
               onSelectSession={traceId => {
                 setActiveSession(traceId);
-                setActiveTab('timeline');
+                // handleTabChange keeps the nav rail's category in sync.
+                handleTabChange('timeline');
               }}
             />
           )}
