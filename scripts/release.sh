@@ -194,6 +194,40 @@ fs.writeFileSync('CHANGELOG.md', cl);
 NODE
 info "CHANGELOG.md now has a [$NEXT] section dated $TODAY"
 
+# --- 5b. mirror the release into the in-app changelog -----------------------
+
+step "Updating docs/changelog.mdx"
+
+# The dashboard ships its own copy of the changelog, and the consistency gate
+# requires it to carry the new version. Mirror this release's CHANGELOG.md body
+# into docs/changelog.mdx as a "## X.Y.Z — DATE" section above the latest one,
+# so the in-app changelog can never drift behind a release.
+NEXT="$NEXT" TODAY="$TODAY" node <<'NODE'
+const fs = require('node:fs');
+const next = process.env.NEXT;
+const today = process.env.TODAY;
+
+// Pull this release's body from the just-updated CHANGELOG.md (between the new
+// "## [X.Y.Z]" heading and the next "## [" heading). index()-style matching
+// avoids treating the version dots as regex wildcards.
+const cl = fs.readFileSync('CHANGELOG.md', 'utf8').split('\n');
+const startIdx = cl.findIndex((l) => l.startsWith(`## [${next}]`));
+if (startIdx === -1) throw new Error('CHANGELOG.md has no section for ' + next);
+let endIdx = cl.length;
+for (let i = startIdx + 1; i < cl.length; i++) {
+  if (cl[i].startsWith('## [')) { endIdx = i; break; }
+}
+const body = cl.slice(startIdx + 1, endIdx).join('\n').replace(/^\n+|\n+$/g, '');
+
+// Insert a "## X.Y.Z — DATE" section before the first existing "## " heading.
+const lines = fs.readFileSync('docs/changelog.mdx', 'utf8').split('\n');
+const firstH2 = lines.findIndex((l) => /^## /.test(l));
+if (firstH2 === -1) throw new Error('docs/changelog.mdx has no "## " section to anchor on');
+lines.splice(firstH2, 0, `## ${next} — ${today}\n\n${body}\n`);
+fs.writeFileSync('docs/changelog.mdx', lines.join('\n'));
+NODE
+info "docs/changelog.mdx now has a $NEXT section"
+
 # --- 6. confirm consistency -------------------------------------------------
 
 step "Re-checking release-fact consistency"
