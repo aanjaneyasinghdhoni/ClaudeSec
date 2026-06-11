@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react';
+import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
 import docsJson from '@/docs/docs.json';
 
 export interface DocFrontmatter {
@@ -12,6 +12,13 @@ export interface DocPage {
   title: string;
   description: string;
   load: () => Promise<{ default: ComponentType }>;
+  /**
+   * Stable lazy component, created once per page. Creating React.lazy during
+   * render breaks under startTransition-based navigation: a suspended
+   * transition never commits, so a per-render lazy gets recreated on every
+   * retry and the navigation never finishes (URL moves, content doesn't).
+   */
+  Component: LazyExoticComponent<ComponentType>;
 }
 
 export interface DocNavGroup {
@@ -48,15 +55,42 @@ function humanize(slug: string): string {
   return last.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// A docs chunk can vanish from under an open tab: the on-disk build gets
+// replaced (new content hashes) while the browser still runs the old
+// index.html, so the dynamic import 404s and clicking a doc changes the URL
+// but not the page. Recover by reloading once to pick up the fresh build;
+// the sessionStorage guard prevents a reload loop when the failure has some
+// other cause, and is cleared again by the next successful load.
+const STALE_CHUNK_KEY = 'claudesec.docs.staleChunkReloaded';
+function recoveringLoader(load: DocPage['load']): DocPage['load'] {
+  return () =>
+    load()
+      .then(mod => {
+        try { sessionStorage.removeItem(STALE_CHUNK_KEY); } catch { /* ignore */ }
+        return mod;
+      })
+      .catch(err => {
+        let alreadyReloaded = true;
+        try {
+          alreadyReloaded = sessionStorage.getItem(STALE_CHUNK_KEY) !== null;
+          if (!alreadyReloaded) sessionStorage.setItem(STALE_CHUNK_KEY, '1');
+        } catch { /* ignore */ }
+        if (!alreadyReloaded) window.location.reload();
+        throw err;
+      });
+}
+
 const pages: Record<string, DocPage> = {};
 for (const [filePath, loader] of Object.entries(loaders)) {
   const slug = toSlug(filePath);
   const fm = (frontmatters[filePath] ?? {}) as DocFrontmatter;
+  const load = recoveringLoader(loader as DocPage['load']);
   pages[slug] = {
     slug,
     title: fm.title || humanize(slug),
     description: fm.description ?? '',
-    load: loader as DocPage['load'],
+    load,
+    Component: lazy(load),
   };
 }
 

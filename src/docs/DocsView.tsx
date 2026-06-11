@@ -249,8 +249,12 @@ export function DocsView({ slug: routeSlug, onClose, onNavigate }: {
   // history. Ignore unknown slugs so a stray link can't navigate to a blank page.
   const navigate = useCallback((s: string) => { if (getDocPage(s)) onNavigate(s); }, [onNavigate]);
 
+  // Use the registry's stable lazy component — creating React.lazy here on
+  // each slug change deadlocks under startTransition navigation (the suspended
+  // transition never commits, so a per-render lazy is recreated forever and
+  // the URL moves while the page doesn't).
   const page = getDocPage(slug);
-  const LazyDoc = useMemo(() => (page ? React.lazy(page.load) : null), [slug]);
+  const LazyDoc = page?.Component ?? null;
   const navCtx = useMemo(() => ({ navigate, has: (s: string) => !!getDocPage(s) }), [navigate]);
 
   const filteredNav = useMemo(() => {
