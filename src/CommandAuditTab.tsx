@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal, AlertTriangle, Shield } from 'lucide-react';
-import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
+import { useListControls, FilterBar, ListFooter, ServerLoadFooter, type FacetConfig } from './FilterControls';
 
 interface CommandEntry {
   spanId:    string;
@@ -39,6 +39,10 @@ function riskBucket(score: number): string {
 export function CommandAuditTab() {
   const [commands, setCommands] = useState<CommandEntry[]>([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Re-entry guard for loadMore. State alone lags a render, so a double-click
+  // could start two overlapping page walks; the ref closes that window.
+  const loadingRef = useRef(false);
 
   useEffect(() => {
     fetch('/api/command-audit?limit=200')
@@ -46,6 +50,34 @@ export function CommandAuditTab() {
       .then(d => { setCommands(d.commands ?? []); setTotalCount(d.total ?? 0); })
       .catch(() => {});
   }, []);
+
+  // The first fetch only brings the top rows by risk; this walks the server's
+  // `offset` forward (2k per request) so search and filters can reach every
+  // recorded command. Dedupe by spanId — new spans can shift the risk-sorted
+  // pages between requests.
+  const loadMore = async (all: boolean) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingMore(true);
+    try {
+      let next = commands;
+      for (;;) {
+        const r = await fetch(`/api/command-audit?limit=2000&offset=${next.length}`);
+        const d = await r.json();
+        const seen = new Set(next.map(c => c.spanId));
+        const fresh = (d.commands ?? []).filter((c: CommandEntry) => !seen.has(c.spanId));
+        next = next.concat(fresh);
+        setTotalCount(d.total ?? next.length);
+        if (!all || fresh.length === 0 || next.length >= (d.total ?? 0)) break;
+      }
+      setCommands(next);
+    } catch {
+      // Same policy as the initial fetch: a failed page leaves the list as-is.
+    } finally {
+      loadingRef.current = false;
+      setLoadingMore(false);
+    }
+  };
 
   const facets = useMemo<FacetConfig<CommandEntry>[]>(() => {
     const harnesses = [...new Set(commands.map(c => c.harness))].sort();
@@ -105,6 +137,10 @@ export function CommandAuditTab() {
         <div className="flex flex-col items-center justify-center h-32 gap-2">
           <Shield className="w-6 h-6 text-slate-700" />
           <p className="text-xs text-slate-500">{commands.length > 0 ? 'No matching commands' : 'No shell commands recorded'}</p>
+          <ServerLoadFooter
+            loaded={commands.length} total={totalCount} loading={loadingMore}
+            onLoadMore={() => loadMore(false)} onLoadAll={() => loadMore(true)} noun="commands"
+          />
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -150,6 +186,12 @@ export function CommandAuditTab() {
             </tbody>
           </table>
           <ListFooter shown={shown} total={total} showMore={showMore} showAll={showAll} noun="commands" />
+          {shown >= total && (
+            <ServerLoadFooter
+              loaded={commands.length} total={totalCount} loading={loadingMore}
+              onLoadMore={() => loadMore(false)} onLoadAll={() => loadMore(true)} noun="commands"
+            />
+          )}
         </div>
       )}
     </div>
