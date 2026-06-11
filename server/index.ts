@@ -2497,6 +2497,31 @@ service:
     res.json({ status: 'ok' });
   });
 
+  // ── Clear demo data ──────────────────────────────────────────────────────
+  // Removes ONLY the synthetic demo rows (traceId / spanId prefixed "demo-").
+  // Safe by construction — it can never match real telemetry — so unlike
+  // /api/reset it needs no CLAUDESEC_ALLOW_RESET gate. It still sits behind the
+  // general /api auth gate above (loopback-open, token-required for remote), so
+  // a non-loopback caller without CLAUDESEC_TOKEN cannot reach it. This backs the
+  // in-app "Clear demo data" button for anyone who launched the demo and wants a
+  // clean slate. Demo seeding only creates spans, sessions, and alerts, so those
+  // (plus the FTS mirror) are the only tables to touch.
+  app.post('/api/demo/clear', (req, res) => {
+    const demoSpans    = (db.prepare("SELECT COUNT(*) AS c FROM spans    WHERE traceId LIKE 'demo-%'").get() as { c: number }).c;
+    const demoSessions = (db.prepare("SELECT COUNT(*) AS c FROM sessions WHERE traceId LIKE 'demo-%'").get() as { c: number }).c;
+    auditLog(req, 'data.demo-clear', 'demo-*', { demoSpans, demoSessions });
+    db.transaction(() => {
+      db.prepare("DELETE FROM spans_fts WHERE spanId IN (SELECT spanId FROM spans WHERE traceId LIKE 'demo-%')").run();
+      db.prepare("DELETE FROM spans    WHERE traceId LIKE 'demo-%'").run();
+      db.prepare("DELETE FROM sessions WHERE traceId LIKE 'demo-%'").run();
+      db.prepare("DELETE FROM alerts   WHERE traceId LIKE 'demo-%'").run();
+    })();
+    io.emit('graph-update', buildGraph());
+    io.emit('sessions-update');
+    io.emit('alerts-update');
+    res.json({ status: 'ok', clearedSpans: demoSpans, clearedSessions: demoSessions });
+  });
+
   // ── Enforcement event log + config (PreToolUse hook feed) ──────────────────
   registerEnforceRoutes(app, {
     io,
@@ -2574,6 +2599,9 @@ service:
     const threatsTotal  = (db.prepare("SELECT COUNT(*) as c FROM spans WHERE severity != 'none'").get() as any).c as number;
     const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;
     const alertsTotal   = (db.prepare('SELECT COUNT(*) as c FROM alerts').get() as any).c as number;
+    // Count of synthetic demo sessions (traceId prefixed "demo-"). Lets the UI
+    // show a "this is demo data" banner and an ungated one-click clear.
+    const demoSessions  = (db.prepare("SELECT COUNT(*) as c FROM sessions WHERE traceId LIKE 'demo-%'").get() as any).c as number;
     let dbSizeBytes = 0;
     try { dbSizeBytes = fs.statSync(DB_PATH).size; } catch {}
     const annotationsTotal = (db.prepare('SELECT COUNT(*) as c FROM annotations').get() as any).c as number;
@@ -2591,6 +2619,8 @@ service:
       alerts:      alertsTotal,
       alertsTotal,
       annotations: annotationsTotal,
+      demoSessions,
+      resetEnabled: process.env.CLAUDESEC_ALLOW_RESET === '1',
       dbSizeBytes,
       webhookConfigured: !!getWebhookUrl(),
       webhookThreshold:  getWebhookThreshold(),

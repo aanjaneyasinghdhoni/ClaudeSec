@@ -152,6 +152,20 @@ export default function App() {
     };
   }, []);
 
+  // Track whether the DB currently holds synthetic demo sessions. Refreshed when
+  // sessions change so the banner appears on seed and disappears once cleared.
+  useEffect(() => {
+    const refresh = () => {
+      fetch('/api/health')
+        .then(r => r.json())
+        .then(d => setDemoSessions(d.demoSessions ?? 0))
+        .catch(() => {});
+    };
+    refresh();
+    socket.on('sessions-update', refresh);
+    return () => { socket.off('sessions-update', refresh); };
+  }, []);
+
   // ── Notification state ────────────────────────────────────────────────────
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const notifyEnabledRef = useRef(false);
@@ -170,6 +184,10 @@ export default function App() {
 
   // ── Theme (s53) ───────────────────────────────────────────────────────────
   const [liveActivityOpen, setLiveActivityOpen] = useState(false);
+  // Synthetic demo data present? Drives a dismissible "this isn't real" banner so
+  // a viewer on the demo container can never mistake it for live activity.
+  const [demoSessions, setDemoSessions] = useState(0);
+  const [demoBannerDismissed, setDemoBannerDismissed] = useState(false);
   // Off-canvas sidebar drawer (below lg). Static in-row sidebar at >=lg.
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeId>(() => {
@@ -914,6 +932,26 @@ export default function App() {
           setPaletteOpen(false);
         }}
       />
+
+      {demoSessions > 0 && !demoBannerDismissed && (
+        <div
+          className="flex items-center gap-2 px-4 py-1.5 text-xs shrink-0"
+          style={{ background: 'rgba(245,158,11,0.12)', borderBottom: '1px solid rgba(245,158,11,0.3)', color: '#fbbf24' }}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span className="min-w-0">
+            <strong>Demo data</strong> — these {demoSessions} session(s) are synthetic, not real agent activity. Clear them anytime in Settings → Data.
+          </span>
+          <button
+            type="button"
+            onClick={() => setDemoBannerDismissed(true)}
+            className="ml-auto shrink-0 px-1.5 py-0.5 rounded hover:bg-amber-500/20 transition-colors"
+            aria-label="Dismiss demo-data notice"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       <div className="flex-1 flex lg:overflow-hidden min-h-0 relative">
 

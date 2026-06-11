@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing,
-  History, Copy, Terminal, ShieldCheck, AlertTriangle, CircleSlash, CheckCircle2, Activity,
+  History, Copy, Terminal, ShieldCheck, AlertTriangle, CircleSlash, CheckCircle2, Activity, Trash2,
 } from 'lucide-react';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
 import { WebhookDeliverySection } from './WebhookDeliverySection';
@@ -659,6 +659,116 @@ function EnvReferenceSection() {
 // Main export
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Data management — clear synthetic demo data (always safe) and the gated full reset
+// ---------------------------------------------------------------------------
+function DataManagementSection(): React.ReactElement {
+  const [demoSessions, setDemoSessions] = useState(0);
+  const [resetEnabled, setResetEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  // Two-click confirm for the destructive full reset — no native confirm() dialog,
+  // which ad blockers and some browsers suppress.
+  const [confirmAll, setConfirmAll] = useState(false);
+  // Hold the confirm-window timer so it's cleared on unmount (no state update
+  // after the Settings tab is closed mid-confirm).
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
+
+  const load = useCallback(() => {
+    fetch('/api/health')
+      .then(r => r.json())
+      .then(d => { setDemoSessions(d.demoSessions ?? 0); setResetEnabled(!!d.resetEnabled); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const clearDemo = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await fetch('/api/demo/clear', { method: 'POST' });
+      const d = await r.json();
+      setMsg(`Cleared ${d.clearedSpans ?? 0} demo spans across ${d.clearedSessions ?? 0} session(s).`);
+      load();
+    } catch { setMsg('Failed to clear demo data.'); }
+    finally { setBusy(false); }
+  };
+
+  const clearAll = async () => {
+    if (!confirmAll) {
+      setConfirmAll(true);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirmAll(false), 4000);
+      return;
+    }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirmAll(false); setBusy(true); setMsg('');
+    try {
+      const r = await fetch('/api/reset', { method: 'POST' });
+      if (r.ok) { setMsg('All data cleared.'); load(); }
+      else { const d = await r.json().catch(() => ({})); setMsg(d.hint ?? d.error ?? 'Reset failed.'); }
+    } catch { setMsg('Reset failed.'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Demo data — ungated, only ever deletes demo-* rows */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-slate-200">Demo data</div>
+          <div className="text-[11px] text-slate-500">
+            {demoSessions > 0
+              ? `${demoSessions} synthetic demo session(s) present. Safe to remove anytime — only demo rows are deleted.`
+              : 'No demo data present.'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={clearDemo}
+          disabled={busy || demoSessions === 0}
+          className="px-3 py-1.5 text-xs rounded-lg shrink-0 transition-colors"
+          style={{
+            border: '1px solid var(--cs-border)', background: 'var(--cs-bg-elevated)',
+            color: demoSessions === 0 ? 'var(--cs-text-faint)' : 'var(--cs-text-base)',
+            opacity: busy || demoSessions === 0 ? 0.5 : 1,
+          }}
+        >
+          Clear demo data
+        </button>
+      </div>
+
+      {/* Full reset — gated behind CLAUDESEC_ALLOW_RESET; visible and explained either way */}
+      <div className="flex items-center justify-between gap-3 flex-wrap pt-2" style={{ borderTop: '1px solid var(--cs-border)' }}>
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-slate-200">Clear all data</div>
+          <div className="text-[11px] text-slate-500">
+            {resetEnabled
+              ? 'Permanently deletes every span, session, and alert. This cannot be undone.'
+              : 'Disabled for safety. Start the server with CLAUDESEC_ALLOW_RESET=1 to enable this.'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={clearAll}
+          disabled={busy || !resetEnabled}
+          className="px-3 py-1.5 text-xs rounded-lg shrink-0 transition-colors"
+          style={{
+            border: `1px solid ${confirmAll ? '#ef4444' : 'var(--cs-border)'}`,
+            background: confirmAll ? 'rgba(239,68,68,0.15)' : 'var(--cs-bg-elevated)',
+            color: !resetEnabled ? 'var(--cs-text-faint)' : confirmAll ? '#fca5a5' : 'var(--cs-text-base)',
+            opacity: busy || !resetEnabled ? 0.5 : 1,
+          }}
+        >
+          {confirmAll ? 'Click again to confirm' : 'Clear all data'}
+        </button>
+      </div>
+
+      {msg && <p className="text-[11px]" style={{ color: 'var(--cs-text-muted)' }}>{msg}</p>}
+    </div>
+  );
+}
+
 export function SettingsTab(): React.ReactElement {
   return (
     <div className="flex-1 overflow-auto p-5 min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
@@ -683,6 +793,10 @@ export function SettingsTab(): React.ReactElement {
 
         <Section icon={<Database className="w-4 h-4" />} title="Retention">
           <RetentionSection />
+        </Section>
+
+        <Section icon={<Trash2 className="w-4 h-4" />} title="Data">
+          <DataManagementSection />
         </Section>
 
         <Section icon={<Terminal className="w-4 h-4" />} title="Environment Variables" defaultOpen={false}>
