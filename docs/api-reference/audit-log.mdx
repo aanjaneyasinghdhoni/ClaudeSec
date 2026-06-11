@@ -1,0 +1,98 @@
+---
+title: "Audit Log API"
+description: "Read-only view of the operator audit log — config changes, rule toggles, and security-relevant actions."
+icon: "scroll"
+---
+
+## Overview
+
+The operator audit log is a tamper-evident, append-only record of every config-mutating or
+security-relevant action taken through the ClaudeSec API: enforcement mode changes, rule
+enable/disable, honeytoken updates, suppression creation, and more.
+
+There is intentionally **no delete endpoint**. An audit log that can be cleared from the UI is
+not an audit log. Retention is managed server-side — the oldest rows are pruned automatically
+when the table exceeds its configured cap, so the log stays bounded without operator
+intervention.
+
+The log is ordered newest-first and supports cursor pagination via the `before` parameter.
+
+## Endpoints
+
+### GET /api/audit-log
+
+Return a page of audit log entries, newest first.
+
+```bash
+curl "http://localhost:3000/api/audit-log?limit=25"
+```
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | `100` | Number of entries per page; maximum `500` |
+| `before` | integer | — | Cursor for pagination: return only entries with `id` less than this value |
+
+To paginate, pass the `nextBefore` value from one response as `before` in the next request.
+
+**Response:**
+
+```json
+{
+  "entries": [
+    {
+      "id": 42,
+      "ts": 1749600300000,
+      "actor": "operator",
+      "action": "enforce.config",
+      "target": "enforce.config",
+      "detail": "{\"mode\":\"enforce\",\"overrides\":{}}",
+      "sourceIp": "127.0.0.1"
+    },
+    {
+      "id": 41,
+      "ts": 1749600120000,
+      "actor": "operator",
+      "action": "rule.disable",
+      "target": "Bash — repeated large output",
+      "detail": "{\"label\":\"Bash — repeated large output\",\"enabled\":false}",
+      "sourceIp": "127.0.0.1"
+    },
+    {
+      "id": 40,
+      "ts": 1749599800000,
+      "actor": "operator",
+      "action": "honeytokens.set",
+      "target": "honeytokens",
+      "detail": "{\"count\":2}",
+      "sourceIp": "127.0.0.1"
+    }
+  ],
+  "total": 42,
+  "nextBefore": 40
+}
+```
+
+| Field | Description |
+|---|---|
+| `entries` | Array of audit log entries for this page |
+| `entries[].id` | Auto-incrementing row ID (use as cursor) |
+| `entries[].ts` | Unix timestamp in milliseconds |
+| `entries[].actor` | Who performed the action (currently always `"operator"`) |
+| `entries[].action` | Machine-readable action key, e.g. `enforce.config`, `rule.disable`, `honeytokens.set` |
+| `entries[].target` | The resource that was affected |
+| `entries[].detail` | JSON string with action-specific detail (honeytoken values are never included) |
+| `entries[].sourceIp` | IP address of the request |
+| `total` | Total number of entries in the log |
+| `nextBefore` | ID to pass as `before` to fetch the next page, or `null` when this is the last page |
+
+### Pagination example
+
+```bash
+# First page
+curl "http://localhost:3000/api/audit-log?limit=25"
+
+# Next page (use nextBefore from the previous response)
+curl "http://localhost:3000/api/audit-log?limit=25&before=40"
+```

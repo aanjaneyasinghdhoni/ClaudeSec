@@ -28,9 +28,14 @@ if (apiVersion !== version) {
 }
 
 // 2. Changelog: every release needs an entry. Plain substring match (no regex)
-// so the version string needs no metacharacter escaping.
+// so the version string needs no metacharacter escaping. The in-app docs ship
+// their own copy of the changelog, so it must carry the release too — it once
+// drifted four releases behind without anything failing.
 if (!read('CHANGELOG.md').includes(`## [${version}]`)) {
   errors.push(`CHANGELOG.md has no "## [${version}]" section — add the release notes before tagging`);
+}
+if (!read('docs/changelog.mdx').includes(`## ${version}`)) {
+  errors.push(`docs/changelog.mdx has no "## ${version}" section — sync it with CHANGELOG.md before tagging`);
 }
 
 // 3. Rule counts: docs must track the real detection source.

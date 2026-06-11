@@ -30,6 +30,9 @@
         "pages": [
           "observe/timeline",
           "observe/orchestration",
+          "review/tool-inventory",
+          "review/command-audit",
+          "review/file-access",
           "observe/heatmap",
           "observe/processes"
         ]
@@ -53,9 +56,6 @@
       {
         "group": "Review",
         "pages": [
-          "review/command-audit",
-          "review/file-access",
-          "review/tool-inventory",
           "review/bookmarks",
           "review/session-labels"
         ]
@@ -128,7 +128,14 @@
           "api-reference/db-stats",
           "api-reference/graph",
           "api-reference/graph-export",
-          "api-reference/mcp"
+          "api-reference/mcp",
+          "api-reference/enforcement-api",
+          "api-reference/rule-overrides",
+          "api-reference/judge",
+          "api-reference/honeytokens",
+          "api-reference/scrub",
+          "api-reference/audit-log",
+          "api-reference/harnesses-api"
         ]
       },
       {

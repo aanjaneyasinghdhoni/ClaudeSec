@@ -31,7 +31,7 @@ ClaudeSec is designed as a **local-first** tool. It runs on `localhost` and is i
 ### What ClaudeSec does
 
 - Ingests OTLP traces on `localhost:3000` and stores them in a local SQLite database (`spans.db`).
-- Evaluates every span against ~630 built-in regex rules to detect suspicious patterns.
+- Evaluates every span against ~639 built-in regex rules to detect suspicious patterns.
 - Broadcasts updates to connected browser clients via Socket.io.
 - Optionally forwards traces to an upstream OTLP collector (`OTEL_FORWARD_URL`).
 

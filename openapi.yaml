@@ -38,6 +38,12 @@ tags:
     description: Server health and Prometheus metrics
   - name: MCP
     description: Model Context Protocol JSON-RPC endpoint
+  - name: Enforcement
+    description: PreToolUse hook event log and configuration
+  - name: Honeytokens
+    description: Canary string management
+  - name: Scrub
+    description: Inline secret-redaction pipeline status
 
 paths:
   /v1/traces:
@@ -379,7 +385,10 @@ paths:
       parameters:
         - name: limit
           in: query
-          schema: { type: integer, default: 200 }
+          schema: { type: integer, default: 200, maximum: 5000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
       responses:
         '200':
           description: Audit trail
@@ -405,6 +414,17 @@ paths:
       tags: [Security]
       summary: File access heatmap
       description: Aggregates file read/write operations by agent, with sensitive file detection.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 500, maximum: 5000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: groupBy
+          in: query
+          description: Set to `folder` to group files per repo/folder instead of a flat list.
+          schema: { type: string, enum: [folder] }
       responses:
         '200':
           description: File access data
@@ -720,6 +740,249 @@ paths:
                   jsonrpc: { type: string, example: '2.0' }
                   id:      { type: integer, example: 1 }
                   result:  { type: object }
+
+  /api/enforce-log:
+    post:
+      tags: [Enforcement]
+      summary: Ingest an enforcement event
+      description: |
+        Called by the claudesec-enforce.cjs PreToolUse hook to record a tool-call
+        evaluation. Events are held in an in-memory ring buffer and broadcast via
+        Socket.io `enforce-log`. All text fields are scrubbed before storage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:       { type: string, enum: [monitor, enforce] }
+                label:      { type: string, description: Matched rule label (max 256 chars) }
+                severity:   { type: string, enum: [low, medium, high] }
+                command:    { type: string, description: Scrubbed tool input (max 1000 chars) }
+                wouldBlock: { type: boolean }
+                blocked:    { type: boolean, description: True if the call was actually denied }
+      responses:
+        '200':
+          description: Event recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+    get:
+      tags: [Enforcement]
+      summary: List recent enforcement events
+      description: Returns events from the in-memory ring buffer, most-recent first.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+          description: Number of events to return; capped at the ring-buffer max
+      responses:
+        '200':
+          description: Event list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ts:         { type: integer }
+                        mode:       { type: string }
+                        label:      { type: string }
+                        severity:   { type: string }
+                        command:    { type: string }
+                        wouldBlock: { type: boolean }
+                        blocked:    { type: boolean }
+                  total: { type: integer }
+
+  /api/enforce/config:
+    get:
+      tags: [Enforcement]
+      summary: Get enforcement configuration
+      description: |
+        Returns the configured mode, per-rule action overrides, the mirrored
+        config-file path, effective mode (after file → env → default precedence),
+        and hook registration status.
+      responses:
+        '200':
+          description: Enforcement config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode:          { type: string, enum: [monitor, enforce] }
+                  overrides:     { type: object, additionalProperties: { type: string, enum: [alert, block] } }
+                  configFile:    { type: string }
+                  envMode:       { type: string, nullable: true }
+                  bypassEnabled: { type: boolean }
+                  effectiveMode: { type: string, enum: [monitor, enforce] }
+                  modeSource:    { type: string, enum: [config-file, env, default] }
+                  hookStatus:
+                    type: object
+                    properties:
+                      installed: { type: string, enum: [yes, no, unknown] }
+                      scopes:    { type: array, items: { type: string } }
+    put:
+      tags: [Enforcement]
+      summary: Update enforcement configuration
+      description: |
+        Set the global mode and/or per-rule action overrides. Changes are written
+        to the config file the hook reads and broadcast via Socket.io `enforce-config`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:      { type: string, enum: [monitor, enforce] }
+                overrides: { type: object, additionalProperties: { type: string, enum: [alert, block] } }
+      responses:
+        '200':
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode:      { type: string }
+                  overrides: { type: object }
+        '400':
+          description: Invalid mode or overrides value
+
+  /api/judge:
+    post:
+      tags: [Rules]
+      summary: LLM-as-judge semantic classification
+      description: |
+        Classifies agent activity as malicious/suspicious/benign using a configured
+        OpenAI-compatible endpoint. Off by default — returns {enabled:false} with no
+        network call unless CLAUDESEC_JUDGE_URL is set. Non-loopback URLs are
+        validated through the shared SSRF guard. Fail-open: errors return
+        {enabled:true,error} and never block anything.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:   { type: string, description: Text to classify (up to 6000 chars) }
+                spanId: { type: string, description: Classify a stored span by ID instead }
+      responses:
+        '200':
+          description: Classification result (or {enabled:false} when judge is not configured)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:    { type: boolean }
+                  verdict:    { type: string, enum: [malicious, suspicious, benign] }
+                  category:   { type: string }
+                  confidence: { type: number, minimum: 0, maximum: 1 }
+                  reason:     { type: string }
+                  model:      { type: string }
+                  latencyMs:  { type: integer }
+                  error:      { type: string }
+                  spanId:     { type: string }
+        '400':
+          description: No text or spanId provided
+        '404':
+          description: spanId not found
+
+  /api/honeytokens:
+    get:
+      tags: [Honeytokens]
+      summary: List honeytokens (masked)
+      description: |
+        Returns masked previews of all configured canary strings. Raw values are
+        never returned. Any span matching a honeytoken fires a HIGH-severity alert.
+      responses:
+        '200':
+          description: Masked honeytoken list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        preview: { type: string, example: "ghp_***ab" }
+                        length:  { type: integer }
+                  count:       { type: integer }
+                  envOverride: { type: boolean }
+    post:
+      tags: [Honeytokens]
+      summary: Replace honeytoken list
+      description: Replaces the full honeytoken list. Values under 6 characters are dropped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tokens]
+              properties:
+                tokens:
+                  type: array
+                  items: { type: string, minLength: 6 }
+      responses:
+        '200':
+          description: Tokens saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  count:  { type: integer }
+        '400':
+          description: tokens is not an array
+        '409':
+          description: CLAUDESEC_HONEYTOKENS env var is set — manage via env instead
+    delete:
+      tags: [Honeytokens]
+      summary: Clear all honeytokens
+      responses:
+        '200':
+          description: Tokens cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '409':
+          description: CLAUDESEC_HONEYTOKENS env var is set — unset it instead
+
+  /api/scrub:
+    get:
+      tags: [Scrub]
+      summary: Scrub pipeline status
+      description: |
+        Read-only view of the inline secret-redaction pipeline: whether it is
+        active, how many honeytokens it is watching for, and what it redacts.
+        Scrubbing is disabled by setting CLAUDESEC_DISABLE_SCRUB=1.
+      responses:
+        '200':
+          description: Scrub status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:     { type: boolean }
+                  envOverride: { type: boolean, description: "True when CLAUDESEC_DISABLE_SCRUB=1" }
+                  honeytokens: { type: integer, description: Number of honeytoken patterns active }
+                  description: { type: string }
 
 components:
   schemas:

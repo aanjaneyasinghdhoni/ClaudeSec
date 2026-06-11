@@ -1,0 +1,98 @@
+---
+title: "Rule Overrides API"
+description: "Permanently enable or disable individual detection rules."
+icon: "toggle-on"
+---
+
+## Overview
+
+Rule overrides let you permanently enable or disable a specific detection rule. This is distinct
+from a [suppression](/api-reference/suppressions), which is time-boxed: a rule override persists
+until you reverse it.
+
+Only the `enabled` flag is stored — severity is not adjustable here, by design. This keeps the
+audit trail unambiguous and the attack surface small.
+
+**Catastrophic-floor protection:** Rules that detect the most dangerous AI-agent behaviours
+(credential exfiltration, prompt injection into system prompts, etc.) are part of the
+catastrophic floor and **can never be disabled** via this API. Any attempt returns `400` and the
+rejection is written to the operator audit log.
+
+A Socket.io `rules-update` event is broadcast whenever an override is applied.
+
+## Endpoints
+
+### GET /api/rule-overrides
+
+Return all persisted enable/disable overrides, ordered alphabetically by rule label.
+
+```bash
+curl http://localhost:3000/api/rule-overrides
+```
+
+**Response:**
+
+```json
+{
+  "overrides": [
+    {
+      "ruleLabel": "Bash — repeated large output",
+      "enabled": 0,
+      "updatedTs": 1749512400000
+    },
+    {
+      "ruleLabel": "File read — .env file",
+      "enabled": 1,
+      "updatedTs": 1749512800000
+    }
+  ]
+}
+```
+
+`enabled` is stored as an integer (`0` = disabled, `1` = enabled). Rules with no entry in this
+table are enabled by default. Only rules that have been explicitly toggled appear here.
+
+---
+
+### PUT /api/rule-overrides/:label
+
+Enable or disable a single rule identified by its label.
+
+```bash
+# Disable a noisy rule
+curl -X PUT "http://localhost:3000/api/rule-overrides/Bash%20%E2%80%94%20repeated%20large%20output" \
+  -H "Content-Type: application/json" \
+  -d '{ "enabled": false }'
+```
+
+**Path parameter:** `:label` — URL-encoded rule label, e.g. `Bash%20%E2%80%94%20repeated%20large%20output`.
+
+**Request body:**
+
+```json
+{ "enabled": false }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | Yes | `true` to re-enable the rule; `false` to disable it |
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "ruleLabel": "Bash — repeated large output",
+  "enabled": false
+}
+```
+
+**Errors:**
+- `400` — `enabled` is missing or not a boolean
+- `400` — the rule is on the catastrophic floor and cannot be disabled (the attempt is also written to the operator audit log)
+- `404` — no built-in or custom rule found with the given label
+
+## Finding rule labels
+
+Use `GET /api/rules` to list all built-in and custom rules with their exact labels. Pass the
+`label` field directly as the path parameter (URL-encoded).

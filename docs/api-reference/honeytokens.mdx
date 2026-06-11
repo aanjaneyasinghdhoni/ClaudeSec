@@ -1,0 +1,110 @@
+---
+title: "Honeytokens API"
+description: "Manage operator-planted canary strings that fire a HIGH-severity alert on any match."
+icon: "honey-pot"
+---
+
+## Overview
+
+Honeytokens are operator-planted canary strings that should never appear in legitimate agent
+telemetry. Any span whose content contains a configured honeytoken triggers a
+`HIGH`-severity **Honeytoken exfiltration** alert regardless of other rules. They are a
+high-signal trip-wire for detecting data theft.
+
+Token values are treated as secrets throughout the stack. The `GET` endpoint never returns raw
+values — only a masked preview, the character count, and the total number of tokens. The audit
+log records only the count when tokens are set or cleared.
+
+**Environment override.** If `CLAUDESEC_HONEYTOKENS` is set as a comma-separated list in the
+environment, that list takes precedence and the write endpoints (`POST`, `DELETE`) are
+disabled — manage the list by updating the environment variable instead.
+
+## Endpoints
+
+### GET /api/honeytokens
+
+Return the current honeytoken list (masked) and status.
+
+```bash
+curl http://localhost:3000/api/honeytokens
+```
+
+**Response:**
+
+```json
+{
+  "tokens": [
+    { "preview": "ghp_***ab", "length": 40 },
+    { "preview": "AKID***XZ", "length": 20 }
+  ],
+  "count": 2,
+  "envOverride": false
+}
+```
+
+| Field | Description |
+|---|---|
+| `tokens` | Array of masked token objects — raw values are never returned |
+| `tokens[].preview` | First 4 characters + `***` + last 2 characters of the token |
+| `tokens[].length` | Full character length of the token |
+| `count` | Total number of configured honeytokens |
+| `envOverride` | `true` if `CLAUDESEC_HONEYTOKENS` is set; write endpoints are disabled in this case |
+
+---
+
+### POST /api/honeytokens
+
+Replace the entire honeytoken list with a new set of values.
+
+```bash
+curl -X POST http://localhost:3000/api/honeytokens \
+  -H "Content-Type: application/json" \
+  -d '{ "tokens": ["ghp_SyntheticCanary001", "AKIASYNT0000CANARY01"] }'
+```
+
+**Request body:**
+
+```json
+{
+  "tokens": ["ghp_SyntheticCanary001", "AKIASYNT0000CANARY01"]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tokens` | string[] | Yes | Array of canary strings. Values shorter than 6 characters are silently dropped. |
+
+This is a full replacement — any previously stored tokens are overwritten. Send an empty array
+to clear all tokens (or use `DELETE /api/honeytokens`).
+
+**Response:**
+
+```json
+{ "status": "ok", "count": 2 }
+```
+
+`count` reflects the number of tokens that were accepted and saved (after filtering out values
+shorter than 6 characters).
+
+**Errors:**
+- `400` — `tokens` is not an array
+- `409` — `CLAUDESEC_HONEYTOKENS` env var is set; remove it to manage tokens via the API
+
+---
+
+### DELETE /api/honeytokens
+
+Clear all stored honeytokens.
+
+```bash
+curl -X DELETE http://localhost:3000/api/honeytokens
+```
+
+**Response:**
+
+```json
+{ "status": "ok" }
+```
+
+**Errors:**
+- `409` — `CLAUDESEC_HONEYTOKENS` env var is set; unset it instead

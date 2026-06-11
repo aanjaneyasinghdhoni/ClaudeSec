@@ -1,0 +1,57 @@
+---
+title: "Scrub Status API"
+description: "Inspect the inline secret-redaction pipeline status."
+icon: "eraser"
+---
+
+## Overview
+
+ClaudeSec runs every ingested span through an inline scrubber before writing it to SQLite or
+broadcasting it to the dashboard. The scrubber redacts personal paths, OS usernames, email
+local-parts, and common secret-shaped attribute values so that sensitive data is never stored
+at rest or forwarded downstream.
+
+The Scrub Status endpoint exposes a read-only view of the scrubber's configuration — whether it
+is active, how many honeytokens it is watching for, and what it redacts. There are no write
+operations: scrubbing behaviour is controlled by environment variables.
+
+### What is redacted
+
+- Home directory paths: `/Users/<name>`, `/home/<name>`, `C:\Users\<name>`, `$HOME`
+- The OS username
+- Email local-parts (the part before `@`)
+- Attribute keys whose names contain `authorization`, `token`, `secret`, `password`, and similar
+
+The OTLP attribute structure is preserved so downstream dashboards and full-text search
+continue to work after scrubbing.
+
+## Endpoints
+
+### GET /api/scrub
+
+Return the current scrubber status.
+
+```bash
+curl http://localhost:3000/api/scrub
+```
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "envOverride": false,
+  "honeytokens": 2,
+  "description": "Inline redaction of /Users/<n>, /home/<n>, C:\\Users\\<n>, $HOME, OS username, email local-parts, and sensitive attribute keys (authorization, token, secret, password, …). Preserves the OTLP attribute shape so downstream dashboards and FTS search keep working."
+}
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | `true` when the scrubber is active |
+| `envOverride` | `true` if `CLAUDESEC_DISABLE_SCRUB=1` is set, which bypasses scrubbing and forwards raw attributes |
+| `honeytokens` | Number of honeytoken strings the scrubber is currently watching for |
+| `description` | Human-readable summary of what the scrubber redacts |
+
+When `envOverride` is `true`, `enabled` will be `false` — set `CLAUDESEC_DISABLE_SCRUB=1` only
+in isolated development environments where no real secrets will flow through the pipeline.
