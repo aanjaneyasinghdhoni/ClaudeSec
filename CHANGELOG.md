@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The navigation rail now lists every view.** Expanded, each section shows its
+  tabs beneath it, so all thirteen screens are reachable at a glance instead of
+  only after selecting a category. Collapsed and mobile layouts are unchanged.
+- **In-app controls for demo data.** A dismissible banner marks synthetic demo
+  data as *not real activity* wherever it appears, and **Settings → Data** gains a
+  one-click **Clear demo data** button. That clear is scoped to demo rows, so it
+  can never touch real telemetry — which is why it needs no `CLAUDESEC_ALLOW_RESET`
+  gate. The full **Clear all data** wipe is now a visible, explained control
+  rather than a missing one.
+- **API reference for the remaining endpoints.** Seven routes that had no
+  reference page — enforcement, rule overrides, the optional LLM judge,
+  honeytokens, scrubbing status, the operator audit log, and harness profiles —
+  are now documented and added to `openapi.yaml`.
+- **Paging through the full audit trail.** The Command Audit and File Access
+  panels can now load every recorded command and file, not just the first slice;
+  the API gained matching `offset` paging.
+
+### Changed
+
+- **Status labels tell the truth.** The Enforce tab now warns loudly when a
+  precedence layer (e.g. `enforce-config.json`) overrides the configured mode, so
+  a pressed "Enforce" toggle can't read as active blocking while the hook actually
+  runs in monitor. The dashboard footer reads its version from `package.json`
+  instead of a hardcoded string, the spawn-tree **inferred** badge explains itself
+  in plain words, and the alert badge counts up to `999+`.
+
+### Fixed
+
+- **Token totals reconcile across every surface.** The per-session HTML report,
+  the session compare view, and the Prometheus `/metrics` counters summed raw,
+  cache-blind tokens that disagreed with the Cost tab (output roughly 50% high
+  from duplicate transcript lines). All token totals now share one deduped,
+  cache-aware basis, so the report you hand an auditor matches the dashboard.
+- **Model pricing is current and resolves correctly.** Per-million rates for the
+  latest OpenAI and Google models were refreshed, the GPT-5.4 mini/nano and
+  Gemini 2.5 / 3.x entries were added, and a dated model name such as
+  `gpt-4o-mini-2024-07-18` now resolves to the most specific rate instead of a
+  pricier sibling listed before it.
+- **Docs navigation no longer stalls.** Clicking a page in the docs sidebar now
+  updates the content immediately — it previously changed the URL but left the old
+  page until a manual reload. A doc whose build was replaced under an open tab
+  recovers on its own, and a malformed deep link resolves to a valid view instead
+  of a silent fallback.
+- **Session reports are trustworthy evidence.** The exported report now shows the
+  real version and a CRITICAL threat count (it previously hardcoded `v1.0.0` and
+  omitted the critical tier), and hourly auto-exports are written with the same
+  owner-only (`0600`) permissions as the database.
+
+### Security
+
+- **Local secret & privacy scanner.** A new sub-second `pnpm scan` reads every
+  git-tracked file and fails on real credentials or any private leak — home paths,
+  personal emails, private tooling directories — before a push. It runs inside
+  `pnpm preflight` and as a fast CI step on every push and pull request.
+
+### Build
+
+- **Line endings are pinned to LF.** A new `.gitattributes` keeps the shell
+  launcher and the enforcement hook from being rewritten to CRLF on a Windows
+  checkout, where a stray carriage return would break the interpreter (on any
+  platform). The README gains a Windows section pointing to Docker as the
+  recommended path.
+
 ## [1.2.2] - 2026-06-11
 
 ### Fixed
