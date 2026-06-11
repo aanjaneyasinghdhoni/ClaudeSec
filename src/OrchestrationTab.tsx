@@ -165,8 +165,8 @@ function SpawnTreeItem({
         {/* Inferred marker */}
         {synthetic && (
           <span
-            className="text-[10px] uppercase tracking-wide font-mono text-slate-500 bg-slate-800/60 border border-dashed border-slate-600 px-1.5 py-0.5 rounded shrink-0"
-            title="Inferred grouping — the server guessed this parentage; no observed cross-trace spawn edge exists"
+            className="text-[10px] uppercase tracking-wide font-mono text-slate-500 bg-slate-800/60 border border-dashed border-slate-600 px-1.5 py-0.5 rounded shrink-0 cursor-help"
+            title="Inferred = guessed, not observed. No agent reported spawning this session; it was grouped here because it runs the same agent. Dashed styling marks the guess."
           >
             inferred
           </span>
@@ -467,8 +467,9 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
               <div className="flex items-start gap-2 px-3 py-2 text-[11px] text-amber-300/90 bg-amber-950/20 border-b border-dashed border-amber-800/40">
                 <span className="font-mono uppercase tracking-wide shrink-0">inferred</span>
                 <span>
-                  No observed cross-trace spawn edges — this tree is an inferred grouping of
-                  related sessions, not measured parentage. Dashed/greyed rows are not real spawn edges.
+                  "Inferred" means guessed, not observed: no agent here reported spawning
+                  another, so ClaudeSec grouped sessions from the same agent together as a
+                  best guess. Dashed/greyed rows are that guess — not a real spawn link.
                 </span>
               </div>
             )}

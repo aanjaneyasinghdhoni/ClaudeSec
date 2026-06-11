@@ -252,6 +252,21 @@ export function EnforceTab() {
                   : 'The hook records "would-block" events for high-severity matches but allows every call. Flip to Enforce to actually deny them. The catastrophic floor still blocks the 6 most dangerous commands regardless of mode.'}
               </p>
 
+              {/* The toggle shows the CONFIGURED mode; when a precedence layer
+                  overrides it, say so loudly right here — otherwise a pressed
+                  "Enforce" toggle over a monitor headline reads as a contradiction
+                  (or worse, as active blocking that isn't happening). */}
+              {mode !== effectiveMode && (
+                <div className="mt-2 flex items-start gap-1.5 text-[11px] font-medium" style={{ color: '#fbbf24' }}>
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span>
+                    Your <span className="font-mono">{mode}</span> toggle is overridden — the hook actually runs in{' '}
+                    <span className="font-mono font-semibold">{effectiveMode}</span> mode, set by{' '}
+                    {modeSource === 'config-file' ? 'enforce-config.json' : modeSource === 'env' ? 'the CLAUDESEC_MODE env var' : 'the monitor default'}.
+                  </span>
+                </div>
+              )}
+
               {/* Three distinct truths: configured toggle, effective mode + source,
                   and hook registration. */}
               <div className="mt-3 flex flex-col gap-1 text-[11px]" style={{ color: 'var(--cs-text-muted)' }}>

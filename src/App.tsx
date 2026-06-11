@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+// Build-time version from package.json — keeps the footer in lockstep with
+// releases instead of a hand-maintained string that drifts.
+import { version as appVersion } from '../package.json';
 import {
   useNodesState, useEdgesState,
   addEdge, type Node, type Edge,
@@ -915,7 +918,7 @@ export default function App() {
       <div className="flex-1 flex lg:overflow-hidden min-h-0 relative">
 
         {/* ── Category Rail (hidden below md — replaced by bottom tab bar) ── */}
-        <CategoryNav active={activeCategory} onChange={navigateCategory} alertCount={alertCount} onOpenDocs={() => openDocs(docsSlug ?? '')} docsActive={docsOpen} />
+        <CategoryNav active={activeCategory} onChange={navigateCategory} activeTab={activeTab} onTabChange={navigateTab} alertCount={alertCount} onOpenDocs={() => openDocs(docsSlug ?? '')} docsActive={docsOpen} />
 
         {/* Drawer scrim — tap to close (below lg only) */}
         {sidebarOpen && (
@@ -1380,7 +1383,7 @@ export default function App() {
                 {tab.id === 'alerts' && alertCount > 0 && (
                   <span className="min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full flex items-center justify-center leading-none"
                     style={{ background: '#ff3b5c', color: '#fff' }}>
-                    {alertCount > 99 ? '99+' : alertCount}
+                    {alertCount > 999 ? '999+' : alertCount}
                   </span>
                 )}
               </button>
@@ -1581,7 +1584,7 @@ export default function App() {
           )}
         </div>
 
-        <span className="text-[11px] font-mono shrink-0" style={{ color: 'var(--cs-text-faint)' }}>v1.0</span>
+        <span className="text-[11px] font-mono shrink-0" style={{ color: 'var(--cs-text-faint)' }}>v{appVersion}</span>
       </footer>
 
       {/* ── Session Compare Panel (s49) ── */}
@@ -1618,7 +1621,7 @@ export default function App() {
               <span className="text-[10px] font-medium tracking-wide leading-none">{cat.label}</span>
               {cat.id === 'detect' && alertCount > 0 && (
                 <span className="absolute top-1.5 right-[calc(50%-1.25rem)] min-w-[15px] h-[15px] px-1 text-[9px] font-bold rounded-full flex items-center justify-center leading-none bg-rose-500 text-white">
-                  {alertCount > 99 ? '99+' : alertCount}
+                  {alertCount > 999 ? '999+' : alertCount}
                 </span>
               )}
             </button>
