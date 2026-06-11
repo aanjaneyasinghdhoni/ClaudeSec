@@ -61,19 +61,31 @@ export function useRouteNav(): RouteNav {
   // Resolve the active category/tab from the URL. When in docs mode the URL
   // carries no category/tab, so fall back to the last dashboard location's
   // values — that keeps the rail highlight stable while docs are open.
+  const routeIsValid =
+    docsOpen ||
+    (isTab(params.tab) && isCategory(params.category) && categoryForTab(params.tab) === params.category);
+
   let activeCategory: Category;
   let activeTab: Tab;
   if (docsOpen) {
     const [, lastCat, lastTab] = lastDashboardRoute.current.split('/');
     activeCategory = isCategory(lastCat) ? lastCat : DEFAULT_CATEGORY;
     activeTab = isTab(lastTab) ? lastTab : DEFAULT_TAB;
-  } else if (isTab(params.tab) && isCategory(params.category) && categoryForTab(params.tab) === params.category) {
-    activeTab = params.tab;
-    activeCategory = params.category;
+  } else if (routeIsValid && params.tab && params.category) {
+    activeTab = params.tab as Tab;
+    activeCategory = params.category as Category;
   } else {
     activeCategory = DEFAULT_CATEGORY;
     activeTab = DEFAULT_TAB;
   }
+
+  // A malformed deep link (e.g. /review/commands) renders the fallback tab; if
+  // the URL kept the bad path, the rail highlight and the address bar would
+  // disagree and a copied link would mislead. Normalize the URL to the route
+  // actually being rendered. `replace` keeps Back from bouncing into the typo.
+  useEffect(() => {
+    if (!routeIsValid) navigate(DEFAULT_ROUTE, { replace: true });
+  }, [routeIsValid, navigate]);
 
   const docsSlug = docsOpen ? (params['*'] ? params['*'].split('#')[0] : '') || null : null;
 
