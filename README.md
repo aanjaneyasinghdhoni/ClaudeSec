@@ -27,7 +27,8 @@ cd ClaudeSec
 ```
 
 Then open **http://localhost:3000**. No environment variables, no shell edits, no agent restart —
-the watcher picks up sessions that were already running.
+the watcher picks up sessions that were already running. The dashboard starts **empty** — it only
+shows your own agent activity as it happens.
 
 Two alternatives, same script:
 
@@ -35,10 +36,30 @@ Two alternatives, same script:
   it cannot read your machine's transcripts, so point agents at it over
   [OTLP](docs/how-to/remote-agents.mdx).
 - `./start.sh --demo` — bring up the dashboard **plus** a separate demo container on `:3001`,
-  pre-seeded with synthetic data on its own isolated volume — safe to show to others.
+  pre-seeded with synthetic data on its own isolated volume — safe to show to others. The default
+  `./start.sh` and `--docker` paths never seed this synthetic data; only `--demo` does, on its own
+  container. Any synthetic rows can be removed anytime from **Settings → Data → Clear demo data**.
 
 > `better-sqlite3` builds a native module on install. On macOS, run `xcode-select --install` if the
 > build fails; on Linux, install `build-essential`.
+
+### Windows
+
+The one-command `./start.sh` is a Bash script and the local path compiles native modules, so the
+recommended way to run ClaudeSec on Windows is **Docker Desktop**:
+
+```powershell
+git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
+cd ClaudeSec
+docker compose up
+```
+
+Then open **http://localhost:3000**. Docker ingests via **OTLP only**, so point your agents at it
+over [OTLP](docs/how-to/remote-agents.mdx) — the on-disk transcript watcher and the Processes tab
+are not available on the Windows native path. To run natively instead (PowerShell, no Docker) you
+need Git Bash or WSL to invoke `start.sh`, plus the
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) "Desktop
+development with C++" workload and Python so `better-sqlite3` and `re2` can compile.
 
 ---
 
