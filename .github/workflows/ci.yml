@@ -41,6 +41,12 @@ jobs:
             exit 1
           fi
 
+      # Fast (sub-second) scan of every tracked file for real credentials and any
+      # private path / email that would leak the maintainer's setup. Runs locally
+      # in preflight too; cheap enough to gate every push and PR here as well.
+      - name: Scan for secrets & private data
+        run: node scripts/scan-secrets.mjs
+
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level high
 
