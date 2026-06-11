@@ -1,9 +1,11 @@
 # Build-context excludes — keep the image small and free of local data.
 node_modules
 dist
-.git
-.gitignore
-.dockerignore
+
+# Hidden files and directories (VCS, CI config, editor and local tool state)
+# are never part of the image. The build needs none of them. The pattern is
+# `.?*` rather than `.*` so it cannot match `.` itself (the COPY source).
+.?*
 
 # Local data, env, secrets, and runtime artifacts — never bake into the image
 *.db
@@ -20,7 +22,11 @@ rules.json
 enforce-config.json
 rules-enforcement.json
 
-# Markdown, API spec, and CLI are not needed at container runtime
+# Markdown and the API spec are not needed at container runtime.
+# cli/ must stay in the context: the image build runs the test gate, and
+# catastrophic-parity requires cli/hooks/claudesec-enforce.cjs to stay in
+# lockstep with the server rules. The runtime stage copies an explicit set
+# of paths (Dockerfile stage 2) that does not include cli/, so the CLI
+# still never ships in the final image.
 *.md
 openapi.yaml
-cli/

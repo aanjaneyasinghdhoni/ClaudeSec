@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The container image failed to build from a version tag: the Docker build
+  context excluded `cli/`, but the build's test gate checks
+  `cli/hooks/claudesec-enforce.cjs` for catastrophic-rule parity and fails
+  hard when it is missing. The build context now includes `cli/`. The
+  runtime image is unchanged — the CLI still does not ship in the container.
+
+### Security
+
+- The Docker build context now excludes all hidden files and directories, so
+  VCS, CI, editor, and local tool state can never reach an image layer.
+
 ## [1.2.0] - 2026-06-10
 
 ### Added
