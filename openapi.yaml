@@ -5,7 +5,7 @@ info:
     Local AI Agent Observatory — ingests OpenTelemetry traces from CLI agent
     harnesses (Claude Code, GitHub Copilot CLI, Codex)
     and surfaces suspicious activity in real-time.
-  version: 1.2.1
+  version: 1.2.2
   license:
     name: GNU Affero General Public License v3.0
     url: https://www.gnu.org/licenses/agpl-3.0.html
