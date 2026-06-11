@@ -341,7 +341,7 @@ export function WebhookSection() {
           <input
             type="url"
             value={url}
-            onChange={e => setUrl(e.target.value)}
+            onChange={e => { setUrl(e.target.value); setError(''); }}
             placeholder={configured ? 'Enter a new URL to replace' : 'https://hooks.example.com/...'}
             className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
           />

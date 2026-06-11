@@ -753,7 +753,9 @@ function autoExport() {
       alertCount: (alerts as unknown[]).length,
       sessionCount: (sessions as unknown[]).length,
       spans, alerts, sessions,
-    }));
+      // Owner-only, matching the database the data came from — an export must
+      // never be more readable than its source.
+    }), { mode: 0o600 });
     lastAutoExportAt = new Date().toISOString();
     console.log(`[ClaudeSec] Auto-export → ${filePath}`);
 
@@ -1780,7 +1782,7 @@ async function startServer() {
   });
 
   // ── Sessions ─────────────────────────────────────────────────────────────
-  registerSessionRoutes(app, { io, healthFromCounts, computeHealthScore });
+  registerSessionRoutes(app, { io, healthFromCounts, computeHealthScore, appVersion: APP_VERSION });
 
   // ── Span search ──────────────────────────────────────────────────────────
   app.get('/api/spans', (req, res) => {
