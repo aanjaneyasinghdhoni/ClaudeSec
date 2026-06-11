@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import { db } from '../db.js';
 import type { Severity } from '../../src/shared/types.js';
 import type { RouteContext } from './context.js';
+import { dedupedTokenTotals } from './costs.js';
 
 interface SpanRecord {
   spanId: string;
@@ -116,6 +117,11 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
       return res.status(400).json({ error: 'Provide two distinct traceId values as ?a=...&b=...' }) as any;
     }
 
+    // Token totals on the deduped, cache-aware basis (one source of truth shared
+    // with the Cost tab and the report), keyed by traceId. Computed once so the
+    // two sessionStats() calls don't each rescan the span table.
+    const tokenByTrace = dedupedTokenTotals('trace');
+
     function sessionStats(traceId: string) {
       const session = db.prepare('SELECT * FROM sessions WHERE traceId = ?').get(traceId) as
         { traceId: string; name: string; createdAt: string; pinned: number } | undefined;
@@ -123,7 +129,7 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
       const spans = db.prepare('SELECT * FROM spans WHERE traceId = ?').all(traceId) as SpanRecord[];
       const alerts = db.prepare('SELECT * FROM alerts WHERE traceId = ?').all(traceId) as any[];
 
-      let tokensIn = 0, tokensOut = 0;
+      const { tokensIn, tokensOut } = tokenByTrace.get(traceId) ?? { tokensIn: 0, tokensOut: 0 };
       let totalDurationMs = 0, durCount = 0;
       const toolCounts = new Map<string, number>();
       const ruleCounts = new Map<string, number>();
@@ -131,8 +137,6 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
       for (const span of spans) {
         try {
           const a = JSON.parse(span.attributes);
-          tokensIn  += Number(a['gen_ai.usage.input_tokens']  ?? a['llm.usage.input_tokens']  ?? 0);
-          tokensOut += Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
           const tool = String(a['gen_ai.tool.name'] ?? a['tool.name'] ?? '');
           if (tool) toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
           const rule = String(a['claudesec.threat.rule'] ?? '');
@@ -177,17 +181,14 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
     const threatCounts = { critical: 0, high: 0, medium: 0, low: 0 };
     spans.forEach(s => { if (s.severity in threatCounts) (threatCounts as any)[s.severity]++; });
 
-    let totalTokensIn = 0;
-    let totalTokensOut = 0;
+    // Token totals on the deduped, cache-aware basis the Cost tab uses, so the
+    // exported report — the artifact handed to an auditor — agrees with the
+    // dashboard instead of showing inflated raw, cache-blind sums.
+    const reportTokens = dedupedTokenTotals('trace').get(traceId) ?? { tokensIn: 0, tokensOut: 0 };
+    const totalTokensIn = reportTokens.tokensIn;
+    const totalTokensOut = reportTokens.tokensOut;
     const harnessSet = new Set<string>();
-    spans.forEach(s => {
-      harnessSet.add(s.harness);
-      try {
-        const a = JSON.parse(s.attributes);
-        totalTokensIn  += Number(a['gen_ai.usage.input_tokens']  ?? a['llm.usage.input_tokens']  ?? 0);
-        totalTokensOut += Number(a['gen_ai.usage.output_tokens'] ?? a['llm.usage.output_tokens'] ?? 0);
-      } catch {}
-    });
+    spans.forEach(s => harnessSet.add(s.harness));
 
     const severityColor = (s: string) =>
       s === 'high' ? '#ef4444' : s === 'medium' ? '#f97316' : s === 'low' ? '#eab308' : '#22c55e';
