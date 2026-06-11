@@ -21,7 +21,7 @@ import { registerBookmarkRoutes } from './routes/bookmarks.js';
 import { registerSuppressionRoutes } from './routes/suppressions.js';
 import { registerSpanMetaRoutes } from './routes/spanMeta.js';
 import { registerDbStatsRoutes } from './routes/dbStats.js';
-import { registerCostRoutes } from './routes/costs.js';
+import { registerCostRoutes, dedupedTokenTotals } from './routes/costs.js';
 import { registerHarnessRoutes } from './routes/harnesses.js';
 import { registerFileAccessRoutes } from './routes/fileAccess.js';
 import { registerCommandAuditRoutes } from './routes/commandAudit.js';
@@ -2618,17 +2618,12 @@ service:
     for (const row of db.prepare(`SELECT harness, severity, COUNT(*) AS c FROM spans WHERE severity != 'none' GROUP BY harness, severity`).all() as { harness: string; severity: string; c: number }[]) {
       threatsPerHarnessSev.set(`${row.harness}::${row.severity}`, row.c);
     }
-    const tokenRows = db.prepare(`
-      SELECT harness,
-             SUM(COALESCE(json_extract(attributes, '$."gen_ai.usage.input_tokens"'),  json_extract(attributes, '$."llm.usage.input_tokens"'),  0)) AS tin,
-             SUM(COALESCE(json_extract(attributes, '$."gen_ai.usage.output_tokens"'), json_extract(attributes, '$."llm.usage.output_tokens"'), 0)) AS tout
-      FROM spans GROUP BY harness
-    `).all() as { harness: string; tin: number; tout: number }[];
-    for (const row of tokenRows) {
-      const tin  = Number(row.tin)  || 0;
-      const tout = Number(row.tout) || 0;
-      if (tin)  tokensIn.set(row.harness,  tin);
-      if (tout) tokensOut.set(row.harness, tout);
+    // Token counters on the deduped, cache-aware, demo-excluded basis shared with
+    // the Cost tab — so a Prometheus dashboard built on these counters matches the
+    // UI instead of double-counting duplicate transcript lines or synthetic data.
+    for (const [harness, t] of dedupedTokenTotals('harness')) {
+      if (t.tokensIn)  tokensIn.set(harness,  t.tokensIn);
+      if (t.tokensOut) tokensOut.set(harness, t.tokensOut);
     }
 
     const sessionsTotal = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c as number;

@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
 import type { RouteContext } from './context.js';
-import { dedupedUsageRows } from './costs.js';
+import { dedupedTokenTotals } from './costs.js';
 
 export function registerHarnessRoutes(app: Express, _ctx: RouteContext): void {
   // ── Harness profiles (full per-agent stats) ──────────────────────────────
@@ -24,21 +24,9 @@ export function registerHarnessRoutes(app: Express, _ctx: RouteContext): void {
     `).all() as any[];
 
     // Token totals per harness, on the SAME basis as /api/costs: de-duplicated
-    // LLM usage (exact response-id dedupe + the legacy time/usage heuristic) with
-    // demo traces excluded, and cache tokens folded into the input total so the
-    // HarnessTab figures agree with the CostTab. Without this, the old code summed
-    // every duplicate transcript line and ignored cache reads/writes, so the two
-    // tabs disagreed and the totals were inflated.
-    const tokenMap = new Map<string, { tokensIn: number; tokensOut: number }>();
-    for (const u of dedupedUsageRows()) {
-      const ti = u.tokensIn + u.cacheRead + u.cacheWrite;
-      const to = u.tokensOut;
-      if (!ti && !to) continue;
-      const entry = tokenMap.get(u.harness) ?? { tokensIn: 0, tokensOut: 0 };
-      entry.tokensIn  += ti;
-      entry.tokensOut += to;
-      tokenMap.set(u.harness, entry);
-    }
+    // LLM usage with demo traces excluded and cache tokens folded into input, so
+    // the HarnessTab, CostTab, session report, and /metrics all agree.
+    const tokenMap = dedupedTokenTotals('harness');
 
     const harnesses = rows.map(r => {
       const tokens = tokenMap.get(r.harness) ?? { tokensIn: 0, tokensOut: 0 };
