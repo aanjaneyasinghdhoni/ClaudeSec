@@ -116,7 +116,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **MEASURE — MS-3.1 / MS-3.2** | AI risk tracked over time | Continuous post-deployment monitoring of agent behavior; per-session health scoring surfaces degradation and anomalous activity | Defining metrics/thresholds; periodic review cadence |
 | **MEASURE — MS-2.4** | Security & privacy assessed | Detection of credential theft, exfiltration, prompt-injection patterns in agent activity; MCP/skill scanner | Formal pre-deployment evaluation of the deployer's AI systems |
 | **MANAGE — MG-2.3** | Emergency interventions | `enforce` mode + always-on catastrophic floor (e.g. `rm -rf /`, fork bombs, piped RCE) act as a tool-call-level intervention, with the dashboard verifying the hook is registered before claiming blocking is active; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority |
-| **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail | Incident log, severity classification, post-incident review |
+| **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail (note: enforcement-hook events are buffered in memory only and do not survive a restart) | Incident log, severity classification, post-incident review |
 | **GOVERN — GV-1.x / GV-4.x** | Policies, cross-functional escalation | (Tool provides evidence inputs only) | **Deployer obligation** — policies, accountability, escalation paths are organizational, not tool features |
 
 **ISO/IEC 42001:2023 (Annex A)**
@@ -134,7 +134,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | Reference | Topic | How ClaudeSec relates | Notes |
 |---|---|---|---|
 | **Art. 6 / Annex III** | High-risk classification | ClaudeSec is **not** an Annex III high-risk use case and is **not** a safety component under Annex I | It is a developer security tool, not a system making decisions about people |
-| **Art. 26** | Deployer obligations (human oversight, monitoring, log-keeping) | ClaudeSec **supports a deployer** in meeting monitoring and automatically-generated-log retention duties for high-risk AI systems they operate | The legal obligation remains the deployer's |
+| **Art. 26** | Deployer obligations (human oversight, monitoring, log-keeping) | ClaudeSec **supports a deployer** in meeting monitoring and automatically-generated-log retention duties for high-risk AI systems they operate. Note: Art. 26(6) expects logs kept **at least six months** — set `CLAUDESEC_RETENTION_DAYS` to 183 or more and a `CLAUDESEC_MAX_SPANS` cap large enough that count-based pruning never undercuts that window; the defaults are shorter | The legal obligation remains the deployer's |
 | **Art. 50** | Transparency for AI interaction / generated content | Relevant only if the optional local LLM-judge is enabled; its output is internal classification, not user-facing generated content | Off by default; deployer assesses applicability if enabled |
 | **Art. 3 (GPAI)** | GPAI model obligations | **Not applicable** — ClaudeSec trains and ships no model | — |
 
@@ -179,8 +179,8 @@ deployer obligation. Control identifiers are taken from the published frameworks
   names, command lines, file paths, and (when enhanced telemetry is enabled) prompts and
   arguments. This material **may contain secrets or personal data** by nature.
 - **Where it lives.** A single local SQLite database (`spans.db`), created with `0600`
-  (owner-only) permissions, plus optional hourly JSON snapshots in `exports/`. Nothing is
-  stored off the host.
+  (owner-only) permissions, plus hourly JSON snapshots in `exports/` (also `0600`; the
+  most recent 24 are kept). Nothing is stored off the host.
 - **Secret & PII scrubbing.** On by default. Before any span is persisted, broadcast, or
   exported, `server/scrub.ts` redacts known secret formats (API keys, tokens, JWTs, cloud
   credentials, private keys, database connection-string credentials), home directory paths,

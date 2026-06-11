@@ -22,6 +22,8 @@ export interface HealthBreakdown {
 
 export interface RouteContext {
   io: Server;
+  /** Released app version from package.json (owned by index.ts). */
+  appVersion?: string;
   /** Invalidate the in-memory suppressed-rule-keys cache (owned by index.ts). */
   invalidateSuppressedCache?: () => void;
   /** Invalidate the in-memory disabled-rule-labels cache (owned by index.ts). */
