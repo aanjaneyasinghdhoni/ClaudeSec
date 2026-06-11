@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The multi-architecture image build failed on the emulated platform: the test
+  gate includes wall-clock ReDoS timing assertions, and on a QEMU-emulated CPU
+  every pattern exceeds the timing budget. The test gate and frontend build now
+  run once on the build platform's native architecture; the per-architecture
+  stages only compile native dependencies and assemble the runtime image.
+
 ## [1.2.1] - 2026-06-11
 
 ### Fixed

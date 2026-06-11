@@ -1,5 +1,7 @@
-# ── Stage 1: Build frontend ──────────────────────────────────────────────────
-FROM node:22-alpine AS builder
+# ── Stage 1: Target-arch dependencies ────────────────────────────────────────
+# Runs once per target platform so native modules (better-sqlite3, re2) are
+# compiled for the architecture the image will actually run on.
+FROM node:22-alpine AS deps
 WORKDIR /app
 
 # Enable corepack so pnpm is available without a global install
@@ -8,10 +10,23 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
+# ── Stage 2: Test gate + frontend build ──────────────────────────────────────
+# Pinned to the build platform so it runs on native hardware exactly once.
+# The test gate includes wall-clock ReDoS timing assertions that fail under
+# QEMU emulation (every pattern looks "slow" on an emulated CPU); the vite
+# output is plain JS/CSS and identical for every architecture anyway.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+WORKDIR /app
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+
 COPY . .
 RUN pnpm build
 
-# ── Stage 2: Production image ────────────────────────────────────────────────
+# ── Stage 3: Production image ────────────────────────────────────────────────
 FROM node:22-alpine
 WORKDIR /app
 
@@ -20,11 +35,11 @@ RUN apk add --no-cache procps su-exec && corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
-# Reuse the native binaries already compiled in the builder stage — avoids
+# Reuse the native binaries already compiled in the deps stage — avoids
 # re-running node-gyp for better-sqlite3 / re2 in a minimal prod image.
 # pnpm's node_modules layout (including the .pnpm store) uses relative symlinks
 # and is fully self-contained, so copying the whole directory is safe.
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
 
 # Copy backend TypeScript modules + tsconfig so tsx can resolve all imports.
 COPY server/ ./server/
