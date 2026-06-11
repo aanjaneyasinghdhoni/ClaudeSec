@@ -18,10 +18,14 @@ List shell commands executed by agents, sorted by risk score (highest first).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `limit` | number | Max commands to return (default: 200, max: 1000) |
+| `limit` | number | Page size (default: 200, max: 5000) |
+| `offset` | number | Page offset into the risk-sorted list (default: 0) |
+
+The response always reports the true `total`, so a client can page through every
+recorded command with `offset` — the dashboard's Command Audit tab does exactly that.
 
 ```bash
-curl "http://localhost:3000/api/command-audit?limit=50"
+curl "http://localhost:3000/api/command-audit?limit=50&offset=100"
 ```
 
 **Response:**
@@ -49,7 +53,9 @@ curl "http://localhost:3000/api/command-audit?limit=50"
       "timestamp": "1712659203200000000"
     }
   ],
-  "total": 42
+  "total": 42,
+  "limit": 200,
+  "offset": 0
 }
 ```
 
@@ -75,8 +81,20 @@ Only spans from shell-type tools (`bash`, `Bash`, `exec`, `sh`, `terminal`, `she
 
 Analyze which files agents have read or written, sorted by total access count.
 
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | number | Page size in flat mode (default: 500, max: 5000) |
+| `offset` | number | Page offset in flat mode (default: 0) |
+| `groupBy` | string | `folder` returns files grouped per repo/folder instead of a flat list |
+
+The flat response always reports the true `total`, so a client can page through
+every file with `offset`. Grouped mode returns every file under its folder in one
+response — no paging.
+
 ```bash
-curl http://localhost:3000/api/file-access
+curl "http://localhost:3000/api/file-access?limit=100&offset=0"
 ```
 
 **Response:**
@@ -102,10 +120,18 @@ curl http://localhost:3000/api/file-access
       "total": 2
     }
   ],
-  "total": 87
+  "total": 87,
+  "limit": 500,
+  "offset": 0
 }
 ```
 
-`sensitive` is `true` for paths matching known sensitive patterns: `.env`, `.ssh/`, `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/etc/hosts`, `credentials`, `.pem`, `id_rsa`. Returns up to 100 files sorted by total access count.
+Each file also carries `folder` (the working directory the agent accessed it from)
+and `branch` (the git branch recorded at access time) for the grouped view.
+
+With `?groupBy=folder` the response is `{ "groups": [...], "totalFiles": n, "totalFolders": n }`,
+where each group aggregates one folder's files, reads, writes, threats, and sensitive count.
+
+`sensitive` is `true` for paths matching known sensitive patterns: `.env`, `.ssh/`, `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/etc/hosts`, `credentials`, `.pem`, `id_rsa`.
 
 Read tools: `Read`, `file_read`, `Glob`, `cat`, `head`, `tail`, `Grep`. Write tools: `Write`, `Edit`, `file_edit`, `touch`, `mv`, `cp`.

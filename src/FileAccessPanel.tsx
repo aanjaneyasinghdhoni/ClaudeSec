@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, AlertTriangle, Eye, Edit2, Folder, FolderOpen, GitBranch, List, FolderTree } from 'lucide-react';
-import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
+import { useListControls, FilterBar, ListFooter, ServerLoadFooter, type FacetConfig } from './FilterControls';
 import { SpanSearchDrawer, type SpanSearchTarget } from './SpanSearchDrawer';
 
 interface FileEntry {
@@ -210,6 +210,10 @@ export function FileAccessPanel() {
   const [files, setFiles]           = useState<FileEntry[]>([]);
   const [groups, setGroups]         = useState<FolderGroup[]>([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Re-entry guard for loadMore. State alone lags a render, so a double-click
+  // could start two overlapping page walks; the ref closes that window.
+  const loadingRef = useRef(false);
   const [view, setView]             = useState<'flat' | 'folder'>('flat');
   const [drawer, setDrawer]         = useState<SpanSearchTarget | null>(null);
 
@@ -221,6 +225,33 @@ export function FileAccessPanel() {
       .then(d => { setFiles(d.files ?? []); setTotalCount(d.total ?? 0); })
       .catch(() => {});
   }, []);
+
+  // Walks the server's offset paging so the flat view (and its search/filters)
+  // can reach every accessed file, not just the first fetch. Dedupe by path —
+  // fresh spans can reshuffle the access-sorted pages between requests.
+  const loadMore = async (all: boolean) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingMore(true);
+    try {
+      let next = files;
+      for (;;) {
+        const r = await fetch(`/api/file-access?limit=2000&offset=${next.length}`);
+        const d = await r.json();
+        const seen = new Set(next.map(f => f.path));
+        const fresh = (d.files ?? []).filter((f: FileEntry) => !seen.has(f.path));
+        next = next.concat(fresh);
+        setTotalCount(d.total ?? next.length);
+        if (!all || fresh.length === 0 || next.length >= (d.total ?? 0)) break;
+      }
+      setFiles(next);
+    } catch {
+      // Same policy as the initial fetch: a failed page leaves the list as-is.
+    } finally {
+      loadingRef.current = false;
+      setLoadingMore(false);
+    }
+  };
 
   // Grouped view is fetched lazily the first time the user switches to it.
   useEffect(() => {
@@ -306,6 +337,10 @@ export function FileAccessPanel() {
           <div className="flex flex-col items-center justify-center h-32 gap-2">
             <FileText className="w-6 h-6 text-slate-700" />
             <p className="text-xs text-slate-500">{files.length > 0 ? 'No matching files' : 'No file access recorded'}</p>
+            <ServerLoadFooter
+              loaded={files.length} total={totalCount} loading={loadingMore}
+              onLoadMore={() => loadMore(false)} onLoadAll={() => loadMore(true)} noun="files"
+            />
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -313,6 +348,12 @@ export function FileAccessPanel() {
               <FileRow key={f.path} f={f} maxAccess={maxAccess} onOpen={openDrawer} />
             ))}
             <ListFooter shown={shown} total={total} showMore={showMore} showAll={showAll} noun="files" />
+            {shown >= total && (
+              <ServerLoadFooter
+                loaded={files.length} total={totalCount} loading={loadingMore}
+                onLoadMore={() => loadMore(false)} onLoadAll={() => loadMore(true)} noun="files"
+              />
+            )}
           </div>
         )}
 

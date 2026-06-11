@@ -42,8 +42,15 @@ function computeRiskScore(cmd: string): number {
 }
 
 export function registerCommandAuditRoutes(app: Express, _ctx: RouteContext): void {
+  // Query params mirror /api/file-access paging:
+  //   ?limit=  (default 200, max 5000) — page size
+  //   ?offset= (default 0)             — page offset into the risk-sorted list
+  //
+  // The response always reports the true `total` so the client can page through
+  // every recorded command — no hard cap on how far you can walk.
   app.get('/api/command-audit', (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+    const limit = Math.min(Math.max(1, Number(req.query.limit) || 200), 5000);
+    const offset = Math.max(0, Number(req.query.offset ?? 0));
     const allSpans = getAllSpans.all() as SpanRecord[];
     const commands: {
       spanId: string; traceId: string; harness: string;
@@ -72,6 +79,6 @@ export function registerCommandAuditRoutes(app: Express, _ctx: RouteContext): vo
     }
 
     commands.sort((a, b) => b.riskScore - a.riskScore);
-    res.json({ commands: commands.slice(0, limit), total: commands.length });
+    res.json({ commands: commands.slice(offset, offset + limit), total: commands.length, limit, offset });
   });
 }

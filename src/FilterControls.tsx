@@ -135,6 +135,45 @@ export function FilterBar<T>({
   );
 }
 
+export interface ServerLoadFooterProps {
+  /** Rows fetched into the client so far. */
+  loaded: number;
+  /** True row count on the server (the API's `total`). */
+  total: number;
+  loading: boolean;
+  onLoadMore: () => void;
+  onLoadAll: () => void;
+  noun?: string;
+}
+
+/**
+ * Companion to ListFooter for server-paged lists. ListFooter pages through the
+ * rows already in memory; this row appears once those are exhausted but the
+ * server holds more, so every record stays reachable instead of silently
+ * stopping at the first fetch's limit.
+ */
+export function ServerLoadFooter({
+  loaded, total, loading, onLoadMore, onLoadAll, noun = 'items',
+}: ServerLoadFooterProps): React.ReactElement | null {
+  if (loaded >= total) return null;
+  const btn = {
+    background: 'rgba(var(--cs-accent-rgb),0.1)',
+    color: 'var(--cs-accent)',
+    opacity: loading ? 0.5 : 1,
+  } as const;
+  return (
+    <div className="flex items-center justify-center gap-3 py-2 text-xs" style={{ color: 'var(--cs-text-faint)' }}>
+      <span>{loaded.toLocaleString()} of {total.toLocaleString()} {noun} loaded</span>
+      <button type="button" onClick={onLoadMore} disabled={loading} className="px-2 py-0.5 rounded transition-colors" style={btn}>
+        {loading ? 'Loading…' : 'Load more'}
+      </button>
+      <button type="button" onClick={onLoadAll} disabled={loading} className="px-2 py-0.5 rounded transition-colors" style={btn}>
+        Load all
+      </button>
+    </div>
+  );
+}
+
 export interface ListFooterProps {
   shown: number;
   total: number;
