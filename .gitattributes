@@ -1,0 +1,17 @@
+# Normalize line endings so a Windows checkout (default core.autocrlf=true) can't
+# rewrite scripts to CRLF. A `\r` in a shebang line breaks the shell launcher and
+# the PreToolUse hook — on every platform, not just Windows — so these stay LF.
+* text=auto
+*.sh    text eol=lf
+*.cjs   text eol=lf
+*.mjs   text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+
+# Binary assets — never touch their bytes.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
