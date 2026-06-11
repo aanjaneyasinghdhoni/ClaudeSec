@@ -13,6 +13,11 @@ A tree of agent / sub-agent relationships across sessions, so you can see which 
   **Experimental.** The spawn tree is a heuristic grouping of related sessions — agents don't emit cross-trace spawn parentage yet, so the hierarchy is inferred rather than reported. Likewise, the Orchestration Graph's interaction (DAG) edges only appear when multiple agents share a single trace.
 </Warning>
 
+Rows marked **inferred** (dashed border, hollow dot) are guesses, not observations:
+no agent reported spawning that session, so ClaudeSec grouped it with other sessions
+from the same agent as a best-effort hierarchy. A row without the badge means a real
+cross-trace spawn edge was observed in the span data.
+
 ## Tool Inventory
 
 Every tool each agent invoked, with call counts and threat counts. Two views:

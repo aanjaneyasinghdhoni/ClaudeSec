@@ -1,0 +1,71 @@
+---
+title: "Harnesses API"
+description: "Per-agent activity profiles: span counts, threat breakdowns, session counts, and token usage."
+icon: "chart-bar"
+---
+
+## Overview
+
+The Harnesses API returns a profile for every agent harness (e.g. `claude-code`, `codex`,
+`github-copilot`) that has sent at least one span. Each profile aggregates span and session
+counts, threat severity breakdowns, and de-duplicated token usage on the same basis as
+`GET /api/costs` — so the figures agree with the Costs tab.
+
+Token counts fold cache read and write tokens into the input total, and duplicate transcript
+lines are excluded via the same deduplication logic used in the cost pipeline.
+
+## Endpoints
+
+### GET /api/harnesses
+
+Return a profile for every known harness, ordered by span count descending.
+
+```bash
+curl http://localhost:3000/api/harnesses
+```
+
+**Response:**
+
+```json
+{
+  "harnesses": [
+    {
+      "harness": "claude-code",
+      "spanCount": 2847,
+      "sessionCount": 14,
+      "threatHigh": 3,
+      "threatMedium": 11,
+      "threatLow": 28,
+      "tokensIn": 985400,
+      "tokensOut": 142300,
+      "firstSeen": "2026-05-01T09:12:00.000Z",
+      "lastSeen": "2026-06-10T16:44:00.000Z"
+    },
+    {
+      "harness": "codex",
+      "spanCount": 412,
+      "sessionCount": 3,
+      "threatHigh": 0,
+      "threatMedium": 2,
+      "threatLow": 7,
+      "tokensIn": 134200,
+      "tokensOut": 21800,
+      "firstSeen": "2026-05-20T14:00:00.000Z",
+      "lastSeen": "2026-06-09T11:30:00.000Z"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `harness` | Harness identifier string |
+| `spanCount` | Total number of spans received from this harness |
+| `sessionCount` | Number of distinct sessions (trace IDs) for this harness |
+| `threatHigh` | Count of `high` and `critical` severity spans (critical exfil is folded into the high bucket) |
+| `threatMedium` | Count of `medium` severity spans |
+| `threatLow` | Count of `low` severity spans |
+| `tokensIn` | De-duplicated input token total (includes cache read and write tokens) |
+| `tokensOut` | De-duplicated output token total |
+| `firstSeen` | ISO 8601 timestamp of the earliest span from this harness, or `null` |
+| `lastSeen` | ISO 8601 timestamp of the most recent span from this harness, or `null` |

@@ -9,188 +9,242 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Unreleased
+## 1.2.2 — 2026-06-11
+
+### Fixed
+
+- The multi-architecture image build failed on the emulated platform: the test
+  gate includes wall-clock ReDoS timing assertions, and on a QEMU-emulated CPU
+  every pattern exceeds the timing budget. The test gate and frontend build now
+  run once on the build platform's native architecture; the per-architecture
+  stages only compile native dependencies and assemble the runtime image.
+
+## 1.2.1 — 2026-06-11
+
+### Fixed
+
+- The container image failed to build from a version tag: the Docker build
+  context excluded `cli/`, but the build's test gate checks
+  `cli/hooks/claudesec-enforce.cjs` for catastrophic-rule parity and fails
+  hard when it is missing. The build context now includes `cli/`. The
+  runtime image is unchanged — the CLI still does not ship in the container.
+
+### Security
+
+- The Docker build context now excludes all hidden files and directories, so
+  VCS, CI, editor, and local tool state can never reach an image layer.
+
+## 1.2.0 — 2026-06-10
 
 ### Added
 
-- **One-command start** — `./start.sh` brings up the dashboard in a single command:
-  it installs dependencies if needed, starts the foreground server, tails your
-  on-disk agent transcripts, and tells you which agents it can see. `./start.sh --docker`
-  runs the headless Docker deployment (OTLP-only).
-- **Isolated demo container** — an on-demand container pre-seeded with synthetic
-  data on its own database volume, for showing ClaudeSec without exposing real
-  telemetry. Start it with `./start.sh --demo` (or `docker compose --profile demo up`):
-  prod stays on `:3000` with your real data, and the demo runs on `:3001` (override
-  with `DEMO_PORT`) seeded with synthetic sessions that fire real detection rules.
-  The demo container is physically isolated from prod — its own volume, no in-app
-  toggle, no per-row tagging.
-- **Local release flow** — `scripts/release.sh <patch|minor|major>` cuts a release
-  from a maintainer's machine: it runs the full local CI (`pnpm preflight`), bumps the
-  version everywhere it is recorded, writes the changelog, re-runs the consistency
-  gate, and — only after you confirm — commits, tags, pushes, and publishes the
-  GitHub Release. It refuses to run on a dirty or out-of-date tree and never
-  force-pushes.
-- **Claude Fable 5 pricing** — the cost table now prices Claude Fable 5 at its
-  published rates ($10 / 1M input, $50 / 1M output), so spans from Fable 5 sessions
-  show real costs instead of `$0`. Prompt-cache tokens are derived from the input
-  rate, so cache reads and writes are costed automatically.
+- A `critical` severity tier — a new highest level above `high`, reserved for
+  active secret **exfiltration**: a credential, private key, or `.env` being
+  transmitted off the machine (piped to `curl`/`wget`/`nc`, `scp`/`rsync`/`sftp`
+  to a remote, posted via `requests`, or a key literal in a POST body). A secret
+  merely *present* in a file stays `high`; transmission is what escalates to
+  `critical`. Sixteen existing transmission rules were promoted and nine new
+  exfiltration rules added (25 critical rules total). Critical alerts render with
+  a distinct rose badge and are blocked alongside `high` in `enforce` mode.
+- Database connection-string scrubbing — inline `user:password@` credentials in
+  `mongodb://`, `postgres://`/`postgresql://`, `mysql://`, and `redis://` URLs are
+  now redacted before persistence, so a dumped `.env` no longer stores live DB
+  passwords. As with every alert, `critical` exfiltration alerts store only the
+  scrubbed/redacted matched text — never the live secret.
+- One-command enforcement hook install — `node cli/init.mjs install-hook` builds
+  the rules snapshot locally from the repo's rule source (no network), copies the
+  dependency-free PreToolUse hook to `~/.claudesec/hooks/`, and registers it in
+  `~/.claude/settings.json`. Consent is mandatory: the installer prints the exact
+  JSON it will write and asks before touching anything, backs up the previous
+  settings file, and is idempotent on re-run. `uninstall-hook` removes only
+  ClaudeSec's entries; `--purge` also deletes the installed files.
+- An honest Enforce tab. It now reports three distinct facts — the configured
+  mode, the effective mode the hook actually runs (with which precedence layer
+  won: `enforce-config.json` → `CLAUDESEC_MODE` → default), and whether the hook
+  is registered in any Claude Code settings scope. Green is reserved for the one
+  case where blocking is real: enforce effective *and* a hook registered.
+  A missing hook or an env var silently overridden by the config file shows a
+  loud warning instead of a false green.
+- Blocked tool calls now appear in the Enforce feed. Previously only
+  monitor-mode "would block" events were reported; a real block wrote its denial
+  to the terminal and exited without telling the server. Blocks are logged
+  before the hook exits — a slow or failed report can never turn a block into an
+  allow — and the feed distinguishes *blocked* from *would block*.
+- URL routing for the whole dashboard — every view is a real URL
+  (`#/<category>/<tab>` for tabs, `#/docs/<slug>` for docs), so a refresh
+  restores the exact view, back/forward work, and any tab can be deep-linked.
+  Existing docs links keep working.
+- A local operator audit log that records every config-mutating action
+  (scrubbed and size-capped, exposed through a read-only API), plus per-rule
+  toggles to disable individual detection rules — except the catastrophic
+  floor, which can never be turned off.
+- Session navigation from the orchestration spawn tree — clicking a spawned
+  agent jumps straight to its session timeline.
+- File-access drill-down — rows group by folder and repository, tool and file
+  rows open a span-detail drawer, and the 100-row display cap is gone.
+
+### Fixed
+
+- Costs no longer double-count. API usage is keyed on the message id and
+  deduped at query time, so transcript lines that repeat the same API response
+  are counted once; harness token totals share the same basis, and demo traces
+  are excluded from aggregates.
+- False-positive alerts are kept out of the default alert list and the nav
+  badge, dismissing a grouped alert covers all of its duplicates, and dismissal
+  has a short undo window.
+- `./start.sh` builds and serves the production app instead of starting a dev
+  server, so the dashboard you open is the real production bundle. The build
+  runs on-device from in-repo source with no network fetch.
+- Docs navigation: switching tabs while reading docs now actually leaves the
+  docs view and clears the stale `#/docs/...` URL, docs gained a breadcrumb and
+  back button, and the nav rail stays in sync when jumping to a session from
+  the Processes or Bookmarks views.
+- The installed hook path is quoted — a space in `$HOME` would otherwise split
+  the command and, because the hook fails open, silently disable enforcement.
+  NotebookEdit cell content is now inspected like every other editing tool.
+- `/api/health`, `/api/export`, and the MCP server report the released version
+  read from `package.json` instead of a hardcoded string.
+
+### Performance
+
+- Dashboard queries (costs, heatmap, orchestration, metrics) aggregate in SQL
+  instead of loading every span into memory, backed by new composite indexes;
+  MCP search routes through the full-text index; socket-triggered refetches are
+  debounced and redundant graph layouts skipped, so event bursts no longer
+  stampede the dashboard.
 
 ### Changed
 
-- **Graph performance** — the live graph now renders only the most-recent N events,
-  bounded by `CLAUDESEC_GRAPH_LIMIT` (default 2000), so it stays responsive as the
-  database grows. Older events are not deleted — they remain available through
-  Search and Sessions. See [Data retention](/explanation/retention).
+- The README now leads with the one-command start and links to the in-app docs
+  for everything else, instead of duplicating them.
 
----
-
-## 1.0.0 — Initial public release
-
-First production-ready release of ClaudeSec under the **AGPL-3.0-only** license.
-ClaudeSec is a local-first AI agent security observatory that ingests OpenTelemetry traces
-from AI coding agents, detects threats in real time, and visualises agent activity in an
-interactive dashboard — all without any data leaving your machine.
+## 1.1.0 — 2026-06-09
 
 ### Added
 
-**Core infrastructure**
+- Isolated demo container — an on-demand container, pre-seeded with synthetic
+  data on its own database volume, for showing ClaudeSec without exposing real
+  telemetry. Start it with `./start.sh --demo` (or
+  `docker compose --profile demo up`): prod stays on `:3000` with your real data,
+  and the demo runs on `:3001` (override with `DEMO_PORT`) seeded with three
+  synthetic sessions that fire real detection rules. The demo container is
+  physically isolated from prod — its own `claudesec-demo-data` volume, no in-app
+  toggle, no per-row tagging.
+- `COMPLIANCE.md` — a compliance and controls mapping that relates ClaudeSec's
+  detection, enforcement, and local-first hardening features to common security
+  control frameworks, so teams can reason about where the tool fits in their
+  existing posture.
+- Project governance and release-process documentation (`.github/GOVERNANCE.md`
+  and `.github/RELEASING.md`) describing roles, decision-making, and how versioned
+  releases are cut.
+- Cost tracking for Claude Fable 5, priced at its published rates ($10 / 1M input,
+  $50 / 1M output). Prompt-cache tokens are derived from the input rate, so cache
+  reads and writes are costed automatically. Spans from Fable 5 sessions now show
+  real costs instead of `$0`.
 
-- Express + Socket.io backend (`server/index.ts`) with OTLP/HTTP JSON ingestion at `POST /v1/traces`.
-- SQLite persistence via `better-sqlite3` (spans, sessions, alerts, config tables).
-- Vite + React + Tailwind CSS frontend with hot-module replacement in development.
-- Two-process dev mode: Vite HMR proxied through the Express server (`pnpm dev`).
-- Dagre-powered client-side auto-layout for the Orchestration agent-DAG (alternative to the default radial layout); graph data endpoints (`GET /api/graph`, `/api/graph/mermaid`, `/api/graph/dot`) remain available for external tools and are served by the server-side `buildGraph()` function.
+### Changed
 
-**Multi-harness agent support**
+- Rewrote the Docker deployment section of the README to match
+  `docker-compose.yml`: the host port is published on `127.0.0.1` only, and the
+  bundled `CLAUDESEC_TRUST_LOCAL=1` lets the local browser dashboard reach the API
+  without a token. Documented the compose lifecycle, the persistent
+  `claudesec-data` volume, and how to harden the deployment (set a `CLAUDESEC_TOKEN`
+  and move the port binding off loopback) before exposing it to a network.
 
-- Harness detection registry (`src/harnesses.ts`) covering 3 agent frameworks:
-  Claude Code, GitHub Copilot CLI, and Codex.
-- Automatic harness identification from `service.name` / `telemetry.sdk.name` resource attributes.
-- Per-harness coloured indicators and filter chips in the dashboard.
-- Zero-config transcript watcher (`transcriptWatcher.ts`) that tails on-disk session transcripts
-  for Claude Code, GitHub Copilot CLI, and Codex with no environment variables and no agent restart.
-- Interactive CLI setup wizard (`node cli/init.mjs` / `pnpm run init`).
+## 1.0.0 — 2026-06-08
 
-**Threat detection**
+First production-ready public release. ClaudeSec is a zero-config, fully-local
+security observatory for AI coding agents: it watches the sessions already running
+on your machine, surfaces what those agents are actually doing, and scores every
+tool call, command, and file access against a built-in threat-detection engine —
+without anything leaving your computer.
 
-- Approximately 630 built-in regex threat-detection rules across HIGH / MEDIUM / LOW severities,
-  covering prompt injection, credential theft, reverse shells and C2, supply-chain attacks,
-  data exfiltration, container escape, cloud-metadata SSRF, crypto-mining, privilege escalation,
-  and reconnaissance.
-- Core rules in `server/detection.ts`; extended rule set in `server/severityRulesExtra.ts` (gated at build time).
-- `tests/ruleSelfTest.ts` gate: ReDoS heuristic + execution gate + dedup + false-positive check.
-  `pnpm test` runs this gate; `prebuild` runs `pnpm test` — a ReDoS-prone or duplicate rule fails the build.
-- Custom rule CRUD via dashboard UI and REST API (persisted to `rules.json`).
-- Rule suppressions — temporarily or permanently suppress noisy rules.
-- Alert deduplication via fingerprinting to prevent duplicate alerts for the same pattern.
-- Alert triage — mark alerts as dismissed or false-positive.
-- Immutable alert log in SQLite with timestamp, matched text, and span context.
-- Web Notifications API integration for desktop HIGH-severity alerts.
+### Added
 
-**Optional LLM-as-judge semantic detection**
+- Real-time local observability for Claude Code, GitHub Copilot CLI, and Codex.
+  A zero-config transcript watcher tails each agent's on-disk session transcripts
+  live — no environment variables and no agent restart — so activity streams into
+  the dashboard the moment any session does something, including sessions that were
+  already running.
+- Live timeline and orchestration views with nanosecond-precision durations,
+  per-agent tool inventory, command-audit trail, sensitive-file-access panel, and a
+  threat-activity heatmap.
+- Approximately 630 built-in threat-detection rules across HIGH / MEDIUM / LOW
+  severities, covering prompt injection, credential theft, reverse shells and C2,
+  supply-chain attacks, data exfiltration, cloud-metadata SSRF, container escape,
+  crypto-mining, privilege escalation, and reconnaissance. Rules are evaluated on
+  every ingested span and patterns are compiled with RE2 for linear-time,
+  ReDoS-safe matching.
+- A rule self-test gate (`pnpm test`) that enforces ReDoS heuristics, a ReDoS
+  execution gate, deduplication, and a false-positive check; the `prebuild` script
+  runs it first, so a ReDoS-prone or duplicate rule fails the build.
+- Custom rule CRUD via the dashboard and REST API, with rule suppressions, alert
+  deduplication via fingerprinting, alert triage, and an immutable alert log.
+- Enforcement that can stop a tool call before it runs: an opt-in Claude Code
+  PreToolUse hook that blocks high-severity tool calls, and a cross-agent MCP
+  enforcement proxy that gates `tools/call` for any MCP-speaking agent over stdio.
+  Both default to `monitor` mode (log would-blocks, forward normally); `enforce`
+  mode actively denies. The server is the source of truth for mode and per-rule
+  overrides, toggled from the Enforce dashboard tab.
+- MCP / skill static scanner (`GET /api/mcp-scan`) that read-only scans installed
+  MCP server configs and skill files for tool-poisoning, prompt-injection in
+  descriptions, hardcoded secrets, and suspicious launch commands. It never
+  launches a server or writes a file.
+- MCP server at `POST /mcp` exposing tools for AI-to-AI interaction (health,
+  sessions, spans, alerts, search, tagging, bookmarking, processes, and incident
+  summaries).
+- Optional, off-by-default LLM-as-judge semantic detection. Set
+  `CLAUDESEC_JUDGE_URL` to any OpenAI-compatible endpoint (for example a local
+  Ollama or LM Studio instance) to score flagged spans on-demand; zero network
+  calls are made unless explicitly configured.
+- OTLP/HTTP-JSON ingestion at `POST /v1/traces` so agents running in containers,
+  on other machines, or in CI can stream into the same detection-and-storage
+  pipeline as the local watcher.
+- Transparent OTLP forwarding to an upstream collector via `OTEL_FORWARD_URL`.
+- Prometheus metrics at `GET /metrics` and a health endpoint at `GET /api/health`.
+- Token cost view with API-equivalent pricing per session and model, with
+  subscription-plan awareness.
+- Webhook delivery of HIGH-severity alerts to Slack, Discord, or any JSON endpoint,
+  with a configurable severity threshold.
+- Honeytokens: planted canary strings that fire a HIGH-severity exfiltration alert
+  on any matching span.
+- Process scanner that detects running agent CLIs and can kill, pause, or resume
+  them from the dashboard.
+- Bookmarks, tags, annotations, session labels, and free-text notes for triage.
+- Hourly auto-export of spans, alerts, and sessions to `exports/` (last 24 kept).
+- Bundled CLI (`claudesec`) for installing a background service, tailing live
+  spans, searching, ranking sessions, exporting, and generating session reports.
+- Responsive dashboard (React 19 + Tailwind CSS 4) with a drawer sidebar, bottom
+  tab bar, four built-in themes, and keyboard/ARIA accessibility.
+- In-app MDX documentation site (Diátaxis structure) and a complete OpenAPI 3.0.3
+  specification (`openapi.yaml`).
 
-- Local-first, off by default. Set `CLAUDESEC_JUDGE_URL` to any OpenAI-compatible endpoint
-  (e.g. a local Ollama instance) to enable semantic scoring alongside the regex engine.
-  No data is sent to a remote service unless you configure a remote URL.
+### Security
 
-**Enforcement (PreToolUse hook)**
+- Local-first by construction: the server binds `127.0.0.1` (loopback) by default
+  and refuses to bind a non-loopback host without a `CLAUDESEC_TOKEN` bearer token.
+- No egress by default. The only optional outbound paths — `OTEL_FORWARD_URL` and
+  the opt-in `CLAUDESEC_JUDGE_URL` — are both off unless set, and both pass through
+  an SSRF guard that blocks loopback, private, and cloud-metadata IP ranges,
+  re-checked on every retry to defeat DNS rebinding.
+- Secret scrubbing on by default: known secret shapes (keys, tokens, credentials,
+  home paths, usernames, emails) are redacted before anything is stored, broadcast,
+  or exported.
+- The SQLite database (`spans.db`) is created with `0600` (owner-only) permissions.
+- The data-wipe endpoint is disabled unless `CLAUDESEC_ALLOW_RESET=1` is explicitly
+  set; `helmet` and `cors` middleware and configurable rate limiting protect the
+  ingestion endpoint.
 
-- `.claude/hooks/claudesec-enforce.cjs` intercepts Claude Code tool calls before they execute.
-- **Monitor mode** (default): logs "would-block" events to `POST /api/enforce-log`; never blocks
-  except for the always-on catastrophic severity-6 floor.
-- **Enforce mode**: actively denies (`exit 2`) tool calls that match high-severity rules.
-- Server is the source of truth: mode and per-rule overrides live in the SQLite `config` table,
-  exposed via `GET /PUT /api/enforce/config`, and mirrored to `enforce-config.json`.
-- Fails open on any error or missing config; bypassable via `CLAUDESEC_HOOKS_BYPASS=1`.
+### Deployment
 
-**Cross-agent MCP enforcement proxy**
+- pnpm-based zero-config dev and build path (Node.js >= 22.13.0, pnpm managed via
+  corepack) bringing up the full live dashboard with no environment variables.
+- Production-ready multi-stage Dockerfile and a `docker-compose.yml` suited to
+  headless or server deployments, with the host port bound to loopback and a
+  required bearer token for non-loopback access.
 
-- `mcpProxy.ts` — a proxy layer that applies the same rule set to MCP tool calls across agents,
-  enabling enforcement beyond Claude Code hooks.
+### License
 
-**MCP / skill static scanner**
-
-- `mcpScan.ts` (`GET /api/mcp-scan`, **Protect → MCP Scan**) statically scans installed MCP server
-  configs and `SKILL.md` skills under `~/.claude` for tool-poisoning, prompt-injection in
-  descriptions, hardcoded secrets, and suspicious launch commands.
-  Never launches a server or writes a file; results cached ~30 s.
-  Scanner roots overridable with `CLAUDESEC_MCP_SCAN_ROOTS`.
-
-**MCP server**
-
-- Model Context Protocol server at `POST /mcp` with 11 tools for AI-to-AI interaction:
-  `get_health`, `get_sessions`, `get_spans`, `get_alerts`, `search_spans`, `tag_span`,
-  `suppress_rule`, `bookmark_span`, `get_processes`, `get_incident_summary`, `list_bookmarks`.
-
-**Observatory features**
-
-- Gantt-style timeline view with BigInt nanosecond precision (default landing tab).
-- Session isolation: each traceId becomes a named session with inline rename.
-- Span search with `key=value` attribute filter syntax.
-- Severity filter chips (All / Normal / Malicious) and per-harness filter chips.
-- Live metrics: input tokens, output tokens, tool calls, average latency.
-- Orchestration tab with SVG agent DAG showing inter-agent edges and sub-agent spawn trees.
-- Tool inventory with table and heatmap grid views (tool x harness matrix).
-- Suspicious tool flagging (bash, eval, exec, curl, etc.).
-- Token cost estimator (`GET /api/costs`) with pricing for 20+ models.
-- Span bookmarks, custom tags, and text annotations.
-- Session labels (normal, incident, investigation, automated, other) and free-text session notes.
-- Command audit (`GET /api/command-audit`) and file access tracking (`GET /api/file-access`).
-- Activity timeline, live activity stream, and threat activity heatmap.
-
-**Process scanner**
-
-- Detects running AI agent CLIs on the local machine (3 harness patterns via `ps aux`: Claude Code, GitHub Copilot CLI, and Codex).
-- Kill, pause, and resume individual agents or all agents from the dashboard.
-
-**OTLP forwarding**
-
-- Transparent proxy to upstream OpenTelemetry collectors via `OTEL_FORWARD_URL`.
-  Traces are analysed locally and forwarded simultaneously.
-
-**Auto-export**
-
-- Hourly JSON snapshots of spans, alerts, and sessions to `exports/` (last 24 kept).
-
-**Webhook alerts**
-
-- Configurable webhook delivery on threat detection.
-- Slack, Discord, and generic JSON payload formats, auto-detected from URL.
-- Threshold configurable via `CLAUDESEC_WEBHOOK_THRESHOLD` (low / medium / high; default: high).
-- In-dashboard webhook management UI with test-delivery button.
-
-**Security and hardening**
-
-- `CLAUDESEC_TOKEN` bearer token required for non-loopback API / MCP / OTLP access.
-  Server refuses to bind a non-loopback host without it.
-- SSRF guard (shared by `OTEL_FORWARD_URL` and `CLAUDESEC_WEBHOOK_URL`) blocks loopback,
-  private, and cloud-metadata IP ranges; re-checked on every retry to defeat DNS rebinding.
-- `CLAUDESEC_ALLOW_RESET` must be explicitly set to `1` to permit the data-wipe endpoint.
-- Secret scrubbing of known secret shapes (keys, tokens, webhook URLs, home paths) before
-  storage, broadcast, or export; honeytoken exfiltration alerts.
-- `helmet` + `cors` middleware; configurable rate limiting on `/v1/traces`.
-
-**Responsive UI and UX**
-
-- Drawer sidebar (below `lg` breakpoint) + bottom tab bar (below `md` breakpoint).
-- Four built-in themes: Midnight, Carbon, Daylight, Paper (saved locally).
-- Accessibility: keyboard navigation and ARIA attributes throughout.
-- First-run welcome screen with `node cli/init.mjs` auto-setup flow.
-
-**Observability**
-
-- `GET /api/health` — server status, uptime, span / session / alert counts, DB size.
-- `GET /metrics` — Prometheus text format: `spans_total`, `threats_total`,
-  `tokens_in_total`, `tokens_out_total` (by harness), `sessions_total`, `alerts_total`, `uptime_seconds`.
-
-**Deployment**
-
-- Production-ready Dockerfile with multi-stage build.
-- `docker-compose.yml` with volumes, health checks, and environment variable pass-through.
-
-**Documentation**
-
-- In-app MDX documentation site (Diátaxis structure): Getting Started, Agents, Observe,
-  Detect, Protect, Review, Manage, Explanation, Reference, Integrations, and API Reference sections.
-- Complete OpenAPI 3.0.3 specification (`openapi.yaml`) with all schemas and examples.
-- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue templates, and PR template.
+- Released under the AGPL-3.0-only license. Commercial and dual-licensing options
+  are documented in
+  [`.github/LICENSING.md`](https://github.com/aanjaneyasinghdhoni/ClaudeSec/blob/master/.github/LICENSING.md).
