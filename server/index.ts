@@ -953,20 +953,29 @@ const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number; l
   'claude-3-5-sonnet':    { inputPer1M: 3,     outputPer1M: 15,    label: 'Claude 3.5 Sonnet' },
   'claude-3-5-haiku':     { inputPer1M: 0.8,   outputPer1M: 4,     label: 'Claude 3.5 Haiku' },
   'claude-3-opus':        { inputPer1M: 15,    outputPer1M: 75,    label: 'Claude 3 Opus' },
-  // OpenAI
+  // OpenAI (Codex / Copilot). Output rates follow the current published per-1M
+  // model card; mini/nano variants are listed so dated suffixes price correctly.
   'gpt-5.5':              { inputPer1M: 5,     outputPer1M: 30,    label: 'GPT-5.5' },
+  'gpt-5.4-mini':         { inputPer1M: 0.75,  outputPer1M: 4.5,   label: 'GPT-5.4 mini' },
+  'gpt-5.4-nano':         { inputPer1M: 0.2,   outputPer1M: 1.25,  label: 'GPT-5.4 nano' },
   'gpt-5.4':              { inputPer1M: 2.5,   outputPer1M: 15,    label: 'GPT-5.4' },
   'gpt-5.3-codex':        { inputPer1M: 1.75,  outputPer1M: 14,    label: 'GPT-5.3 Codex' },
   'gpt-5.3':              { inputPer1M: 0.88,  outputPer1M: 7,     label: 'GPT-5.3' },
   'gpt-5.2-codex':        { inputPer1M: 1.75,  outputPer1M: 14,    label: 'GPT-5.2 Codex' },
   'gpt-5.2':              { inputPer1M: 0.88,  outputPer1M: 7,     label: 'GPT-5.2' },
+  'gpt-5-mini':           { inputPer1M: 0.25,  outputPer1M: 2,     label: 'GPT-5 mini' },
   'gpt-5':                { inputPer1M: 0.88,  outputPer1M: 7,     label: 'GPT-5' },
-  'gpt-4o':               { inputPer1M: 5,     outputPer1M: 15,    label: 'GPT-4o' },
   'gpt-4o-mini':          { inputPer1M: 0.15,  outputPer1M: 0.6,   label: 'GPT-4o mini' },
+  'gpt-4o':               { inputPer1M: 5,     outputPer1M: 15,    label: 'GPT-4o' },
   'gpt-4-turbo':          { inputPer1M: 10,    outputPer1M: 30,    label: 'GPT-4 Turbo' },
   'gpt-4':                { inputPer1M: 30,    outputPer1M: 60,    label: 'GPT-4' },
   'gpt-3.5-turbo':        { inputPer1M: 0.5,   outputPer1M: 1.5,   label: 'GPT-3.5 Turbo' },
-  // Google
+  // Google (Copilot). Current Gemini 2.5 / 3.x rates plus legacy 1.5/2.0 entries
+  // for historical sessions.
+  'gemini-3.5-flash':     { inputPer1M: 1.5,   outputPer1M: 9,     label: 'Gemini 3.5 Flash' },
+  'gemini-3.1-pro':       { inputPer1M: 2,     outputPer1M: 12,    label: 'Gemini 3.1 Pro' },
+  'gemini-3-flash':       { inputPer1M: 0.5,   outputPer1M: 3,     label: 'Gemini 3 Flash' },
+  'gemini-2.5-pro':       { inputPer1M: 1.25,  outputPer1M: 10,    label: 'Gemini 2.5 Pro' },
   'gemini-1.5-pro':       { inputPer1M: 3.5,   outputPer1M: 10.5,  label: 'Gemini 1.5 Pro' },
   'gemini-1.5-flash':     { inputPer1M: 0.075, outputPer1M: 0.3,   label: 'Gemini 1.5 Flash' },
   'gemini-2.0-flash':     { inputPer1M: 0.1,   outputPer1M: 0.4,   label: 'Gemini 2.0 Flash' },
@@ -979,11 +988,15 @@ function lookupPricing(model: string) {
   const lower = model.toLowerCase();
   // Direct match
   if (MODEL_PRICING[lower]) return MODEL_PRICING[lower];
-  // Prefix match (e.g. "claude-opus-4-6-20250514" → "claude-opus-4-6")
+  // LONGEST-prefix match (e.g. "claude-opus-4-6-20250514" → "claude-opus-4-6").
+  // Longest wins so a dated variant like "gpt-4o-mini-2024-07-18" resolves to
+  // "gpt-4o-mini" and never to the shorter "gpt-4o" that may be listed first.
+  let best: string | null = null;
   for (const key of Object.keys(MODEL_PRICING)) {
-    if (lower.startsWith(key)) return MODEL_PRICING[key];
+    if (key === 'unknown') continue;
+    if (lower.startsWith(key) && (best === null || key.length > best.length)) best = key;
   }
-  return null;
+  return best ? MODEL_PRICING[best] : null;
 }
 
 // ---------------------------------------------------------------------------
