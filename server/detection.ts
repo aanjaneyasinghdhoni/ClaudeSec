@@ -38,8 +38,15 @@ export const CORE_SEVERITY_RULES: SeverityRule[] = [
   // Remote code execution
   { pattern: /curl\s+.*\|\s*(ba)?sh/i,                      severity: 'high', label: 'Remote code execution via curl' },
   { pattern: /wget\s+.*\|\s*(ba)?sh/i,                      severity: 'high', label: 'Remote code execution via wget' },
-  { pattern: /curl\s+.*\|\s*python/i,                       severity: 'high', label: 'Remote Python execution via curl' },
-  { pattern: /wget\s+.*\|\s*python/i,                       severity: 'high', label: 'Remote Python execution via wget' },
+  // `… | python -m json.tool` (and `-mjson.tool` / `-m json`) only pretty-prints
+  // the piped bytes as JSON — it does not execute them as a program — so the
+  // json-module parsing form is excluded. The exclusion fires ONLY when that
+  // pretty-printer is the END of the command (optional trailing whitespace): any
+  // trailing arg (`-c …`) or chained command (`&& python3 -c …`) re-arms the rule,
+  // so a real exec hidden behind the json.tool token still fires. Every other
+  // interpreter pipe still fires.
+  { pattern: /curl\s+[^\n]*\|\s*python\d*\b(?!\s+-m\s*json(?:\.tool)?\s*$)/i, severity: 'high', label: 'Remote Python execution via curl' },
+  { pattern: /wget\s+[^\n]*\|\s*python\d*\b(?!\s+-m\s*json(?:\.tool)?\s*$)/i, severity: 'high', label: 'Remote Python execution via wget' },
   { pattern: /curl\s+.*\|\s*perl/i,                         severity: 'high', label: 'Remote Perl execution via curl' },
   { pattern: /curl\s+-o\s+.*&&\s*(ba)?sh/i,                 severity: 'high', label: 'Download-and-execute pattern' },
   { pattern: /git\s+clone\s+.*&&\s*(ba)?sh/i,               severity: 'high', label: 'Clone-and-execute' },
@@ -152,7 +159,15 @@ export const CORE_SEVERITY_RULES: SeverityRule[] = [
   { pattern: /\.docker\/config\.json/i,                         severity: 'high', label: 'Docker registry auth config read' },
   { pattern: /login\.keychain-db\b/i,                           severity: 'high', label: 'macOS keychain database read' },
   { pattern: /(cat|less|more|head|tail|cp|scp|rsync|curl|base64|xxd|strings|open)\b[^\n]{0,60}\.aws\/credentials/i, severity: 'high', label: 'AWS credentials file read' },
-  { pattern: /(cat|less|more|head|tail|cp|source|base64|xxd)\b[^\n]{0,40}(^|\/|\s)\.env(\.[a-z]+)?\b/i, severity: 'high', label: 'Dotenv file read' },
+  // The `.example` / `.sample` / `.template` / `.dist` / `.tpl` suffixes are
+  // committed, secret-free templates — reading them is benign and must not fire
+  // (mirrors the enforce-floor exclusion). A redirect target after `>` is a write,
+  // not a read, so the pre-path span forbids `>` (keeps copying a template into a
+  // real dotenv benign). The exclusion only fires when the template keyword is the
+  // FINAL path token — a trailing arg/quote/separator or end-of-segment — so a real
+  // secret hiding behind a template prefix (`.env.example.real`, `.env.example.bak`)
+  // still matches. Real `.env`, `.env.local`, `.env.production`, etc. still match.
+  { pattern: /(cat|less|more|head|tail|cp|source|base64|xxd)\b[^\n>]{0,40}(^|\/|\s)\.env\b(?!\.?(?:example|sample|template|dist|tpl)(?:[\s'";|&)]|$))(\.[a-z]+)?\b/i, severity: 'high', label: 'Dotenv file read' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // MEDIUM — exfiltration, sensitive access, recon, suspicious patterns

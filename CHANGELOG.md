@@ -88,6 +88,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `SIGTERM`/`SIGINT` the database is checkpointed and closed cleanly, and a
   `busy_timeout` lets a momentarily-contended writer wait rather than fail.
 
+### Fixed
+
+- **Two false positives that blocked benign commands in enforce mode.** Reading a
+  secret-free dotenv template (`.env.example`, `.env.sample`, `.env.template`,
+  `.env.dist`, `.env.tpl`) no longer trips the dotenv-read rule, and piping a
+  remote response into the JSON pretty-printer (`-m json.tool`) is no longer
+  mistaken for remote code execution. Real dotenv reads (`.env`, `.env.local`,
+  `.env.production`) and genuine download-and-run pipelines that pipe a fetched
+  body into an interpreter still fire.
+
 ## [1.3.0] - 2026-06-11
 
 ### Added
