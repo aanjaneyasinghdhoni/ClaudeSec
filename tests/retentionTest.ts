@@ -140,10 +140,18 @@ const tmpFile = path.join(
   `csec-retention-${process.pid}-${Date.now()}.db`,
 );
 
+// Sandbox the home dir too: should this test ever import server/index.ts, that
+// module mirrors the enforce mode to <CLAUDESEC_HOME>/hooks/enforce-config.json
+// at load. Pointing CLAUDESEC_HOME at a throwaway temp dir guarantees the real
+// ~/.claudesec/hooks is never touched. Set before any server-side import.
+process.env.CLAUDESEC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-retention-home-'));
+const HOME_DIR = process.env.CLAUDESEC_HOME;
+
 function cleanup(): void {
   for (const f of [tmpFile, `${tmpFile}-wal`, `${tmpFile}-shm`]) {
     try { fs.rmSync(f, { force: true }); } catch {}
   }
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 }
 
 try {

@@ -17,9 +17,22 @@
  * (side-effect-free module) — no raw text-parsing of server/index.ts.
  */
 
+import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
+
+// Sandbox the home dir BEFORE any server-side import. Should this test's import
+// graph ever pull in server/index.ts, that module mirrors the enforce mode to
+// <CLAUDESEC_HOME>/hooks/enforce-config.json at load time. Pointing
+// CLAUDESEC_HOME at a throwaway temp dir guarantees the maintainer's real
+// ~/.claudesec/hooks is never written. Cleaned up on exit.
+const CSEC_TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-ruleselftest-home-'));
+process.env.CLAUDESEC_HOME = CSEC_TEST_HOME;
+const removeTestHome = () => { try { fs.rmSync(CSEC_TEST_HOME, { recursive: true, force: true }); } catch {} };
+process.on('exit', removeTestHome);
+
 import { EXTRA_SEVERITY_RULES } from '../server/severityRulesExtra.js';
 import { CORE_SEVERITY_RULES, SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from '../server/detection.js';
 

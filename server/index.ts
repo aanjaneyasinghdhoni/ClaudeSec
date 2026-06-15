@@ -692,18 +692,48 @@ function getEnforceOverrides(): Record<string, EnforceAction> {
 }
 
 // Mirror the effective config to enforce-config.json so the hook can read it.
+// Written to BOTH locations the rules/protected-paths snapshots use:
+//   • <repo>/enforce-config.json       — enforceEval / in-repo hook fallback
+//   • <hooksDir>/enforce-config.json   — the INSTALLED Claude Code hook, which
+//     resolves its config beside itself (~/.claudesec/hooks). Without this the
+//     installed hook never sees the mode and silently stays on monitor.
 // Best-effort: never throws (a failed write just leaves the hook on its prior
 // file / env / monitor default — all fail-open).
 function writeEnforceConfigFile(): void {
+  const payload = JSON.stringify(
+    { mode: getEnforceMode(), overrides: getEnforceOverrides(), updatedAt: new Date().toISOString() },
+    null,
+    2,
+  ) + '\n';
+  // 1. Repo-root copy (in-repo hook / enforceEval fallback). Harmless for tests:
+  //    enforce-config.json is gitignored, and the in-repo hook is not the one a
+  //    real session runs.
   try {
-    const payload = {
-      mode: getEnforceMode(),
-      overrides: getEnforceOverrides(),
-      updatedAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(ENFORCE_CONFIG_FILE, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(ENFORCE_CONFIG_FILE, payload, 'utf8');
   } catch (err) {
     console.warn('[enforce] could not write enforce-config.json:', (err as Error)?.message);
+  }
+  // 2. Mirror beside the INSTALLED hook (the one real sessions run) — but ONLY when
+  //    this server's own DB has an explicit enforce.mode row. A test or build tool
+  //    that imports this module runs against a sandboxed, empty DB (no such row);
+  //    it must NEVER overwrite the user's live installed config with its default
+  //    'monitor'. This is the load-bearing guard against silently disabling a
+  //    user's enforcement when the test suite runs.
+  if (getConfig.get('enforce.mode')?.value === undefined) return;
+  try {
+    const dir = hookArtifactsDir();
+    if (fs.existsSync(dir)) {
+      fs.writeFileSync(path.join(dir, 'enforce-config.json'), payload, 'utf8');
+    } else if (getEnforceMode() === 'enforce') {
+      // Enforce is ON but the hook isn't installed → it cannot block. Warn loudly
+      // rather than let the gap stay silent (mirrors the protected-paths warning).
+      console.warn(
+        `[enforce] mode is 'enforce' but the PreToolUse hook is NOT installed (${dir} missing), ` +
+        `so nothing will block. Run \`claudesec install-hook\` to activate enforcement.`,
+      );
+    }
+  } catch (err) {
+    console.warn('[enforce] could not mirror enforce-config.json to the hooks dir:', (err as Error)?.message);
   }
 }
 

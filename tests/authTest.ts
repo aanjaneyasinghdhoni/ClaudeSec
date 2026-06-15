@@ -52,6 +52,11 @@ const PORT = 3202;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'testtoken';
 const DB_PATH = path.join(os.tmpdir(), `csec-authtest-${process.pid}-${Date.now()}.db`);
+// Sandbox the home dir too: server startup mirrors the enforce mode to
+// <CLAUDESEC_HOME>/hooks/enforce-config.json. Without this override the child
+// would write the test's (monitor) mode into the maintainer's real
+// ~/.claudesec/hooks, silently disabling their live enforcement.
+const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-authtest-home-'));
 
 let passed = 0;
 let failed = 0;
@@ -90,6 +95,7 @@ function cleanupDb(): void {
   for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
     try { fs.rmSync(f, { force: true }); } catch {}
   }
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 }
 
 /**
@@ -128,6 +134,9 @@ async function main(): Promise<void> {
       env: {
         ...process.env,
         CLAUDESEC_DB: DB_PATH,
+        // Redirect the hooks-dir enforce-config mirror into the temp home so the
+        // server's startup write can never touch the real ~/.claudesec.
+        CLAUDESEC_HOME: HOME_DIR,
         // Pin both port vars — CLAUDESEC_PORT outranks PORT, so an inherited
         // value from the host shell must not steer the test server elsewhere.
         CLAUDESEC_PORT: String(PORT),
