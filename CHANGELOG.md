@@ -90,6 +90,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Sessions list returned a 500 on every poll.** The per-repository column
+  in the session-list query joined each session's distinct repos with a newline
+  using `GROUP_CONCAT(DISTINCT repo, char(10))` — but SQLite rejects a custom
+  separator on a `DISTINCT` aggregate, so the whole query threw and the Sessions
+  tab showed nothing. The repos are now de-duplicated in a subquery before they
+  are newline-joined, which keeps the newline separator (repo paths can contain
+  commas) without the illegal `DISTINCT`. Added a regression test that lists a
+  multi-repo session end-to-end.
+
 - **Two false positives that blocked benign commands in enforce mode.** Reading a
   secret-free dotenv template (`.env.example`, `.env.sample`, `.env.template`,
   `.env.dist`, `.env.tpl`) no longer trips the dotenv-read rule, and piping a

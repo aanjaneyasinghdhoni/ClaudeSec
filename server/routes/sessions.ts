@@ -24,7 +24,12 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
         SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
         MAX(CASE s.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
         GROUP_CONCAT(DISTINCT s.harness) AS harnesses,
-        GROUP_CONCAT(DISTINCT s.repo, char(10)) AS repo,
+        -- SQLite forbids a custom separator on a DISTINCT aggregate
+        -- (GROUP_CONCAT(DISTINCT x, sep) is a syntax error), so de-dupe the
+        -- repos in a correlated subquery first, then join them with a newline.
+        -- Newline (not comma) because a repo path can itself contain a comma.
+        (SELECT GROUP_CONCAT(r, char(10))
+           FROM (SELECT DISTINCT repo AS r FROM spans WHERE traceId = se.traceId)) AS repo,
         -- critical is the exfiltration tier above high; fold it into the high
         -- bucket so a confirmed exfil still penalizes health and surfaces in the
         -- breakdown instead of falling through to the green/none default.
