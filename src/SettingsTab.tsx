@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing,
   History, Copy, Terminal, ShieldCheck, AlertTriangle, CircleSlash, CheckCircle2, Activity, Trash2,
-  Lock, Pencil,
+  Lock, Pencil, ArrowRight,
 } from 'lucide-react';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
 import { WebhookDeliverySection } from './WebhookDeliverySection';
@@ -562,6 +562,20 @@ interface ConfigStatusResponse {
   generatedAt: string;
 }
 
+// The Enforce tab's source of truth for the running mode. We read the SAME
+// endpoint and fields it uses (`effectiveMode` + `modeSource`) so the
+// CLAUDESEC_MODE status row can't disagree with it. `effectiveMode` is what the
+// hook actually runs after the file → env → default precedence; `modeSource` is
+// the layer that won. (See EnforceTab.tsx / GET /api/enforce/config.)
+type EffectiveMode = 'monitor' | 'enforce';
+type EnforceModeSource = 'config-file' | 'env' | 'default';
+
+interface EnforceModeStatus {
+  effectiveMode: EffectiveMode;
+  modeSource: EnforceModeSource;
+  envMode: string | null;
+}
+
 /** Icon + text + color per state — a11y: never color alone. */
 function StatusBadge({ state }: { state: StatusState }) {
   const map: Record<StatusState, { label: string; icon: React.ReactNode; bg: string; fg: string; border: string }> = {
@@ -581,15 +595,86 @@ function StatusBadge({ state }: { state: StatusState }) {
   );
 }
 
+/**
+ * The CLAUDESEC_MODE status row, rendered from the Enforce tab's source of truth.
+ * Unlike the generic env-driven rows, the running enforcement mode is governed by
+ * the Enforce-tab toggle (which writes enforce-config.json); CLAUDESEC_MODE is only
+ * a fallback used when no toggle/config value exists. We surface the EFFECTIVE mode
+ * (what the hook actually runs) so this row can never claim "monitor / nothing is
+ * blocked" while enforcement is live.
+ */
+function EnforceModeRow({ status }: { status: EnforceModeStatus }) {
+  const { effectiveMode, modeSource, envMode } = status;
+  const isEnforce = effectiveMode === 'enforce';
+  const sourceLabel =
+    modeSource === 'config-file' ? 'the Enforce tab toggle (enforce-config.json)'
+    : modeSource === 'env'       ? 'the CLAUDESEC_MODE env var'
+    :                              'the built-in monitor default';
+
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-3 px-3 py-2.5 bg-slate-800/50 rounded-lg border border-slate-800">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <code className="text-[11px] font-mono text-slate-200 break-all">CLAUDESEC_MODE</code>
+          <StatusBadge state={isEnforce ? 'active' : 'default'} />
+        </div>
+        <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+          Effective enforcement mode is{' '}
+          <span className="font-mono font-semibold" style={{ color: isEnforce ? 'var(--cs-warn)' : 'var(--cs-text-base)' }}>{effectiveMode}</span>
+          {' '}— {isEnforce ? 'high-severity tool calls are blocked before they run.' : 'would-block events are logged only; nothing is blocked.'}
+        </p>
+        <p className="text-[10px] text-slate-600 mt-0.5 italic">
+          Resolved from {sourceLabel}.
+          {modeSource !== 'env' && envMode != null && (
+            <> The <code className="font-mono not-italic" style={{ color: 'var(--cs-info)' }}>CLAUDESEC_MODE={envMode}</code> env var is set but overridden.</>
+          )}
+        </p>
+        {/* The blessed control is the Enforce tab toggle, not this env var. Point
+            there explicitly and make CLAUDESEC_MODE's fallback role unambiguous. */}
+        <p className="text-[10px] mt-1 leading-relaxed" style={{ color: 'var(--cs-text-faint)' }}>
+          Change this from the{' '}
+          <a
+            href="#/protect/enforce"
+            className="inline-flex items-center gap-0.5 font-medium hover:underline"
+            style={{ color: 'var(--cs-accent)' }}
+          >
+            Enforce tab <ArrowRight className="w-2.5 h-2.5" />
+          </a>
+          . The <code className="font-mono" style={{ color: 'var(--cs-info)' }}>CLAUDESEC_MODE</code> env var is only a fallback used when no toggle value is set.
+        </p>
+      </div>
+      <div className="shrink-0 sm:text-right sm:max-w-[42%] sm:pl-2">
+        <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-0.5">Effective</p>
+        <code className="text-[11px] font-mono text-slate-300 break-all">{effectiveMode}</code>
+      </div>
+    </div>
+  );
+}
+
 function ConfigStatusSection() {
   const [data,  setData]  = useState<ConfigStatusResponse | null>(null);
   const [error, setError] = useState('');
+  // The running enforcement mode, pulled from the SAME endpoint the Enforce tab
+  // uses so this section can never disagree with the blessed control. Null until
+  // the first fetch resolves (or if it fails — then we fall back to the raw
+  // env-derived row rather than guessing).
+  const [enforce, setEnforce] = useState<EnforceModeStatus | null>(null);
 
   const load = useCallback(() => {
     fetch('/api/config/status')
       .then(r => r.json())
       .then((d: ConfigStatusResponse) => { setData(d); setError(''); })
       .catch(() => setError('Failed to load config status'));
+    // Effective mode is governed by the Enforce-tab toggle (enforce-config.json),
+    // not primarily by CLAUDESEC_MODE — read it from the enforce config endpoint.
+    fetch('/api/enforce/config')
+      .then(r => r.json())
+      .then((c: { effectiveMode?: EffectiveMode; modeSource?: EnforceModeSource; envMode?: string | null }) => {
+        if (c && c.effectiveMode && c.modeSource) {
+          setEnforce({ effectiveMode: c.effectiveMode, modeSource: c.modeSource, envMode: c.envMode ?? null });
+        }
+      })
+      .catch(() => { /* fall back to the raw env-derived row */ });
   }, []);
 
   useEffect(() => {
@@ -630,7 +715,17 @@ function ConfigStatusSection() {
         <div key={cat}>
           <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">{cat}</p>
           <div className="space-y-2">
-            {data.settings.filter(s => s.category === cat).map(s => (
+            {data.settings.filter(s => s.category === cat).map(s => {
+              // CLAUDESEC_MODE is special: the running mode is controlled by the
+              // Enforce-tab toggle (enforce-config.json), and the env var is only
+              // a fallback. The /api/config/status row only knows the raw env
+              // value, so it would mislead (e.g. "monitor / nothing is blocked")
+              // while the hook is actually enforcing. Render it from the Enforce
+              // tab's source of truth instead.
+              if (s.key === 'CLAUDESEC_MODE' && enforce) {
+                return <EnforceModeRow key={s.key} status={enforce} />;
+              }
+              return (
               <div
                 key={s.key}
                 className="flex flex-col sm:flex-row sm:items-start gap-1.5 sm:gap-3 px-3 py-2.5 bg-slate-800/50 rounded-lg border border-slate-800"
@@ -656,7 +751,8 @@ function ConfigStatusSection() {
                   <code className="text-[11px] font-mono text-slate-300 break-all">{s.effectiveValue}</code>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
