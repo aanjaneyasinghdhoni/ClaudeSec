@@ -78,8 +78,13 @@ db.exec(`
 `);
 
 // Safe schema migrations for existing databases
-try { db.exec(`ALTER TABLE spans ADD COLUMN traceId TEXT NOT NULL DEFAULT 'unknown'`); } catch {}
-try { db.exec(`ALTER TABLE spans ADD COLUMN harness TEXT NOT NULL DEFAULT 'unknown'`); } catch {}
+try { db.prepare(`ALTER TABLE spans ADD COLUMN traceId TEXT NOT NULL DEFAULT 'unknown'`).run(); } catch {}
+try { db.prepare(`ALTER TABLE spans ADD COLUMN harness TEXT NOT NULL DEFAULT 'unknown'`).run(); } catch {}
+// Per-repository identity (Per-Repository Dashboard). Defaults to 'unknown' so
+// existing rows stay valid immediately; a startup backfill fills in the real
+// repo for rows whose attributes carry a cwd. Additive + idempotent, same as
+// the columns above.
+try { db.prepare(`ALTER TABLE spans ADD COLUMN repo TEXT NOT NULL DEFAULT 'unknown'`).run(); } catch {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -117,6 +122,11 @@ for (const stmt of [
   // SQLite satisfy the aggregation from the index alone.
   `CREATE INDEX IF NOT EXISTS idx_spans_harness_severity  ON spans(harness, severity)`,
   `CREATE INDEX IF NOT EXISTS idx_spans_traceId_severity  ON spans(traceId, severity)`,
+  // Per-repository rollups (Per-Repository Dashboard): GROUP BY repo, and a
+  // (repo, severity) composite mirroring (harness, severity) so the repo threat
+  // aggregation can be satisfied from the index alone.
+  `CREATE INDEX IF NOT EXISTS idx_spans_repo              ON spans(repo)`,
+  `CREATE INDEX IF NOT EXISTS idx_spans_repo_severity     ON spans(repo, severity)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_traceId          ON alerts(traceId)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_dismissed_ts     ON alerts(dismissed, ts)`,
 ]) {

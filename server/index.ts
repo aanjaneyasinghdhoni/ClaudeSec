@@ -48,6 +48,7 @@ import { makeAuditLogger } from './auditLog.js';
 import type { CustomRule, ProtectedPath, HealthBreakdown, EnforceLogEvent } from './routes/context.js';
 import { detectHarness, HARNESSES } from '../src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
+import { resolveRepo, backfillRepos } from './repoIdentity.js';
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 import { SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from './detection.js';
 import { buildEnforcementSnapshot } from './enforcementSnapshot.js';
@@ -137,13 +138,14 @@ interface SpanRecord {
   attributes: string;
   startNano: string;
   endNano: string;
+  repo: string;
 }
 
 const insertSpan = db.prepare(`
   INSERT OR IGNORE INTO spans
-    (spanId, traceId, parentId, name, protocol, reason, severity, harness, attributes, startNano, endNano)
+    (spanId, traceId, parentId, name, protocol, reason, severity, harness, attributes, startNano, endNano, repo)
   VALUES
-    (@spanId, @traceId, @parentId, @name, @protocol, @reason, @severity, @harness, @attributes, @startNano, @endNano)
+    (@spanId, @traceId, @parentId, @name, @protocol, @reason, @severity, @harness, @attributes, @startNano, @endNano, @repo)
 `);
 
 const upsertSession = db.prepare(
@@ -1498,6 +1500,14 @@ async function startServer() {
         ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
         : hit.matchedLabel;
 
+    // Repository identity for the Per-Repository Dashboard. Derived from the
+    // agent's cwd (walk up to the nearest .git root), scrubbed the same way as
+    // every other stored path. Falls back to 'unknown' when no cwd was recorded.
+    const repo = resolveRepo(
+      typeof rawAttrs['cwd'] === 'string' ? (rawAttrs['cwd'] as string) : undefined,
+      scrubOptions,
+    );
+
     const spanRecord: SpanRecord = {
       spanId:     input.spanId,
       traceId,
@@ -1510,6 +1520,7 @@ async function startServer() {
       attributes: JSON.stringify(attrs),
       startNano:  input.startNano || '0',
       endNano:    input.endNano   || '0',
+      repo,
     };
     insertSpan.run(spanRecord);
     pushToSse(spanRecord);
@@ -1575,6 +1586,11 @@ async function startServer() {
       });
     }
   }
+
+  // One-time, idempotent backfill of the per-span `repo` column for rows ingested
+  // before that column existed. Writes ONLY `repo` (see backfillRepos for the full
+  // data-safety contract); fail-open so it can never block startup.
+  backfillRepos(db, scrubOptions, (msg) => console.log(msg));
 
   // Security headers.  The dashboard uses inline event handlers, dynamic
   // Tailwind classes, and a live Socket.io websocket, so the CSP is configured
@@ -1900,7 +1916,8 @@ async function startServer() {
           const label = honeytokenHits.length > 0
             ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
             : hit.matchedLabel;
-          insertSpan.run({ ...span, severity, name: scrubbedName, attributes: JSON.stringify(attrs) } satisfies SpanRecord);
+          const importRepo = span.repo || resolveRepo(typeof rawAttrs['cwd'] === 'string' ? rawAttrs['cwd'] : undefined, scrubOptions);
+          insertSpan.run({ ...span, severity, name: scrubbedName, attributes: JSON.stringify(attrs), repo: importRepo } satisfies SpanRecord);
           if (label) {
             insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: label, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: scrubbedName, matchedText: scrubbedMatched || '(honeytoken)' });
             alertsAdded++;
@@ -1936,7 +1953,8 @@ async function startServer() {
             const label = honeytokenHits.length > 0
               ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
               : hit.matchedLabel;
-            insertSpan.run({ spanId: span.spanId, traceId, parentId, name: scrubbedName, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0') } satisfies SpanRecord);
+            const otlpRepo = resolveRepo(typeof rawAttrs['cwd'] === 'string' ? rawAttrs['cwd'] : undefined, scrubOptions);
+            insertSpan.run({ spanId: span.spanId, traceId, parentId, name: scrubbedName, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0'), repo: otlpRepo } satisfies SpanRecord);
             if (label) {
               insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: label, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: scrubbedName, matchedText: scrubbedMatched || '(honeytoken)' });
               alertsAdded++;
@@ -3118,6 +3136,8 @@ service:
           attributes: JSON.stringify(attrs),
           startNano: nowNs,
           endNano:   endNs,
+          // Auto-discovered process spans carry no cwd, so they group under 'unknown'.
+          repo:      'unknown',
         };
 
         insertSpan.run(spanRecord);

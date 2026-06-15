@@ -237,6 +237,12 @@ function mapCodexRecord(record: any, harness: HarnessKind, emit: (event: Watcher
     const rawAttrs: Record<string, unknown> = { tool: name };
     if (payload.arguments) rawAttrs['arguments'] = payload.arguments;
     if (payload.command) rawAttrs['command'] = payload.command;
+    // Stamp the working directory when the Codex record carries one, so the span
+    // can be grouped per git repository. Codex rollout files don't reliably
+    // record a cwd today; we read the known candidate fields and only stamp when
+    // one is actually present (never fabricated).
+    const codexCwd = payload.cwd ?? payload.cwd_path ?? record?.cwd;
+    if (typeof codexCwd === 'string' && codexCwd) rawAttrs['cwd'] = codexCwd;
     emit({
       kind: 'span',
       span: {
@@ -268,6 +274,13 @@ function mapCopilotRecord(record: any, harness: HarnessKind, emit: (event: Watch
     const rawAttrs: Record<string, unknown> = { ...args, tool: data.toolName, protocol: 'local' };
     const summary = summarizeToolInput(data.arguments);
     if (summary) rawAttrs['reason'] = summary;
+    // Stamp the working directory when the Copilot record carries one. Copilot
+    // session logs don't include a per-event cwd today, so this almost always
+    // no-ops; we still read the candidate fields and stamp only when one is
+    // genuinely present (never fabricated), so it lights up automatically if a
+    // future log format adds it.
+    const copilotCwd = data.cwd ?? data.workingDirectory ?? data.workspaceRoot;
+    if (typeof copilotCwd === 'string' && copilotCwd) rawAttrs['cwd'] = copilotCwd;
     emit({
       kind: 'span',
       span: {
