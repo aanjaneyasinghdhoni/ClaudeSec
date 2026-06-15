@@ -12,6 +12,11 @@
  *   4. Tampering an enforce row's `command` → verify reports broken at that id.
  *   5. Legacy rows (inserted with NO hash) don't break verification — the chain
  *      cleanly skips the unhashed prefix and validates only the hashed rows.
+ *   6. Inserting MORE than the enforce-log cap fires the prune, which re-anchors
+ *      the surviving chain — verify must still be ok (regression for the prune
+ *      breaking the chain).
+ *   7. Blanking every rowHash in a chained table → verify reports broken (reset/
+ *      wipe detection), distinct from a genuinely empty table.
  *
  * Fully sandboxed: CLAUDESEC_DB points at a throwaway file under os.tmpdir(),
  * set BEFORE any server module is imported (the db module opens the file at
@@ -29,6 +34,10 @@ import fs from 'node:fs';
 // Isolate the DB BEFORE importing anything that opens it.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-audit-chain-'));
 process.env.CLAUDESEC_DB = path.join(TMP, 'spans.db');
+// Redirect HOME into the sandbox so the audit HMAC key (minted under
+// ~/.claudesec/hooks/audit-key on first hash) lands in the throwaway dir, never
+// the real home. os.homedir() reads HOME on macOS/Linux.
+process.env.HOME = TMP;
 
 let passed = 0;
 const failures: string[] = [];
@@ -41,6 +50,7 @@ async function main(): Promise<void> {
   const { makeAuditLogger, verifyAuditChain } = await import('../server/auditLog.js');
   const {
     appendEnforceLog, readEnforceLog, enforceLogCount, verifyEnforceChain,
+    ENFORCE_LOG_MAX,
   } = await import('../server/enforceLogStore.js');
   const { computeRowHash, canonicalString } = await import('../server/auditChain.js');
 
@@ -152,6 +162,63 @@ async function main(): Promise<void> {
     check('case5: legacy prefix does not break verification', () => assert.strictEqual(v.ok, true));
     check('case5: only the 2 hashed rows count', () => assert.strictEqual(v.hashedRows, 2));
     check('case5: total rows scanned === 4', () => assert.strictEqual(v.rows, 4));
+  }
+
+  // ── Case 6: crossing the enforce cap fires prune + re-anchor; chain stays ok ─
+  // This is the regression test for the prune-breaks-the-chain bug. The store
+  // already holds a few rows from case 3/4 (one tampered). Wipe the table first so
+  // we start from a clean, verifiable chain, then insert well past the cap so the
+  // oldest rows are pruned and the surviving chain must be re-anchored.
+  {
+    db.exec(`DELETE FROM enforce_log`);
+    const overflow = ENFORCE_LOG_MAX + 25;
+    for (let i = 0; i < overflow; i++) {
+      appendEnforceLog({
+        ts: Date.now() + i,
+        mode: 'monitor',
+        label: `over-${i}`,
+        severity: 'high',
+        command: `echo overflow ${i}`,
+        wouldBlock: true,
+        blocked: false,
+      });
+    }
+    check('case6: table pruned to the cap', () =>
+      assert.strictEqual(enforceLogCount(), ENFORCE_LOG_MAX));
+    const v = verifyEnforceChain();
+    check('case6: chain verifies after prune + re-anchor', () =>
+      assert.strictEqual(v.ok, true));
+    check('case6: every retained row is hashed', () =>
+      assert.strictEqual(v.hashedRows, ENFORCE_LOG_MAX));
+    // A further insert must still link cleanly onto the re-anchored tail.
+    appendEnforceLog({
+      ts: Date.now() + overflow,
+      mode: 'monitor', label: 'after-prune', severity: 'high',
+      command: 'echo after', wouldBlock: true, blocked: false,
+    });
+    check('case6: insert after prune keeps the chain ok', () =>
+      assert.strictEqual(verifyEnforceChain().ok, true));
+  }
+
+  // ── Case 7: blanking every rowHash → verify reports broken (reset detection) ─
+  {
+    const { verifyChain } = await import('../server/auditChain.js');
+    // Empty table is fine (no rows to chain).
+    check('case7: empty table verifies', () =>
+      assert.strictEqual(verifyChain([]).ok, true));
+    // Rows present but ALL hashes blanked → broken.
+    const wiped = verifyChain([
+      { id: 1, prevHash: '', rowHash: '', canonical: canonicalString([1]) },
+      { id: 2, prevHash: '', rowHash: '', canonical: canonicalString([2]) },
+    ]);
+    check('case7: all-blank chain reports broken', () =>
+      assert.strictEqual(wiped.ok, false));
+    check('case7: all-blank chain has zero hashed rows', () =>
+      assert.strictEqual(wiped.hashedRows, 0));
+    // And the real audit table, after blanking every rowHash, reports broken too.
+    db.exec(`UPDATE operator_audit_log SET rowHash = ''`);
+    check('case7: blanked audit table reports broken', () =>
+      assert.strictEqual(verifyAuditChain().ok, false));
   }
 }
 

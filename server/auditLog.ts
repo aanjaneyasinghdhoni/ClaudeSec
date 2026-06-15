@@ -16,7 +16,9 @@
 import type { Request } from 'express';
 import { db } from './db.js';
 import { scrubText, type ScrubOptions } from './scrub.js';
-import { canonicalString, computeRowHash, verifyChain, type ChainStatus } from './auditChain.js';
+import {
+  canonicalString, computeRowHash, reanchorChain, verifyChain, type ChainStatus,
+} from './auditChain.js';
 
 // Hard cap on retained rows. The oldest rows are pruned on insert once the
 // table grows past this, so a long-lived install can't accumulate an unbounded
@@ -35,6 +37,34 @@ const pruneAudit = db.prepare(
      SELECT id FROM operator_audit_log ORDER BY id ASC LIMIT ?
    )`,
 );
+// After a prune, the new-oldest surviving row's prevHash points at a now-deleted
+// row, so the retained chain no longer verifies from a fresh '' seed. We re-anchor
+// it: re-thread every surviving row from prevHash='' (see reanchorChain). Reading
+// every survivor's content fields lets us recompute their hashes.
+const selectSurvivors = db.prepare(
+  `SELECT id, ts, actor, action, target, detail, sourceIp, rowHash
+     FROM operator_audit_log ORDER BY id ASC`,
+);
+const updateAuditHashes = db.prepare(
+  `UPDATE operator_audit_log SET prevHash = @prevHash, rowHash = @rowHash WHERE id = @id`,
+);
+
+/**
+ * Prune the oldest `excess` rows, then re-anchor the retained chain so it verifies
+ * standalone, all in one transaction so a verify never sees a half-pruned state.
+ * Returns the new tail rowHash so the O(1) insert cache can be refreshed.
+ */
+const pruneAndReanchor = db.transaction((excess: number): string => {
+  pruneAudit.run(excess);
+  const survivors = selectSurvivors.all() as Array<{
+    id: number; ts: number; actor: string; action: string; target: string;
+    detail: string; sourceIp: string; rowHash: string;
+  }>;
+  return reanchorChain(
+    survivors.map(r => ({ id: r.id, rowHash: r.rowHash, canonical: auditCanonical(r) })),
+    (id, prevHash, rowHash) => updateAuditHashes.run({ id, prevHash, rowHash }),
+  );
+});
 
 // O(1) inserts: we cache the rowHash of the most recently inserted row so each
 // insert links to it WITHOUT rescanning the table. Seeded lazily from the last
@@ -144,9 +174,15 @@ export function makeAuditLogger(
       // insert re-link to the last good hash instead.
       if (rowHash !== '') lastAuditRowHash = rowHash;
 
-      // Bound the table: prune the oldest rows once we pass the cap.
+      // Bound the table: prune the oldest rows once we pass the cap, then
+      // re-anchor the survivors so the retained chain still verifies (the new head
+      // would otherwise chain onto a deleted row). Refresh the tail cache from the
+      // re-threaded tail so the next insert links to the correct hash.
       const count = (countAudit.get() as { c: number }).c;
-      if (count > MAX_AUDIT_ROWS) pruneAudit.run(count - MAX_AUDIT_ROWS);
+      if (count > MAX_AUDIT_ROWS) {
+        const newTail = pruneAndReanchor(count - MAX_AUDIT_ROWS);
+        lastAuditRowHash = newTail;
+      }
     } catch {
       /* never let audit logging break the action it records */
     }

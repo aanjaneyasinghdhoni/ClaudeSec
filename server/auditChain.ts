@@ -13,11 +13,13 @@
 //     The JSON-array framing (brackets, commas, quoting) is what keeps two
 //     different field splits from colliding. Numbers and strings are serialized
 //     as-is; only the order and framing matter.
-//   • Optional HMAC: if a key exists (or can be created) at ~/.claudesec/audit-key
-//     (0600), rowHash is an HMAC-SHA256 keyed by that secret instead of a plain
-//     SHA-256. This makes the chain unforgeable without the local key, not merely
-//     tamper-evident. It is OPTIONAL and FAIL-OPEN — if the key can't be read or
-//     written, we fall back to a plain SHA-256 chain, which still detects tamper.
+//   • Optional HMAC: if a key exists (or can be created) at
+//     ~/.claudesec/hooks/audit-key (0600), rowHash is an HMAC-SHA256 keyed by that
+//     secret instead of a plain SHA-256. This makes the chain unforgeable without
+//     the local key, not merely tamper-evident. It is OPTIONAL and FAIL-OPEN — if
+//     the key can't be read or written, we fall back to a plain SHA-256 chain,
+//     which still detects tamper. The key lives UNDER the hooks/ prefix so the
+//     enforcement self-protection floor guards it from agent reads/replacement.
 //
 // LEGACY ROWS: databases that predate this feature have empty ('') prevHash and
 // rowHash on their existing rows. Those rows are NOT part of the chain — the
@@ -37,17 +39,35 @@ let hmacKey: Buffer | null | undefined; // undefined = not yet resolved
 
 function resolveHmacKey(): Buffer | null {
   if (hmacKey !== undefined) return hmacKey;
-  const keyPath = path.join(os.homedir(), '.claudesec', 'audit-key');
+  // The key lives under the self-protected hooks/ prefix so the enforcement floor
+  // guards it. Older installs minted it one level up at ~/.claudesec/audit-key —
+  // migrate that in place rather than re-minting (which would invalidate the
+  // existing chain's HMACs).
+  const csecDir = path.join(os.homedir(), '.claudesec');
+  const keyPath = path.join(csecDir, 'hooks', 'audit-key');
+  const legacyKeyPath = path.join(csecDir, 'audit-key');
   try {
     if (fs.existsSync(keyPath)) {
       const buf = fs.readFileSync(keyPath);
       hmacKey = buf.length > 0 ? buf : null;
       return hmacKey;
     }
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+    // Migrate a legacy key into the protected dir, preserving its bytes (and
+    // therefore the chain) rather than minting a fresh one.
+    if (fs.existsSync(legacyKeyPath)) {
+      const buf = fs.readFileSync(legacyKeyPath);
+      if (buf.length > 0) {
+        fs.writeFileSync(keyPath, buf, { mode: 0o600 });
+        try { fs.chmodSync(keyPath, 0o600); } catch { /* best-effort tighten */ }
+        try { fs.unlinkSync(legacyKeyPath); } catch { /* best-effort cleanup */ }
+        hmacKey = buf;
+        return hmacKey;
+      }
+    }
     // First run: mint a key and persist it owner-only. If the dir or write
     // fails, fall back to a plain hash chain (still tamper-evident).
     const key = crypto.randomBytes(32);
-    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
     fs.writeFileSync(keyPath, key, { mode: 0o600 });
     try { fs.chmodSync(keyPath, 0o600); } catch { /* best-effort tighten */ }
     hmacKey = key;
@@ -92,6 +112,35 @@ export function computeRowHash(canonical: string, prevHash: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Re-thread a contiguous slice of rows into a self-consistent chain that starts
+ * fresh from prevHash=''. Used after pruning the oldest rows: the new head's
+ * stored prevHash pointed at a now-deleted row, so we re-anchor the head to ''
+ * and recompute every surviving row's hash so the retained chain verifies on its
+ * own. Returns the new tail rowHash (or '' if the slice is empty) so callers can
+ * refresh their O(1) tail cache.
+ *
+ * `rows` MUST be in ascending id order and carry the SAME canonical content used
+ * at insert. Only rows with a non-empty stored rowHash are re-threaded; an empty
+ * rowHash marks a legacy/unhashed row and is left as-is (it is not in the chain).
+ */
+export function reanchorChain(
+  rows: Array<{ id: number; rowHash: string; canonical: string }>,
+  applyUpdate: (id: number, prevHash: string, rowHash: string) => void,
+): string {
+  let prev = '';
+  let tail = '';
+  for (const row of rows) {
+    // Leave legacy (unhashed) rows untouched — they are not part of the chain.
+    if (!row.rowHash) continue;
+    const rowHash = computeRowHash(row.canonical, prev);
+    applyUpdate(row.id, prev, rowHash);
+    prev = rowHash;
+    tail = rowHash;
+  }
+  return tail;
 }
 
 /** Result of verifying a chain. `brokenAtId` is the first row whose stored hash
@@ -139,6 +188,14 @@ export function verifyChain(rows: ChainRow[]): ChainStatus {
       return { ok: false, rows: rows.length, hashedRows, brokenAtId: row.id, signed };
     }
     prev = row.rowHash;
+  }
+
+  // Reset/wipe detection: a chained table whose rows all carry an empty rowHash
+  // is suspicious — either every hash was blanked or an all-legacy DB was swapped
+  // in to defeat verification. A genuinely empty table (no rows) is fine. So flag
+  // only when there ARE rows but NONE are hashed.
+  if (rows.length > 0 && hashedRows === 0) {
+    return { ok: false, rows: rows.length, hashedRows, signed };
   }
 
   return { ok: true, rows: rows.length, hashedRows, signed };

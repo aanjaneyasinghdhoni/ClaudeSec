@@ -13,7 +13,9 @@
 //   • Growth is bounded: the oldest rows are pruned once the table passes the cap.
 
 import { db } from './db.js';
-import { canonicalString, computeRowHash, verifyChain, type ChainStatus } from './auditChain.js';
+import {
+  canonicalString, computeRowHash, reanchorChain, verifyChain, type ChainStatus,
+} from './auditChain.js';
 import type { EnforceLogEvent } from './routes/context.js';
 
 // Keep the most recent N enforcement events — matches the old ring-buffer size.
@@ -30,6 +32,33 @@ const pruneEnforce = db.prepare(
      SELECT id FROM enforce_log ORDER BY id ASC LIMIT ?
    )`,
 );
+// After a prune, the new-oldest surviving row's prevHash points at a now-deleted
+// row, so the retained chain won't verify from a fresh '' seed. Re-anchor it:
+// re-thread every surviving row from prevHash='' (see reanchorChain).
+const selectEnforceSurvivors = db.prepare(
+  `SELECT id, ts, mode, label, severity, command, wouldBlock, blocked, rowHash
+     FROM enforce_log ORDER BY id ASC`,
+);
+const updateEnforceHashes = db.prepare(
+  `UPDATE enforce_log SET prevHash = @prevHash, rowHash = @rowHash WHERE id = @id`,
+);
+
+/**
+ * Prune the oldest `excess` rows, then re-anchor the retained chain so it verifies
+ * standalone, all in one transaction so a verify never sees a half-pruned state.
+ * Returns the new tail rowHash so the O(1) insert cache can be refreshed.
+ */
+const pruneAndReanchor = db.transaction((excess: number): string => {
+  pruneEnforce.run(excess);
+  const survivors = selectEnforceSurvivors.all() as Array<{
+    id: number; ts: number; mode: string; label: string; severity: string;
+    command: string; wouldBlock: number; blocked: number; rowHash: string;
+  }>;
+  return reanchorChain(
+    survivors.map(r => ({ id: r.id, rowHash: r.rowHash, canonical: enforceCanonical(r) })),
+    (id, prevHash, rowHash) => updateEnforceHashes.run({ id, prevHash, rowHash }),
+  );
+});
 const readRecent = db.prepare(
   `SELECT ts, mode, label, severity, command, wouldBlock, blocked
      FROM enforce_log ORDER BY id DESC LIMIT ?`,
@@ -90,8 +119,12 @@ export function appendEnforceLog(evt: EnforceLogEvent): void {
     // the cache untouched re-links the next insert to the last good hash.
     if (rowHash !== '') lastRowHash = rowHash;
 
+    // Prune past the cap, then re-anchor the survivors so the retained chain still
+    // verifies, and refresh the tail cache from the re-threaded tail.
     const count = (countEnforce.get() as { c: number }).c;
-    if (count > ENFORCE_LOG_MAX) pruneEnforce.run(count - ENFORCE_LOG_MAX);
+    if (count > ENFORCE_LOG_MAX) {
+      lastRowHash = pruneAndReanchor(count - ENFORCE_LOG_MAX);
+    }
   } catch {
     /* never let enforce-log persistence break the enforcement path */
   }
