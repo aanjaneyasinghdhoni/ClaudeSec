@@ -19,7 +19,7 @@ A matched span results in:
 - A webhook delivery and desktop notification for HIGH- and CRITICAL-severity alerts (if configured / permitted).
 
 <Note>
-  Custom rule patterns are compiled with **RE2** (linear-time, ReDoS-safe), so a malformed or adversarial regex cannot hang the server.
+  Custom rule patterns are compiled with **RE2** (linear-time, ReDoS-safe) on the server detection path, so a malformed or adversarial regex cannot hang the server. Note: the dependency-free PreToolUse hook evaluates custom block rules with the native JavaScript regex engine, not RE2 — input is capped at 64 KB per call as a backstop, but a pathological pattern could still stall that single hook invocation.
 </Note>
 
 ---
@@ -63,7 +63,7 @@ The highest tier — reserved for active secret **exfiltration**. Each rule pair
 | scp / sftp of secrets or cert file to remote host | `.env`/`.pem`/`.key`/`.p12` copied to a remote |
 | netcat file transfer to remote host | a file streamed outbound over `nc`/`netcat` to a remote |
 
-Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` mode they alert only (see [Enforcement](/security/enforcement)).
+Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` mode they alert only — with one exception: two high-precision exfiltration patterns (read-a-secret-and-pipe-it-to-the-network, and upload-a-secret-to-the-network) sit on the always-on catastrophic floor and block in either mode once the hook is installed (see [Enforcement](/security/enforcement)).
 
 ### HIGH severity
 
@@ -129,6 +129,10 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 
 The rule takes effect immediately — all future spans are evaluated against it. Existing spans are not retroactively re-evaluated.
 
+<Note>
+  Custom regex rules **detect by default** and follow the same convention as the built-ins: in `enforce` mode a **high- or critical-severity** custom rule also **blocks** the tool call before it runs (low/medium custom rules stay detect-only, and nothing custom blocks in `monitor` mode). The server mirrors your custom rules into the hook's `rules-enforcement.json` snapshot so the hook enforces the same set. To always-block a specific file or directory in *either* mode, add a **protected path** instead — see [Enforcement → Protected paths](/security/enforcement#protected-paths-always-on).
+</Note>
+
 ### Via the API
 
 ```bash
@@ -141,7 +145,7 @@ curl -X POST http://localhost:3000/api/rules \
   }'
 ```
 
-All custom rules are evaluated with the `i` (case-insensitive) flag automatically applied. The API accepts `low`, `medium`, `high`, or `critical` for `severity`; the dashboard form offers the first three, since `critical` is reserved for the built-in exfiltration rules.
+All custom rules are evaluated with the `i` (case-insensitive) flag automatically applied. The API accepts `low`, `medium`, `high`, or `critical` for `severity`; the dashboard form offers the first three. A custom `critical` rule added via the API is not special-cased — in `enforce` mode it blocks exactly like a built-in high/critical rule.
 
 ---
 

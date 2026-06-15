@@ -43,7 +43,7 @@ function ConnectHint({ harness }: { harness: string }) {
   if (!config || config.id === 'unknown') return null;
 
   const envLines = config.envVars.map(v =>
-    `export ${v.key}=${v.value.replace('{{ENDPOINT}}', 'http://localhost:3000/v1/traces')}`
+    `export ${v.key}=${v.value.replace('{{ENDPOINT}}', `${window.location.origin}/v1/traces`)}`
   ).join('\n');
 
   const handleCopy = async () => {

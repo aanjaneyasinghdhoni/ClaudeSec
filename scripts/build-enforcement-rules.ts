@@ -13,42 +13,28 @@
  *                                                          threats + active exfil)
  *   action = 'alert'  for everything else                (monitor / alert only)
  *
- * Rule source: SEVERITY_RULES imported directly from server/detection.ts.
- * detection.ts is side-effect-free (no DB, no server setup), so importing it
- * here is safe and avoids the brittle text-parsing of server/index.ts that
- * the previous .cjs generator used.
+ * Rule source: the shared builder in server/enforcementSnapshot.ts, which reads
+ * SEVERITY_RULES from server/detection.ts. detection.ts is side-effect-free (no
+ * DB, no server setup), so importing it here is safe. Sharing the builder means
+ * this install-time generator and the live server can never disagree on the
+ * built-in portion of the snapshot.
+ *
+ * This generator emits the BUILT-IN rules only. The running server later mirrors
+ * the same built-ins PLUS any user-added custom rules to the locations the hook
+ * and MCP proxy read (see writeEnforcementSnapshot in server/index.ts).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SEVERITY_RULES } from '../server/detection.js';
+import { buildEnforcementSnapshot } from '../server/enforcementSnapshot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const OUT_PATH = path.join(REPO_ROOT, 'rules-enforcement.json');
 
-interface EnforcementRule {
-  source: string;
-  flags: string;
-  severity: string;
-  label: string;
-  action: 'block' | 'alert';
-}
-
-function toEnforcementRule(r: { pattern: RegExp; severity: string; label: string }): EnforcementRule {
-  const action = (r.severity === 'high' || r.severity === 'critical') ? 'block' : 'alert';
-  return {
-    source: r.pattern.source,
-    flags: r.pattern.flags,
-    severity: r.severity,
-    label: r.label,
-    action,
-  };
-}
-
 function main(): void {
-  const all: EnforcementRule[] = SEVERITY_RULES.map(toEnforcementRule);
+  const all = buildEnforcementSnapshot();
   const blockCount = all.filter((r) => r.action === 'block').length;
 
   fs.writeFileSync(OUT_PATH, JSON.stringify(all, null, 2) + '\n', 'utf8');

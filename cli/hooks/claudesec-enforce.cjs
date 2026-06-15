@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /* ClaudeSec PreToolUse enforcement hook — opt-in blocker built from the
- * detection rules. Keeps the 6 catastrophic Bash patterns as an ALWAYS-ON floor.
+ * detection rules. Keeps the catastrophic Bash patterns as an ALWAYS-ON floor.
  *
  * SAFETY CONTRACT (a buggy enforcement hook can lock the user out):
  *   • Monitor-by-default: unless CLAUDESEC_MODE === 'enforce', the hook NEVER
  *     blocks on rule matches — it logs "would-block" and exits 0 (allow). The
- *     catastrophic-6 floor is the ONLY thing that blocks in monitor mode.
+ *     catastrophic floor is the ONLY thing that blocks in monitor mode.
  *   • Fail-OPEN: any error / unparseable input / missing snapshot → exit 0.
  *   • Bypass: CLAUDESEC_HOOKS_BYPASS=1 → allow everything, exit 0.
  *   • Blocks are logged before exit: every deny (catastrophic floor or enforce
@@ -27,9 +27,10 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const http = require('node:http');
 
-// ── Catastrophic-6 floor ─────────────────────────────────────────────────────
+// ── Catastrophic floor ───────────────────────────────────────────────────────
 // ALWAYS blocks, regardless of CLAUDESEC_MODE. Bash commands only — running
 // these against Edit/Write content would block editing any file that merely
 // *contains* these strings (e.g. server detection sources hold them as regex
@@ -41,7 +42,15 @@ const CATASTROPHIC = [
   { re: /\b(?:ba)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/tcp\//i, why: 'reverse shell via /dev/tcp' },
   { re: /\bmkfs\.[a-z0-9]+\b/i, why: 'formatting a filesystem (mkfs)' },
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|disk|hd|mmcblk)/i, why: 'overwriting a raw disk device (dd of=/dev/...)' },
+  { re: /(?:cat|base64|tac|xxd|od|head|tail|gpg)\b[^\n|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))[^\n|]*\|[^\n;&]*\b(?:curl|wget|nc|ncat|telnet)\b/i, why: 'reading a secret and piping it into a network tool' },
+  { re: /\b(?:curl|wget)\b[^\n;&|]*(?:-d|--data|--data-binary|--data-raw|-F|--form|-T|--upload-file)[ =]@?[^\n;&|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))/i, why: 'uploading a secret file over the network (curl/wget)' },
 ];
+
+// Read-only tools carry a file target but no command or content. We match them
+// so the protected-paths floor can deny a *read* of a protected secret before it
+// happens — but a read is never run against the command rule-engine (reading a
+// file is not executing it). Bash `cat`/edits are handled by their own branches.
+const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 
 /**
  * Block the tool call: show `reason` to Claude, flush a log event to the
@@ -174,6 +183,92 @@ function loadBlockRules() {
   }
 }
 
+/** Resolve the protected-paths.json path (server-written user block list). */
+function resolveProtectedPathsPath() {
+  // 1. Explicit override (absolute or relative) — used by tests / isolated server.
+  if (process.env.CLAUDESEC_PROTECTED_PATHS) {
+    return path.resolve(process.env.CLAUDESEC_PROTECTED_PATHS);
+  }
+  // 2. Next to this hook (installed layout: ~/.claudesec/hooks/), if present.
+  const beside = path.join(__dirname, 'protected-paths.json');
+  if (fs.existsSync(beside)) return beside;
+  // 3. Fallback: running in-repo → <repo>/protected-paths.json.
+  return path.resolve(__dirname, '..', '..', 'protected-paths.json');
+}
+
+/**
+ * Load the user's protected-path entries. Fail-OPEN → [] (never throws). Shape:
+ * [{ path: '<literal path>', label: '<label>' }]. Each entry is normalized so a
+ * leading '~' expands to the home dir; both the raw and home-expanded forms are
+ * carried so a target can match whichever spelling the agent used.
+ */
+function loadProtectedPaths() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(resolveProtectedPathsPath(), 'utf8'));
+    if (!Array.isArray(raw)) return [];
+    const home = os.homedir();
+    const out = [];
+    for (const e of raw) {
+      if (!e || typeof e.path !== 'string' || e.path.length === 0) continue;
+      const p = e.path;
+      // Expand a leading '~' / '~/' to the home dir (the only ~ form we honor).
+      const expanded =
+        p === '~' ? home
+        : p.startsWith('~/') ? path.join(home, p.slice(2))
+        : p;
+      const label = typeof e.label === 'string' && e.label.length > 0 ? e.label : p;
+      // Dedupe the raw/expanded forms when '~' was not used.
+      const forms = expanded === p ? [p] : [p, expanded];
+      out.push({ label, forms });
+    }
+    return out;
+  } catch (_) {
+    return []; // missing / unreadable / malformed → fail-open
+  }
+}
+
+/**
+ * Expand a standalone `$HOME` / `${HOME}` token to the home dir so a command like
+ * `cat $HOME/.ssh/id_rsa` matches a `~/.ssh/id_rsa` (home-expanded) protected
+ * entry. We only expand HOME — arbitrary shell variable / glob / command
+ * substitution (e.g. `$OTHERVAR`, `$(...)`, `*`) is an inherent limitation of a
+ * static hook and is NOT resolved here; the server-side detection layer remains
+ * the backstop for those.
+ */
+function expandHomeVar(cmd) {
+  if (!cmd) return cmd;
+  const home = os.homedir();
+  // ${HOME} or $HOME when NOT followed by another identifier char (so $HOMEBREW
+  // is left intact). Replace every occurrence.
+  return cmd.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, home);
+}
+
+/**
+ * Does a protected entry match the call's file TARGET or Bash command? We match
+ * only against the target path (file_path / path / notebook_path) and the Bash
+ * command — NEVER against edit content — so editing a file that merely *mentions*
+ * a protected path is not blocked.
+ *
+ * Case-INSENSITIVE substring: on case-insensitive filesystems (macOS, Windows)
+ * `/X/.ENV` and `/x/.env` are the same file, so a case-sensitive compare would
+ * be a trivial bypass. Conservative by design — a false positive (over-block) is
+ * far cheaper than a missed block on a path the user explicitly protected. We
+ * also expand `$HOME`/`${HOME}` in the Bash command first (see expandHomeVar).
+ */
+function protectedHit(entries, target, bashCmd) {
+  const t = target ? target.toLowerCase() : '';
+  const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
+  for (const e of entries) {
+    for (const form of e.forms) {
+      const f = form.toLowerCase();
+      if ((t && t.includes(f)) || (c && c.includes(f))) {
+        return e;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Best-effort POST to the dashboard. Calls `done` exactly once — on response
  * end / error / timeout — so the caller can exit AFTER the request has had a
@@ -236,8 +331,13 @@ function run(input) {
   const ti = (data && data.tool_input) || {};
 
   // 2. Build the matchable text.
+  //   • matchText  → fed to the rule regexes (includes edit CONTENT).
+  //   • fileTarget → ONLY the file the call targets (path, never content); used
+  //     by the protected-paths floor so editing a file that merely *mentions* a
+  //     protected path is not blocked.
   let bashCmd = '';
   let matchText = '';
+  const fileTarget = String(ti.file_path || ti.path || ti.notebook_path || '');
   if (toolName === 'Bash') {
     bashCmd = String(ti.command || '');
     matchText = bashCmd;
@@ -262,15 +362,23 @@ function run(input) {
       }
     }
     matchText = parts.join('\n');
+  } else if (READ_TOOLS.has(toolName)) {
+    // Read-only: fileTarget (set above) is all that matters. Leave matchText
+    // empty so the command rule-engine never fires on a mere read — only the
+    // always-on protected-paths floor below can deny it.
+    matchText = '';
   } else {
     // Unknown tool / nothing to match.
     matchText = String(ti.command || ti.file_path || ti.path || '');
     bashCmd = String(ti.command || '');
   }
 
-  if (!matchText) return process.exit(0);
+  // Nothing to evaluate at all (no command/content AND no file target) → allow.
+  // A read tool reaches here with an empty matchText but a real fileTarget, so it
+  // still flows into the protected-paths floor.
+  if (!matchText && !fileTarget) return process.exit(0);
 
-  // 3. Catastrophic-6 floor — Bash command only, ALWAYS blocks.
+  // 3. Catastrophic floor — Bash command only, ALWAYS blocks.
   if (bashCmd) {
     for (const r of CATASTROPHIC) {
       if (r.re.test(bashCmd)) {
@@ -293,13 +401,48 @@ function run(input) {
     }
   }
 
-  // 4. Load high-severity block rules from the snapshot (fail-open if missing).
-  const blockRules = loadBlockRules();
+  // 3b. Protected-paths floor — user-defined, ALWAYS blocks regardless of mode
+  // (a per-user mirror of the catastrophic floor). Matches the file TARGET or the
+  // Bash command only, never edit content. Fail-open if the list is missing.
+  {
+    const entries = loadProtectedPaths();
+    if (entries.length) {
+      const hitP = protectedHit(entries, fileTarget, bashCmd);
+      if (hitP) {
+        return blockAndLog(
+          `⛔ ClaudeSec: '${hitP.label}' is a protected path. Blocked. ` +
+          `Bypass: CLAUDESEC_HOOKS_BYPASS=1`,
+          {
+            mode: resolveMode(),
+            label: 'Protected path: ' + hitP.label,
+            severity: 'high',
+            command: redact(bashCmd || fileTarget),
+            blocked: true,
+            wouldBlock: true,
+          },
+        );
+      }
+    }
+  }
+
+  // 4. Command rule-engine — only when there is command/content to inspect. A
+  // read tool reaches here with an empty matchText (handled solely by the floor
+  // above), so it never trips a command rule. Load rules from the snapshot
+  // (fail-open if missing) and evaluate against the matchable text.
+  const blockRules = matchText ? loadBlockRules() : [];
+
+  // Bound the text we run user-supplied regexes over. Custom rules are validated
+  // with RE2 (linear-time) at the API, but this dependency-free hook compiles
+  // them with the native engine, which CAN backtrack catastrophically on a hostile
+  // pattern. Edit/Write matchText carries full file content, which would amplify
+  // any such stall. Capping the input bounds the worst case; a real command or
+  // path that matters is far shorter than this. (Built-in patterns are linear.)
+  const ruleText = matchText.length > 65536 ? matchText.slice(0, 65536) : matchText;
 
   // 5. Evaluate block rules against the matchable text.
   let hit = null;
   for (const r of blockRules) {
-    if (r.re.test(matchText)) { hit = r; break; }
+    if (r.re.test(ruleText)) { hit = r; break; }
   }
 
   if (hit) {

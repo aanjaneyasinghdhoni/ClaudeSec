@@ -17,10 +17,44 @@ interface SpanRecord {
   endNano: string;
 }
 
-const getAllSpans = db.prepare(`SELECT * FROM spans`);
-
 // ── Command audit trail — all tool executions with risk scores ────────
 const SHELL_TOOLS = new Set(['bash', 'Bash', 'exec', 'sh', 'terminal', 'shell', 'subprocess']);
+
+// Push the row filter into SQLite so we never load and JSON.parse the whole
+// spans table in Node. A row can only become a command-audit entry if it both
+// resolves to a shell tool AND carries a non-empty command string — so we let
+// SQLite (via JSON1's json_extract) discard everything else up front.
+//
+// The WHERE is a deliberate *superset* of the in-Node predicate: it keeps any
+// row the Node logic could possibly accept and lets the original checks below
+// make the final call, so the response stays byte-for-byte identical. The
+// tool-name arm mirrors the `attrs.tool ?? attrs['gen_ai.tool.name'] ?? name`
+// resolution; the name arm mirrors `name.includes('bash')`. The command arm
+// keeps only rows whose command/tool.input is present and non-empty (the
+// `if (!cmd) continue` gate). Final tool resolution and risk scoring still run
+// in Node against the parsed page so subtle `??`/truthiness semantics are
+// preserved exactly.
+const SHELL_TOOL_PLACEHOLDERS = [...SHELL_TOOLS].map(() => '?').join(', ');
+const getCommandSpans = db.prepare(`
+  SELECT spanId, traceId, name, severity, harness, attributes, startNano
+  FROM spans
+  WHERE json_valid(attributes)
+    AND (
+      json_extract(attributes, '$.tool')               IN (${SHELL_TOOL_PLACEHOLDERS})
+      OR json_extract(attributes, '$."gen_ai.tool.name"') IN (${SHELL_TOOL_PLACEHOLDERS})
+      OR (
+        json_extract(attributes, '$.tool')               IS NULL
+        AND json_extract(attributes, '$."gen_ai.tool.name"') IS NULL
+        AND name IN (${SHELL_TOOL_PLACEHOLDERS})
+      )
+      OR LOWER(name) LIKE '%bash%'
+    )
+    AND (
+      (json_extract(attributes, '$.command')      IS NOT NULL AND json_extract(attributes, '$.command')      != '')
+      OR (json_extract(attributes, '$."tool.input"') IS NOT NULL AND json_extract(attributes, '$."tool.input"') != '')
+    )
+`);
+const SHELL_TOOLS_ARR = [...SHELL_TOOLS];
 
 function computeRiskScore(cmd: string): number {
   let score = 0;
@@ -51,14 +85,19 @@ export function registerCommandAuditRoutes(app: Express, _ctx: RouteContext): vo
   app.get('/api/command-audit', (req, res) => {
     const limit = Math.min(Math.max(1, Number(req.query.limit) || 200), 5000);
     const offset = Math.max(0, Number(req.query.offset ?? 0));
-    const allSpans = getAllSpans.all() as SpanRecord[];
+    // Only shell-command rows are loaded and JSON.parsed (SQL-side prefilter),
+    // not the full spans table. The args feed the three IN(...) placeholder
+    // groups in getCommandSpans (tool, gen_ai.tool.name, name), in order.
+    const candidateSpans = getCommandSpans.all(
+      ...SHELL_TOOLS_ARR, ...SHELL_TOOLS_ARR, ...SHELL_TOOLS_ARR,
+    ) as Pick<SpanRecord, 'spanId' | 'traceId' | 'name' | 'severity' | 'harness' | 'attributes' | 'startNano'>[];
     const commands: {
       spanId: string; traceId: string; harness: string;
       command: string; severity: string; riskScore: number;
       tool: string; timestamp: string;
     }[] = [];
 
-    for (const span of allSpans) {
+    for (const span of candidateSpans) {
       try {
         const attrs = JSON.parse(span.attributes);
         const toolName = attrs['tool'] ?? attrs['gen_ai.tool.name'] ?? span.name ?? '';

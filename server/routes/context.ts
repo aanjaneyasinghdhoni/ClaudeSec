@@ -52,6 +52,12 @@ export interface RouteContext {
   addCustomRule?: (rule: CustomRule) => void;
   /** Remove a custom rule by id, returning true if one was removed (owned by index.ts). */
   removeCustomRule?: (id: string) => boolean;
+  /** Snapshot of the user's protected-path list (owned by index.ts). */
+  getProtectedPaths?: () => ProtectedPath[];
+  /** Append a protected path, persist it, and re-mirror the hook artifact (owned by index.ts). */
+  addProtectedPath?: (entry: ProtectedPath) => void;
+  /** Remove a protected path by id, returning true if one was removed (owned by index.ts). */
+  removeProtectedPath?: (id: string) => boolean;
   /** Current honeytoken list (owned by index.ts). */
   getHoneytokens?: () => string[];
   /** Persist honeytokens and rebuild scrubOptions (owned by index.ts). */
@@ -107,6 +113,20 @@ export interface EnforceLogEvent {
   severity: string;
   command: string;
   wouldBlock: boolean;
+}
+
+/**
+ * A user-added protected path: an always-on, per-user block-list entry that the
+ * PreToolUse hook enforces regardless of monitor/enforce mode (owned by
+ * index.ts; mirrored to protected-paths.json beside the installed hook).
+ */
+export interface ProtectedPath {
+  id: string;
+  /** Literal path string the hook substring-matches against (e.g. '~/.ssh/id_rsa'). */
+  path: string;
+  /** Human-friendly label shown in the block message + feed. */
+  label: string;
+  createdAt: string;
 }
 
 /** Custom (user-defined) severity rule (owned by index.ts; read by detectSeverity). */

@@ -5,12 +5,12 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.13-green.svg)](https://nodejs.org)
 
-**A zero-config, fully-local security observatory for AI coding agents.**
+**A zero-config, fully-local security observatory for AI coding agents — observe by default, enforce when you opt in.**
 
 Claude Code, GitHub Copilot CLI, and Codex all write full session transcripts to disk as they
 work. ClaudeSec tails those transcripts in real time — across every repo on your machine — and
 surfaces what your agents are actually doing: every tool call, every command, every file touched,
-scored live against ~639 built-in threat-detection rules. Nothing ever leaves your computer.
+scored live against ~639 built-in threat-detection rules. Nothing leaves your machine by default — the only outbound paths are three optional sinks you have to turn on yourself.
 
 ---
 
@@ -67,24 +67,36 @@ development with C++" workload and Python so `better-sqlite3` and `re2` can comp
 
 - **Live timeline & orchestration** — tool calls streaming in with nanosecond durations, per-agent
   tool inventory, a command-audit trail, and a sensitive-file-access panel.
-- **~639 built-in threat rules** (~183 core + ~456 extra) — CRITICAL / HIGH / MEDIUM / LOW regex
+- **~639 built-in threat rules** (183 core + 456 extra) — CRITICAL / HIGH / MEDIUM / LOW regex
   rules for prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration,
   SSRF, container escape, and more. The CRITICAL tier is reserved for active secret *exfiltration*
   — a credential or `.env` being transmitted off the machine. RE2-compiled (linear-time), with a
   ReDoS self-test gate.
-- **Enforcement** — an opt-in Claude Code PreToolUse hook and a cross-agent MCP proxy can block a
-  tool call *before it runs*. Register the hook with one command (`node cli/init.mjs install-hook`);
-  the dashboard then confirms it's wired up. `monitor` by default (with an always-on catastrophic
-  floor); `enforce` actively denies. Fail-open by design.
+- **Enforcement (opt-in, Claude Code only)** — out of the box ClaudeSec only *observes*: there is
+  **zero pre-execution blocking** until you register the Claude Code PreToolUse hook with one command
+  (`node cli/init.mjs install-hook`; `./start.sh` also offers to do it for you). Once installed it's
+  `monitor` by default — the always-on **catastrophic floor** (`rm -rf /`, fork bombs, `curl … | sh`,
+  …, and blocks reading a secret and piping/uploading it to the network in one command, e.g.
+  `cat ~/.ssh/id_rsa | curl …`) and any **protected paths** you mark in the dashboard — denied on
+  read, write, edit, and delete — block even in monitor; every other rule blocks only in `enforce`
+  mode. Custom regex rules added in the UI **detect by default**; in `enforce` mode a **high- or
+  critical-severity** custom rule also blocks (low/medium stay detect-only). Pre-execution blocking
+  reaches **Claude Code only** today — it's the one agent with a pre-exec hook; the others (Codex,
+  Copilot) are **observe-only** unless routed through the optional cross-agent MCP proxy
+  (`claudesec mcp-proxy`); any other MCP-speaking agent can be gated the same way. It's a
+  **tripwire, not a sandbox** — a best-effort, fail-open defense-in-depth layer. It can catch and
+  block known-bad tool calls before they run, but an agent (or a prompt-injected command) that sets
+  `CLAUDESEC_HOOKS_BYPASS=1`, restructures a command, or spawns a subprocess can evade it. Use it
+  as one layer, not as containment.
 - **MCP / skill scanner** — statically scans installed MCP server configs and Claude skills for
   tool-poisoning, prompt injection, hardcoded secrets, and suspicious launch commands.
 - **Honeytokens** — plant canary strings; any span containing one fires a HIGH exfiltration alert.
 - **Optional LLM-as-judge** — off by default, on-demand, local-first semantic classification.
 - **Three agent harnesses** — Claude Code, GitHub Copilot CLI, and Codex, auto-detected from
   on-disk transcripts. Remote and CI agents stream in over OTLP into the same pipeline.
-- **Cost view** — token usage and API-equivalent cost per session and model, with subscription-plan
-  awareness (API / Pro / Max 5× / Max 20×).
-- **Integrations** — Prometheus metrics (`/metrics`), webhooks (Slack / Discord / JSON), graph
+- **Cost view** — token usage and API-equivalent cost per session and model (Claude Code; Copilot CLI
+  and Codex sessions may show no spend), with subscription-plan awareness (API / Pro / Max 5× / Max 20×).
+- **Integrations** — a Prometheus-format `/metrics` endpoint (counters), webhooks (Slack / Discord / JSON), graph
   export, and an 11-tool MCP server at `POST /mcp`.
 - **Triage tooling** — bookmarks, tags, annotations, session labels, custom rules with a live tester,
   and a process scanner that can kill / pause / resume agent CLIs.

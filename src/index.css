@@ -85,10 +85,19 @@ html.light .bg-slate-800\/60 { background-color: rgba(236,238,242,0.90) !importa
 html.light .bg-slate-800\/40 { background-color: rgba(236,238,242,0.75) !important; }
 html.light .bg-slate-800\/30 { background-color: rgba(236,238,242,0.60) !important; }
 html.light .bg-slate-800\/20 { background-color: rgba(236,238,242,0.50) !important; }
+/* Opaque navy panels/tooltips read as dark blocks in light mode without this. */
+html.light .bg-slate-800\/80 { background-color: rgba(236,238,242,0.96) !important; }
+html.light .bg-slate-800\/70 { background-color: rgba(236,238,242,0.92) !important; }
+html.light .bg-slate-700\/60 { background-color: rgba(221,224,232,0.85) !important; }
+/* Solid-dark toasts/badges (no opacity suffix) flip to a light tinted surface. */
+html.light .bg-red-900\/80   { background-color: rgba(254,226,226,0.92) !important; }
+html.light .bg-green-900\/80 { background-color: rgba(220,252,231,0.92) !important; }
 
 /* ── Light mode: border overrides ──────────────────────────────────────── */
 html.light .border-slate-800    { border-color: var(--cs-border)      !important; }
 html.light .border-slate-700    { border-color: var(--cs-border-soft) !important; }
+html.light .border-slate-600    { border-color: var(--cs-border-soft) !important; }
+html.light .border-slate-700\/60 { border-color: var(--cs-border-soft) !important; }
 html.light .border-slate-800\/50 { border-color: rgba(216,219,228,0.6) !important; }
 html.light .border-slate-800\/40 { border-color: rgba(216,219,228,0.5) !important; }
 
@@ -378,9 +387,9 @@ select option {
 
 /* ── Navigation pill active state ────────────────────────────────────── */
 .nav-pill-active {
-  background: linear-gradient(135deg, rgba(0, 212, 170, 0.12), rgba(0, 212, 170, 0.06));
-  border-color: rgba(0, 212, 170, 0.3);
-  color: #00d4aa;
+  background: linear-gradient(135deg, rgba(var(--cs-accent-rgb), 0.12), rgba(var(--cs-accent-rgb), 0.06));
+  border-color: rgba(var(--cs-accent-rgb), 0.3);
+  color: var(--cs-accent);
 }
 
 /* ── Grain overlay for depth ─────────────────────────────────────────── */

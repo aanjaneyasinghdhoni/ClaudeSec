@@ -78,12 +78,19 @@ export function Section({ icon, title, children, defaultOpen = true }: SectionPr
           : <ChevronDown className="w-4 h-4 text-slate-500" />}
       </button>
 
+      {/* Grid-rows 0fr→1fr animates height without a fixed cap, so tall sections
+          are never clipped and the collapsing panel never grows past its real
+          height to overlap the next section's header. The inner wrapper must own
+          `overflow-hidden`. While closed, `pointer-events-none` + aria-hidden keep
+          the collapsed content from intercepting clicks meant for siblings. */}
       <div
-        className="overflow-hidden transition-all duration-200"
-        style={{ maxHeight: open ? '2000px' : '0px' }}
+        className="grid transition-[grid-template-rows] duration-200 ease-out"
+        style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
       >
-        <div className="px-4 pb-4 pt-1 border-t border-slate-800">
-          {children}
+        <div className={`overflow-hidden ${open ? '' : 'pointer-events-none'}`} aria-hidden={!open}>
+          <div className="px-4 pb-4 pt-1 border-t border-slate-800">
+            {children}
+          </div>
         </div>
       </div>
     </div>

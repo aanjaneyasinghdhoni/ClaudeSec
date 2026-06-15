@@ -9,7 +9,7 @@
 //   CORE_SEVERITY_RULES  — the ~183 hand-authored core rule literals (no EXTRA spread).
 //                          Used by tests/ruleSelfTest.ts to dedup EXTRA rules against
 //                          core built-ins only.
-//   SEVERITY_RULES       — combined array (core + EXTRA), length ~630.
+//   SEVERITY_RULES       — combined array (core + EXTRA), length ~639.
 //                          Used by server/index.ts, scripts/build-enforcement-rules.ts,
 //                          and any consumer that needs the full rule set.
 
@@ -260,7 +260,7 @@ export const CORE_SEVERITY_RULES: SeverityRule[] = [
 
 ];
 
-// Combined rule set: CORE built-ins + EXTRA expansion rules (~630 total).
+// Combined rule set: CORE built-ins + EXTRA expansion rules (~639 total).
 // This is the array used by server/index.ts and scripts/build-enforcement-rules.ts.
 export const SEVERITY_RULES: SeverityRule[] = [
   ...CORE_SEVERITY_RULES,

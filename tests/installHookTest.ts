@@ -115,12 +115,12 @@ function listBackups(settingsFile: string): string[] {
     check('fresh install: exits 0', () => assert.strictEqual(r.status, 0, r.stderr || r.stdout));
 
     const settings = readJson(s.settings);
-    check('fresh install: adds exactly two of our entries', () => {
-      assert.strictEqual(ourEntries(settings).length, 2);
+    check('fresh install: adds exactly three of our entries', () => {
+      assert.strictEqual(ourEntries(settings).length, 3);
     });
-    check('fresh install: matchers are Bash and the editing tools', () => {
+    check('fresh install: matchers are Bash, the editing tools, and Read', () => {
       const matchers = ourEntries(settings).map((e: any) => e.matcher).sort();
-      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit']);
+      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit', 'Read']);
     });
     check('fresh install: command runs the installed hook via node, path quoted', () => {
       const cmd = ourEntries(settings)[0].hooks[0].command;
@@ -155,9 +155,9 @@ function listBackups(settingsFile: string): string[] {
     check('re-run: exits 0', () => assert.strictEqual(r2.status, 0, r2.stderr));
 
     const settings = readJson(s.settings);
-    check('re-run: still exactly two of our entries (no duplicates)', () => {
-      assert.strictEqual(ourEntries(settings).length, 2);
-      assert.strictEqual(preToolUse(settings).length, 2);
+    check('re-run: still exactly three of our entries (no duplicates)', () => {
+      assert.strictEqual(ourEntries(settings).length, 3);
+      assert.strictEqual(preToolUse(settings).length, 3);
     });
     check('re-run: a settings backup was taken on the second run', () => {
       assert.ok(listBackups(s.settings).length >= 1, 'expected at least one .bak- file');
@@ -177,7 +177,7 @@ function listBackups(settingsFile: string): string[] {
     fs.writeFileSync(s.settings, JSON.stringify({
       hooks: {
         PreToolUse: [
-          { matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'hook', command: `node "${staleHook}"` }] },
+          { matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: `node "${staleHook}"` }] },
         ],
       },
     }, null, 2));
@@ -186,13 +186,13 @@ function listBackups(settingsFile: string): string[] {
     check('stale-matcher: exits 0', () => assert.strictEqual(r.status, 0, r.stderr));
 
     const settings = readJson(s.settings);
-    check('stale-matcher: exactly two of our entries remain (no orphaned third)', () => {
-      assert.strictEqual(ourEntries(settings).length, 2);
-      assert.strictEqual(preToolUse(settings).length, 2);
+    check('stale-matcher: exactly three of our entries remain (no orphaned extra)', () => {
+      assert.strictEqual(ourEntries(settings).length, 3);
+      assert.strictEqual(preToolUse(settings).length, 3);
     });
     check('stale-matcher: the old Edit|Write|MultiEdit entry is gone', () => {
       const matchers = ourEntries(settings).map((e: any) => e.matcher).sort();
-      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit']);
+      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit', 'Read']);
     });
   } finally { cleanup(s); }
 }
@@ -207,10 +207,10 @@ function listBackups(settingsFile: string): string[] {
       model: 'opus',
       hooks: {
         PreToolUse: [
-          { matcher: 'Bash', hooks: [{ type: 'hook', command: 'echo my-own-guard' }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo my-own-guard' }] },
         ],
         PostToolUse: [
-          { matcher: '*', hooks: [{ type: 'hook', command: 'echo after' }] },
+          { matcher: '*', hooks: [{ type: 'command', command: 'echo after' }] },
         ],
       },
     };
@@ -233,9 +233,9 @@ function listBackups(settingsFile: string): string[] {
       assert.strictEqual(settings.hooks.PostToolUse.length, 1);
       assert.strictEqual(settings.hooks.PostToolUse[0].hooks[0].command, 'echo after');
     });
-    check('merge: adds our two entries alongside (3 PreToolUse total)', () => {
-      assert.strictEqual(ourEntries(settings).length, 2);
-      assert.strictEqual(preToolUse(settings).length, 3);
+    check('merge: adds our three entries alongside (4 PreToolUse total)', () => {
+      assert.strictEqual(ourEntries(settings).length, 3);
+      assert.strictEqual(preToolUse(settings).length, 4);
     });
     check('merge: backs up the prior settings file', () => {
       assert.ok(listBackups(s.settings).length >= 1);
@@ -251,7 +251,7 @@ function listBackups(settingsFile: string): string[] {
     fs.writeFileSync(s.settings, JSON.stringify({
       hooks: {
         PreToolUse: [
-          { matcher: 'Bash', hooks: [{ type: 'hook', command: 'echo my-own-guard' }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo my-own-guard' }] },
         ],
       },
     }, null, 2));

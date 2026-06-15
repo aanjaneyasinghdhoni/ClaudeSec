@@ -10,7 +10,7 @@ import {
   Shield, AlertTriangle, Activity, Terminal,
   CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
-  Bell, BellOff, Upload, Settings, StickyNote, Flame, Star, ShieldAlert,
+  Bell, BellOff, Upload, Settings, StickyNote, Flame, Star, ShieldAlert, ShieldCheck,
   Server, GitCompare, Monitor, Bookmark, ScanLine,
   ChevronDown, MoreHorizontal, HelpCircle, Menu,
 } from 'lucide-react';
@@ -164,6 +164,32 @@ export default function App() {
     refresh();
     socket.on('sessions-update', refresh);
     return () => { socket.off('sessions-update', refresh); };
+  }, []);
+
+  // ── Enforcement standing-state (footer indicator) ──────────────────────────
+  // Blocking is "active" only when the hook actually runs in enforce mode AND a
+  // valid PreToolUse hook is registered — the same honest bar as the Enforce tab.
+  // Anything less (monitor, no hook, container-unknown) shows "Not blocking".
+  // Tri-state standing posture for the footer pill — honest about what blocks:
+  //   'enforce' → hook registered AND enforce mode: every high-severity match blocks.
+  //   'floor'   → hook registered but monitor mode: the always-on catastrophic floor,
+  //               protected paths, and read-protection still block; rule matches only log.
+  //   'off'     → hook not registered: nothing is blocked before it runs.
+  const [enforceState, setEnforceState] = useState<'enforce' | 'floor' | 'off' | null>(null);
+  useEffect(() => {
+    const refreshEnforce = () => {
+      fetch('/api/enforce/config')
+        .then(r => r.json())
+        .then((c: { mode?: string; effectiveMode?: string; hookStatus?: { installed?: string } }) => {
+          const effective = c.effectiveMode ?? c.mode;
+          const registered = c.hookStatus?.installed === 'yes';
+          setEnforceState(!registered ? 'off' : effective === 'enforce' ? 'enforce' : 'floor');
+        })
+        .catch(() => setEnforceState(null));
+    };
+    refreshEnforce();
+    socket.on('enforce-config', refreshEnforce);
+    return () => { socket.off('enforce-config', refreshEnforce); };
   }, []);
 
   // ── Notification state ────────────────────────────────────────────────────
@@ -787,21 +813,30 @@ export default function App() {
           </div>
         </div>
 
-        {/* Import status toast */}
+        {/* Import status toast — themed via CSS tokens so it stays legible in both
+            modes (the bare bg-*-900/80 utilities have no light-mode override). */}
         {importStatus && (
-          <div className={`absolute top-14 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-xs font-medium z-50 shadow-lg backdrop-blur-md ${importStatus.ok ? 'bg-green-900/80 text-green-200 border border-green-700/50' : 'bg-red-900/80 text-red-200 border border-red-700/50'}`}>
+          <div
+            className="absolute top-14 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-xs font-medium z-50 shadow-lg backdrop-blur-md"
+            style={importStatus.ok
+              ? { background: 'rgba(34,197,94,0.16)', color: 'var(--cs-text-base)', border: '1px solid rgba(34,197,94,0.4)' }
+              : { background: 'rgba(244,63,94,0.16)', color: 'var(--cs-text-base)', border: '1px solid rgba(244,63,94,0.4)' }}
+          >
             {importStatus.msg}
           </div>
         )}
 
         {/* Data load error — surfaced instead of an unhandled promise rejection */}
         {loadError && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium z-50 shadow-lg backdrop-blur-md bg-red-900/80 text-red-200 border border-red-700/50">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <div
+            className="absolute top-14 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium z-50 shadow-lg backdrop-blur-md"
+            style={{ background: 'rgba(244,63,94,0.16)', color: 'var(--cs-text-base)', border: '1px solid rgba(244,63,94,0.4)' }}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--cs-danger)' }} />
             {loadError}
             <button
               onClick={() => setLoadError(null)}
-              className="ml-1 p-0.5 rounded hover:bg-red-800/60 transition-colors"
+              className="ml-1 p-0.5 rounded transition-colors hover:opacity-70"
               aria-label="Dismiss"
             >
               <X className="w-3 h-3" />
@@ -1147,7 +1182,7 @@ export default function App() {
                         >
                           <span className="text-[12px] font-medium">{s.name}</span>
                         </button>
-                        <span className="shrink-0 text-[10px] font-mono opacity-40 tabular-nums">{s.spanCount}</span>
+                        <span className="shrink-0 text-[10px] font-mono tabular-nums" style={{ color: 'var(--cs-text-faint)' }}>{s.spanCount}</span>
                         {/* Pin / unpin */}
                         <button
                           onClick={async e => {
@@ -1198,7 +1233,7 @@ export default function App() {
                   </div>
                   {/* Inline notes + label panel */}
                   {notesSession === s.traceId && (
-                    <div className="mx-1 mb-1 p-2 bg-slate-800/80 border border-slate-700 rounded-lg space-y-2">
+                    <div className="mx-1 mb-1 p-2 rounded-lg space-y-2" style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border-soft)' }}>
                       {/* Label selector */}
                       <div>
                         <p className="text-[11px] text-slate-600 uppercase font-bold mb-1">Label</p>
@@ -1514,7 +1549,19 @@ export default function App() {
           )}
 
           {/* Alerts view */}
-          {activeTab === 'alerts' && <AlertsTab />}
+          {activeTab === 'alerts' && (
+            <AlertsTab
+              onInvestigate={(traceId, spanId) => {
+                setActiveSession(traceId);
+                // Navigate to the timeline route so the category rail, sub-tabs
+                // and sidebar stay in sync — same pattern as the bookmark jump.
+                navigateTab('timeline');
+                // Remember the span so it gets selected and highlighted once the
+                // scoped graph for this session loads.
+                setPendingSpanSelect(spanId);
+              }}
+            />
+          )}
 
           {/* Rules view */}
           {activeTab === 'rules' && <RulesTab />}
@@ -1584,7 +1631,7 @@ export default function App() {
         <div className="flex items-center gap-2 shrink-0">
           <Terminal className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} />
           <span className="text-[11px] font-mono hidden sm:inline" style={{ color: 'var(--cs-text-faint)' }}>
-            Local watcher <span style={{ color: 'var(--cs-accent)', opacity: 0.7 }}>+</span> OTLP :3000
+            Local watcher <span style={{ color: 'var(--cs-accent)', opacity: 0.7 }}>+</span> OTLP :{window.location.port || (window.location.protocol === 'https:' ? '443' : '80')}
           </span>
           <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{
             color: 'var(--cs-text-muted)',
@@ -1621,6 +1668,43 @@ export default function App() {
             <span className="text-[11px] font-mono italic" style={{ color: 'var(--cs-text-faint)' }}>idle</span>
           )}
         </div>
+
+        {/* Enforcement standing-state — subtle but always visible, and honest about
+            the three real postures. Green only when every high-severity match blocks;
+            amber when the always-on floor (catastrophic + protected paths + reads)
+            still blocks but rule matches only log; red when nothing blocks at all. */}
+        {enforceState !== null && (() => {
+          const pill = {
+            enforce: {
+              fg: '#22c55e', dot: '#22c55e', bg: 'rgba(34,197,94,0.10)',
+              label: 'Blocking active', Icon: ShieldCheck,
+              title: 'Pre-execution blocking is active — every high-severity match is denied (enforce mode + hook registered).',
+            },
+            floor: {
+              fg: '#ffb224', dot: '#f59e0b', bg: 'rgba(245,158,11,0.10)',
+              label: 'Floor only', Icon: ShieldAlert,
+              title: 'Monitor mode: the always-on catastrophic floor, protected paths, and read-protection still block — but other rule matches are only logged. Switch to Enforce to block every high-severity match.',
+            },
+            off: {
+              fg: '#ff6b81', dot: '#ff3b5c', bg: 'rgba(244,63,94,0.10)',
+              label: 'Not blocking', Icon: ShieldAlert,
+              title: 'Nothing is blocked before it runs — the PreToolUse hook is not registered. Open the Enforce tab to install it.',
+            },
+          }[enforceState];
+          const { Icon } = pill;
+          return (
+            <button
+              type="button"
+              onClick={() => navigateTab('enforce')}
+              className="flex items-center gap-1.5 shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded transition-colors hover:opacity-80"
+              title={pill.title}
+              style={{ background: pill.bg, color: pill.fg }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: pill.dot }} />
+              <Icon className="w-3 h-3" /> {pill.label}
+            </button>
+          );
+        })()}
 
         <span className="text-[11px] font-mono shrink-0" style={{ color: 'var(--cs-text-faint)' }}>v{appVersion}</span>
       </footer>

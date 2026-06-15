@@ -28,6 +28,7 @@ docs/_local/
 rules-enforcement.json
 enforce-config.json
 rules.json
+protected-paths.json
 
 # Images and screenshots — keep them out of the repository
 *.png
@@ -40,3 +41,4 @@ screenshots/
 # OS / editor noise
 .DS_Store
 *.log
+.gstack/

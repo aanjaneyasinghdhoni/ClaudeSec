@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Shield, Trash2, Plus, FlaskConical, Clock, X } from 'lucide-react';
+import { Shield, ShieldOff, Trash2, Plus, FlaskConical, Clock, X, Lock } from 'lucide-react';
 import { socket } from './socket';
 import type { Severity } from './shared/types';
 
@@ -10,6 +10,13 @@ interface RuleRow {
   severity: Severity;
   label: string;
   builtin?: boolean;
+}
+
+interface ProtectedPath {
+  id: string;
+  path: string;
+  label: string;
+  createdAt?: string;
 }
 
 interface Suppression {
@@ -65,6 +72,13 @@ export function RulesTab() {
   const [error,      setError]      = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Protected paths — the always-on block floor (distinct from regex rules).
+  const [protectedPaths, setProtectedPaths] = useState<ProtectedPath[]>([]);
+  const [ppPath,   setPpPath]   = useState('');
+  const [ppLabel,  setPpLabel]  = useState('');
+  const [ppError,  setPpError]  = useState('');
+  const [ppBusy,   setPpBusy]   = useState(false);
+
   const fetchRules = () =>
     fetch('/api/rules')
       .then(r => r.json())
@@ -77,11 +91,22 @@ export function RulesTab() {
       .then(({ suppressions: s }: { suppressions: Suppression[] }) => setSuppressions(s ?? []))
       .catch(() => {});
 
+  const fetchProtectedPaths = () =>
+    fetch('/api/protected-paths')
+      .then(r => r.json())
+      .then(({ protectedPaths: p }: { protectedPaths: ProtectedPath[] }) => setProtectedPaths(p ?? []))
+      .catch(() => {});
+
   useEffect(() => {
     fetchRules();
     fetchSuppressions();
+    fetchProtectedPaths();
     socket.on('rules-update', () => { fetchRules(); fetchSuppressions(); });
-    return () => { socket.off('rules-update'); };
+    socket.on('protected-paths-update', fetchProtectedPaths);
+    return () => {
+      socket.off('rules-update');
+      socket.off('protected-paths-update', fetchProtectedPaths);
+    };
   }, []);
 
   // Countdown refresh every 30s
@@ -143,6 +168,36 @@ export function RulesTab() {
 
   const handleDelete = async (id: string) => {
     await fetch(`/api/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  };
+
+  const handleAddProtectedPath = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPpError('');
+    if (!ppPath.trim()) { setPpError('A file path is required'); return; }
+    setPpBusy(true);
+    try {
+      const res = await fetch('/api/protected-paths', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: ppPath.trim(), label: ppLabel.trim() || undefined }),
+      });
+      if (res.status === 409) {
+        setPpError('That path is already protected.');
+      } else if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setPpError(d.error ?? 'Failed to add protected path');
+      } else {
+        setPpPath(''); setPpLabel('');
+        // The socket event refreshes the list, but update optimistically too.
+        fetchProtectedPaths();
+      }
+    } catch { setPpError('Network error'); }
+    setPpBusy(false);
+  };
+
+  const handleDeleteProtectedPath = async (id: string) => {
+    await fetch(`/api/protected-paths/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    fetchProtectedPaths();
   };
 
   const allRules: (RuleRow & { type: 'built-in' | 'custom' })[] = [
@@ -254,6 +309,85 @@ export function RulesTab() {
           </div>
         </form>
 
+        {/* Protected paths — the always-on block floor */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5 text-rose-400" />
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Protected Paths</p>
+          </div>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            Protected paths are blocked <span className="text-rose-300 font-semibold">immediately and always</span> —
+            even in monitor mode. Any tool call that reads, writes to, or deletes a protected path is denied before it
+            runs. The custom regex rules above <span className="text-slate-300">detect</span> (observe) by default; in
+            enforce mode, high- and critical-severity custom rules <span className="text-slate-300">also block</span>.
+          </p>
+
+          <form onSubmit={handleAddProtectedPath} className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-xs text-slate-500 mb-1">File path</label>
+                <input
+                  type="text"
+                  value={ppPath}
+                  onChange={e => { setPpPath(e.target.value); setPpError(''); }}
+                  placeholder="e.g. /Users/me/.ssh/id_rsa or ~/secrets/.env"
+                  className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Label (optional)</label>
+                <input
+                  type="text"
+                  value={ppLabel}
+                  onChange={e => setPpLabel(e.target.value)}
+                  placeholder="e.g. SSH private key"
+                  className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
+                />
+              </div>
+            </div>
+
+            {ppError && <p className="text-[11px] text-red-400 font-mono">{ppError}</p>}
+
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={ppBusy}
+                className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors hover:brightness-110 text-white bg-rose-600/80 border border-rose-500/50"
+              >
+                <Lock className="w-3.5 h-3.5" /> Protect path
+              </button>
+            </div>
+          </form>
+
+          {/* Protected paths list */}
+          {protectedPaths.length === 0 ? (
+            <div className="flex items-center gap-1.5 text-[11px] text-slate-600 italic">
+              <ShieldOff className="w-3.5 h-3.5" /> No protected paths yet.
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-800/60 border border-slate-800 rounded-lg overflow-hidden">
+              {protectedPaths.map(pp => (
+                <li key={pp.id} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-800/30 transition-colors">
+                  <Lock className="w-3 h-3 text-rose-400 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    {pp.label && pp.label !== pp.path && (
+                      <p className="text-xs text-slate-200 font-medium truncate">{pp.label}</p>
+                    )}
+                    <code className="text-[11px] font-mono break-all" style={{ color: 'var(--cs-text-muted)', background: 'transparent' }}>{pp.path}</code>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteProtectedPath(pp.id)}
+                    className="p-1 hover:bg-slate-700 rounded text-slate-600 hover:text-red-400 transition-colors shrink-0"
+                    title="Remove protected path"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
         {/* Rules table */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
@@ -288,7 +422,7 @@ export function RulesTab() {
                       {rule.label}
                     </td>
                     <td className="px-4 py-2.5">
-                      <code className="text-xs font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                      <code className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ color: 'var(--cs-text-muted)', background: 'var(--cs-bg-elevated)' }}>
                         {rule.pattern.length > 60 ? rule.pattern.slice(0, 60) + '…' : rule.pattern}
                       </code>
                     </td>

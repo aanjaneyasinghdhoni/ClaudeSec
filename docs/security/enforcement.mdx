@@ -1,11 +1,15 @@
 ---
 title: "Enforcement"
-description: "Block an agent's tool call before it runs, using the same rule set — monitor by default, enforce when you're ready."
+description: "Opt-in, Claude-Code-only blocking of a tool call before it runs — observe-only until you install the hook, monitor by default, fail-open by design."
 ---
 
-Detection tells you what an agent *already did*. **Enforcement** can stop a tool call *before it runs* — using the same rule library, wired into Claude Code as a **PreToolUse hook** (`.claude/hooks/claudesec-enforce.cjs`).
+Detection tells you what an agent *already did*. **Enforcement** can stop a tool call *before it runs* — using the same rule library, wired into Claude Code as a **PreToolUse hook** (`claudesec-enforce.cjs`).
 
-When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload against the high- and critical-severity block rules and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent).
+<Warning>
+  **Enforcement is opt-in. Out of the box, ClaudeSec only observes — it blocks nothing.** There is **zero pre-execution blocking** until you [install the hook](#install-the-hook). Even then, it reaches **Claude Code only**, is **monitor by default**, and is **fail-open** (see below). It raises the bar for an agent; it is not an OS sandbox or a hard guarantee.
+</Warning>
+
+When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent). Two **always-on floors** block in either mode — the [catastrophic floor](#the-catastrophic-floor) and your [protected paths](#protected-paths-always-on) — while the broader high- and critical-severity rules block only once you switch to [enforce](#modes).
 
 <Warning>
   The hook is the **Claude Code layer** — it is agent-specific and bypassable (see [Bypass](#bypass)), **not** an OS-level sandbox. It also **fails open**: any error, missing config, or unparseable input results in *allow*, so a broken enforcement config can never lock you out. For agents that aren't Claude Code, the same rules are enforced at the **MCP wire level** — see [Cross-agent enforcement](#cross-agent-enforcement-mcp-proxy).
@@ -24,7 +28,7 @@ This is **consent-gated**: before it touches anything, it prints the exact targe
 1. **Builds the rules snapshot locally.** It runs `scripts/build-enforcement-rules.ts` against your in-repo rule source to generate a fresh `rules-enforcement.json`. This is a pure local build — **no network call, ever** — so the hook blocks exactly the rules in *your* checkout.
 2. **Copies the hook + snapshot** into `~/.claudesec/hooks/` (`claudesec-enforce.cjs` and its `rules-enforcement.json`, side by side).
 3. **Backs up your settings first.** If `~/.claude/settings.json` already exists, it's copied to a timestamped `.bak-<ts>` before any write.
-4. **Merges two PreToolUse entries** into `~/.claude/settings.json` — one matching `Bash`, one matching `Edit|Write|MultiEdit|NotebookEdit`. Every other key, hook, and matcher in your settings is preserved untouched.
+4. **Merges PreToolUse entries** into `~/.claude/settings.json` — one matching `Bash`, one matching `Edit|Write|MultiEdit|NotebookEdit`, and one matching `Read` (so a protected path is also denied on read). Every other key, hook, and matcher in your settings is preserved untouched.
 5. **Logs the action** to `~/.claudesec/install.log`.
 
 It is **idempotent**: re-running refreshes the copied hook and snapshot and never duplicates the settings entries. Restart Claude Code afterward so it loads the hook.
@@ -40,7 +44,7 @@ node cli/init.mjs uninstall-hook            # remove only ClaudeSec's settings e
 node cli/init.mjs uninstall-hook --purge    # also delete ~/.claudesec/hooks/
 ```
 
-Uninstall removes **only** ClaudeSec's own two PreToolUse entries — everything else in your settings stays. It backs up `settings.json` first, the same way install does. Add `--purge` to also delete the copied hook and snapshot under `~/.claudesec/hooks/`. Restart Claude Code to drop the hook.
+Uninstall removes **only** ClaudeSec's own three PreToolUse entries — everything else in your settings stays. It backs up `settings.json` first, the same way install does. Add `--purge` to also delete the copied hook and snapshot under `~/.claudesec/hooks/`. Restart Claude Code to drop the hook.
 
 ## Modes
 
@@ -48,12 +52,14 @@ The hook runs in one of two modes, and **`monitor` is the default**:
 
 | Mode | What it does |
 |------|--------------|
-| `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the always-on *catastrophic-6 floor*. |
-| `enforce` | Actually **denies** high- and critical-severity command / file tool calls, in addition to the catastrophic floor. The critical tier is active secret *exfiltration*. |
+| `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the two always-on floors: the *catastrophic floor* and your *protected paths*. |
+| `enforce` | Actually **denies** high- and critical-severity command / file tool calls, in addition to both always-on floors. The critical tier is active secret *exfiltration*. |
 
-### The catastrophic-6 floor
+The broader rule library — and any **custom regex rules** you add in the dashboard — only ever *blocks* in `enforce` mode. Custom rules follow the same convention as the built-ins: they **detect by default**, and in `enforce` mode a **high- or critical-severity** custom rule also **blocks** (low/medium custom rules stay detect-only). The server mirrors your custom rules into the hook's `rules-enforcement.json` snapshot so the hook enforces the same set. To always-block a specific file or directory in *either* mode, use [protected paths](#protected-paths-always-on) instead.
 
-Six bash patterns **always** block, in either mode — these are the unambiguous "you almost certainly did not mean this" commands:
+### The catastrophic floor
+
+A small set of bash patterns **always** block, in either mode — the unambiguous "you almost certainly did not mean this" commands, plus two high-precision secret-exfiltration patterns:
 
 - `rm -rf` against the filesystem root (`/`)
 - fork bombs
@@ -61,8 +67,20 @@ Six bash patterns **always** block, in either mode — these are the unambiguous
 - reverse shells via `/dev/tcp`
 - formatting a filesystem (`mkfs.*`)
 - overwriting a raw disk device (`dd of=/dev/…`)
+- reading a secret and piping it to the network in one command (`cat ~/.ssh/id_rsa | curl …`)
+- uploading a secret file directly to the network (`curl -d @.env https://…`)
 
-In `monitor` mode this floor is the **only** thing that blocks — everything else is logged and allowed.
+The last two are deliberately narrow — they fire only when a command both reads a known secret and ships it off-machine — so they block this always, even in monitor mode, without flagging ordinary network calls.
+
+### Protected paths (always-on)
+
+Beyond the catastrophic floor, you can mark **specific files or directories as protected** — a per-user floor that **always blocks**, in either mode, exactly like the catastrophic floor. Add them in **Protect → Rules → Protected paths** (or via `POST /api/protected-paths`). A protected entry is denied on **read, write, edit, and delete** — the hook registers a `Read` matcher alongside the write/edit matchers, so any Claude Code tool call whose **target path** or **Bash command** (e.g. `cat`/`rm`) references a protected entry is blocked before it runs.
+
+- Matching is a case-insensitive substring of the file *target* (`file_path` / `path` / `notebook_path`) or the Bash command — **never** the edit *content*, so editing a file that merely *mentions* a protected path is fine. A leading `~` and a standalone `$HOME` / `${HOME}` expand to your home dir; arbitrary shell variables, globs, and command substitution are not resolved (a static hook's inherent limit — server-side detection remains the backstop).
+- Protected paths are **detection-independent**: they don't depend on any rule and ignore enforce mode.
+- They only take effect through the **installed hook**. The server mirrors your list to the hook's directory automatically; if you've added protected paths but the hook isn't installed, the dashboard and server log say so (nothing will block until you [install the hook](#install-the-hook)).
+
+In `monitor` mode these two floors — the catastrophic floor and protected paths — are the **only** things that block; everything else is logged and allowed.
 
 ## Turning it on
 
@@ -129,6 +147,10 @@ CLAUDESEC_HOOKS_BYPASS=1 claude ...
 
 With it set, the hook allows everything and exits immediately. Because enforcement is a Claude-Code hook, removing or not registering the hook also disables it entirely — which is exactly why the honest framing above matters: enforcement raises the bar for an agent, it does not sandbox the host.
 
+<Warning>
+  `CLAUDESEC_HOOKS_BYPASS=1` is checked by the hook before any rule evaluation — including the catastrophic floor. Any subprocess spawned by an agent that inherits this variable will also bypass all enforcement. If you set it in a shell session where an agent is running, every tool call in that session is allowed through, regardless of mode or rule severity. Treat it accordingly: use it for a single targeted invocation, then unset it.
+</Warning>
+
 ## Cross-agent enforcement (MCP proxy)
 
 The PreToolUse hook only reaches **Claude Code**. To enforce the *same* rules for **any** MCP-speaking agent — Codex, Copilot, Claude Desktop — ClaudeSec ships a **cross-agent MCP enforcement proxy**: a stdio gateway that wraps a downstream [MCP](https://modelcontextprotocol.io) server and gates every `tools/call` against the same `rules-enforcement.json` + `enforce-config.json`.
@@ -140,6 +162,10 @@ The proxy speaks raw [JSON-RPC 2.0 over stdio](https://modelcontextprotocol.io/s
 - no match → forwards.
 
 Mode is resolved per call (`enforce-config.json` → `CLAUDESEC_MODE` → `monitor`), so dashboard toggles take effect live. Like the hook, it **fails open** (any parse/proxy error forwards the original message) and honors `CLAUDESEC_HOOKS_BYPASS=1` (forward everything).
+
+<Note>
+  **Catastrophic-floor behavior differs between the hook and the proxy.** The PreToolUse hook blocks the catastrophic floor in *either* mode — monitor or enforce. The MCP proxy evaluates the same floor patterns, but they are gated by mode: in `monitor` (default) the proxy only logs a would-block and forwards normally; only in `enforce` does the proxy actually deny the call. If you are using the proxy to gate a non-Claude-Code agent and want the catastrophic floor to block, you must set the mode to `enforce`.
+</Note>
 
 ### Wiring an agent
 

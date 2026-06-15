@@ -54,8 +54,8 @@ controls in any framework belong to the **deployer**. The split is summarized be
 | **Authentication** | Optional bearer token (`CLAUDESEC_TOKEN`) gating non-loopback API/MCP/OTLP access | SSO/MFA, identity lifecycle, and access reviews at the network/identity layer |
 | **Data at rest** | DB file created `0600` (owner-only); secret scrubbing before persistence | Disk/volume encryption (full-disk, LUKS, or equivalent); filesystem ACLs; backup protection |
 | **Data minimization & retention** | Secret/PII scrubbing on by default; count- and age-based pruning (`CLAUDESEC_MAX_SPANS`, `CLAUDESEC_RETENTION_DAYS`) | Set retention to match policy; document lawful basis; honor data-subject requests |
-| **Detection content** | ~639 maintained rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
-| **Enforcement** | Opt-in PreToolUse hook (one-command installer) + cross-agent MCP proxy; `monitor` default, `enforce` blocks high- and critical-severity (active exfiltration) tool calls; dashboard surfaces hook-registration status (no false green) | Decide policy; understand fail-open scope; layer an OS sandbox for hard isolation |
+| **Detection content** | ~639 built-in rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
+| **Enforcement** | **Opt-in and Claude-Code-only**: nothing blocks until the deployer installs the PreToolUse hook (one-command installer) — until then ClaudeSec only observes. Once installed it is `monitor` by default (only the always-on catastrophic floor — destructive commands plus two high-precision secret-exfiltration patterns — and user-defined protected paths block); `enforce` adds blocking of the broader high/critical (active exfiltration) tool calls. Custom regex rules detect by default; in `enforce` mode a high/critical custom rule also blocks (low/medium stay detect-only). Other agents are gated only via the cross-agent MCP proxy. **Fail-open** by design. Dashboard surfaces hook-registration status (no false green) | Install and verify the hook; decide policy; understand the fail-open, Claude-only, best-effort scope; layer an OS sandbox for hard isolation |
 | **Governance** | Audit-quality event logs and reporting to feed a program | Policies, risk register, roles/accountability, training, vendor management, audits |
 
 > **Read this first:** [`.github/SECURITY.md`](.github/SECURITY.md) states plainly that
@@ -82,7 +82,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **CC6.7** | Transmission of data protected | Optional bearer-token auth on remote API/OTLP; SSRF guard blocks egress to private/loopback/metadata ranges | **TLS in transit** (terminate at a reverse proxy) — not provided by the tool |
 | **CC7.1** | Vulnerability & malware detection | ~639 threat rules covering credential theft, reverse shells, supply-chain attacks, exfiltration (a dedicated `critical` tier for active off-machine secret transmission), cloud-metadata SSRF, container escape; MCP/skill static scanner | Endpoint EDR, host vulnerability scanning, patch cadence |
 | **CC7.2** | Monitoring for security events | Real-time span ingestion + live alerting; Prometheus `/metrics`; webhook delivery of HIGH alerts; honeytokens | Central SIEM, alert triage SLAs, on-call rotation |
-| **CC7.3 / CC7.4** | Incident evaluation, containment & response | Per-session security reports (`cli/init.mjs report`); enforcement hook/proxy can block a tool call before it runs (`enforce` mode), and the dashboard verifies the hook is registered before claiming blocking is active | Documented IR plan, runbooks, post-incident reviews |
+| **CC7.3 / CC7.4** | Incident evaluation, containment & response | Per-session security reports (`cli/init.mjs report`); the opt-in, Claude-Code-only enforcement hook/proxy can block a tool call before it runs (`enforce` mode, or the always-on floors in any mode) once the deployer installs it — best-effort and fail-open, and the dashboard verifies the hook is registered before claiming blocking is active | Documented IR plan, runbooks, post-incident reviews; install/verify the hook; do not treat fail-open blocking as containment |
 | **CC8.1** | Authorized, tested changes | The project's own SDLC: SHA-pinned GitHub Actions, `pnpm install --frozen-lockfile`, type-check + build gates, ReDoS rule self-test gate as a `prebuild` step | The deployer's own change-management process |
 
 ### 3.2 ISO/IEC 27001:2022 (Annex A)
@@ -90,7 +90,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | Annex A | Control | How ClaudeSec supports it | Deployer still owns |
 |---|---|---|---|
 | **A.8.11** | Data masking | **Secret scrubbing** (`server/scrub.ts`): keys, tokens, JWTs, cloud credentials, database connection-string credentials, home paths, usernames, and emails are redacted before anything is stored, broadcast, or exported (on by default). Alert `matchedText` is stored **already scrubbed** — even a `critical` exfiltration alert records the secret *type / redacted shape*, never the live value | Classification scheme; verifying masking meets policy (scrubbing is best-effort regex) |
-| **A.8.12** | Data leakage prevention | A dedicated `critical` severity tier flags active secret **exfiltration** — a credential / `.env` being transmitted off the machine (blocked in `enforce` mode); honeytokens fire an exfiltration alert on any match; broader exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
+| **A.8.12** | Data leakage prevention | A dedicated `critical` severity tier flags active secret **exfiltration** — a credential / `.env` being transmitted off the machine (the broad critical tier blocks in `enforce` mode, while two high-precision read-secret-and-send-it patterns sit on the always-on floor and block in either mode once the opt-in hook is installed); honeytokens fire an exfiltration alert on any match; broader exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
 | **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access | Log retention policy, tamper-evidence, time-source governance |
 | **A.8.16** | Monitoring activities | Continuous evaluation of every span against the rule set; live anomaly surfacing and alerting | SOC processes, correlation across other sources |
 | **A.8.23** | Web filtering / egress control | SSRF guard (`server/ssrf.ts`) DNS-resolves targets at call time and allows only globally-routable unicast addresses — blocking loopback, private, link-local, and `169.254.169.254` metadata; re-resolves on every request to defeat DNS rebinding | Proxy/filtering at the network layer |
@@ -115,7 +115,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 |---|---|---|---|
 | **MEASURE — MS-3.1 / MS-3.2** | AI risk tracked over time | Continuous post-deployment monitoring of agent behavior; per-session health scoring surfaces degradation and anomalous activity | Defining metrics/thresholds; periodic review cadence |
 | **MEASURE — MS-2.4** | Security & privacy assessed | Detection of credential theft, exfiltration, prompt-injection patterns in agent activity; MCP/skill scanner | Formal pre-deployment evaluation of the deployer's AI systems |
-| **MANAGE — MG-2.3** | Emergency interventions | `enforce` mode + always-on catastrophic floor (e.g. `rm -rf /`, fork bombs, piped RCE) act as a tool-call-level intervention, with the dashboard verifying the hook is registered before claiming blocking is active; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority |
+| **MANAGE — MG-2.3** | Emergency interventions | Once the opt-in, Claude-Code-only hook is installed, `enforce` mode + the always-on catastrophic floor and protected paths (e.g. `rm -rf /`, fork bombs, piped RCE) act as a best-effort, fail-open tool-call-level intervention, with the dashboard verifying the hook is registered before claiming blocking is active; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority — fail-open blocking is not one |
 | **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail (note: enforcement-hook events are buffered in memory only and do not survive a restart) | Incident log, severity classification, post-incident review |
 | **GOVERN — GV-1.x / GV-4.x** | Policies, cross-functional escalation | (Tool provides evidence inputs only) | **Deployer obligation** — policies, accountability, escalation paths are organizational, not tool features |
 
@@ -124,9 +124,9 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | Control | Name | How ClaudeSec supports it | Deployer still owns |
 |---|---|---|---|
 | **A.6.2.6** | AI system operation and monitoring | Real-time, continuous monitoring of AI agent operations with alerting on anomalies | Defining alert thresholds and remediation processes |
-| **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call sufficient for incident investigation and audit | Log retention periods and access controls per policy |
+| **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call (the spans/alerts tables) sufficient for incident investigation and audit; note the enforcement would-block feed is an in-memory ring buffer and is not durable | Log retention periods and access controls per policy |
 | **A.8.4** | Communication of incidents | Webhook delivery of HIGH-severity alerts to Slack/Discord/JSON endpoints; per-session reports | Notification thresholds, regulatory/affected-party reporting |
-| **A.9.2** | Processes for responsible use of AI systems | Enforcement layer can gate agent tool calls against an acceptable-use rule set (`monitor`/`enforce`), with the dashboard verifying the hook is registered before claiming blocking is active | The acceptable-use policy itself and human-oversight procedures |
+| **A.9.2** | Processes for responsible use of AI systems | Once installed, the opt-in, Claude-Code-only enforcement layer can gate agent tool calls against an acceptable-use rule set (`monitor`/`enforce`) on a best-effort, fail-open basis, with the dashboard verifying the hook is registered before claiming blocking is active | The acceptable-use policy itself and human-oversight procedures; not relying on fail-open gating |
 | **A.2.2 / A.3.2 / A.5.2** | AI policy, roles, impact assessment | (Deployer obligation) | **Deployer owns** the AIMS, policy, RACI, and AI impact assessments |
 
 **EU AI Act**
@@ -215,18 +215,26 @@ deployer obligation. Control identifiers are taken from the published frameworks
   `su-exec`) and publishes the host port on `127.0.0.1` only.
 - **Supply chain & CI.** GitHub Actions are **pinned by commit SHA**; `pnpm install
   --frozen-lockfile` enforces the lockfile; `pnpm audit --prod --audit-level high` gates
-  the build; CodeQL runs on every PR and weekly; Dependabot tracks npm and GitHub-Actions
-  updates weekly; CI fails if any database file is accidentally tracked.
+  the build; CodeQL runs on every PR and weekly; Dependabot tracks the project's Node/pnpm
+  dependencies and GitHub Actions weekly (via the `npm` ecosystem provider, which reads pnpm
+  lockfiles); CI fails if any database file is accidentally tracked.
 - **Detection-engine safety.** Custom rules compile with RE2 (linear-time, ReDoS-safe); a
   rule self-test gate (`tests/ruleSelfTest.ts`) enforces ReDoS heuristics, a deduplication
   check, and a false-positive gate, and runs as a `prebuild` step so a bad rule fails the
   build.
-- **Enforcement, honestly scoped.** The PreToolUse hook and MCP proxy are an
-  **agent-specific** enforcement layer, **not an OS sandbox**. Both **fail open**: any
-  error, missing config, or unparseable input results in *allow*. The hook is bypassable
-  (`CLAUDESEC_HOOKS_BYPASS=1`). A one-command, consent-gated installer
+- **Enforcement, honestly scoped.** Enforcement is **opt-in**: ClaudeSec **blocks nothing
+  until the deployer installs the hook** — until then it only observes. The PreToolUse hook
+  is **Claude-Code-only** (other agents are gated only when routed through the MCP proxy),
+  and both the hook and proxy are an **agent-specific** layer, **not an OS sandbox**. Both
+  **fail open**: any error, missing config, or unparseable input results in *allow*. The
+  hook is bypassable (`CLAUDESEC_HOOKS_BYPASS=1`). A one-command, consent-gated installer
   (`claudesec install-hook` / `uninstall-hook`) registers and removes the hook; its rules
-  snapshot is built from in-repo rule source at install time (no network). Mode precedence
+  snapshot is built from in-repo rule source at install time (no network). Two floors block
+  in **either mode** once installed: the always-on catastrophic floor (destructive
+  commands plus two high-precision secret-exfiltration patterns) and any
+  **user-defined protected paths** (file/directory targets marked in the dashboard, denied on
+  read, write, edit, and delete); everything else blocks only in `enforce` — including
+  **high/critical custom regex rules** (low/medium custom rules stay detect-only). Mode precedence
   is deterministic and documented (`enforce-config.json` → `CLAUDESEC_MODE` → `monitor`
   default) and surfaced on the dashboard, which also **verifies the hook is registered** and
   will not show a "blocking active" state unless enforce is effective *and* a hook is

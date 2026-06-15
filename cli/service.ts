@@ -62,6 +62,7 @@ function writeMacPlist(paths: ServicePaths): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>NODE_ENV</key><string>production</string>
+    <key>CLAUDESEC_PORT</key><string>${PORT}</string>
     <key>PORT</key><string>${PORT}</string>
     <key>CLAUDESEC_HOST</key><string>127.0.0.1</string>
     <key>CLAUDESEC_WATCH</key><string>1</string>
@@ -88,6 +89,7 @@ After=network.target
 Type=simple
 WorkingDirectory=${paths.dataDir}
 Environment=NODE_ENV=production
+Environment=CLAUDESEC_PORT=${PORT}
 Environment=PORT=${PORT}
 Environment=CLAUDESEC_HOST=127.0.0.1
 Environment=CLAUDESEC_WATCH=1
@@ -132,7 +134,7 @@ function linuxUninstall(): void {
 }
 
 function windowsTaskRunner(paths: ServicePaths): string {
-  return `cmd /c cd /d "${paths.dataDir}" && set NODE_ENV=production && set CLAUDESEC_HOST=127.0.0.1 && set CLAUDESEC_WATCH=1 && "${paths.nodeBin}" "${paths.tsxCli}" "${paths.serverEntry}"`;
+  return `cmd /c cd /d "${paths.dataDir}" && set NODE_ENV=production && set CLAUDESEC_PORT=${PORT} && set CLAUDESEC_HOST=127.0.0.1 && set CLAUDESEC_WATCH=1 && "${paths.nodeBin}" "${paths.tsxCli}" "${paths.serverEntry}"`;
 }
 
 function windowsInstall(paths: ServicePaths): void {

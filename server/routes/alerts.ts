@@ -4,6 +4,18 @@ import type { RouteContext } from './context.js';
 
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
 
+// SECURITY: redact sensitive matched text (API keys, tokens, passwords) before
+// it leaves the server. Show the first 6 + last 4 chars and mask the middle.
+// Shared by GET /api/alerts and GET /api/alerts/export so both stay in lockstep.
+const SENSITIVE_LABELS = /key|token|password|secret|credential|private/i;
+function redactAlert(a: any): any {
+  if (a.matchedText && SENSITIVE_LABELS.test(a.ruleLabel) && a.matchedText.length > 12) {
+    const mt = a.matchedText;
+    a.matchedText = mt.slice(0, 6) + '*'.repeat(Math.min(mt.length - 10, 20)) + mt.slice(-4);
+  }
+  return a;
+}
+
 export function registerAlertRoutes(app: Express, ctx: RouteContext): void {
   const { io } = ctx;
 
@@ -47,31 +59,15 @@ export function registerAlertRoutes(app: Express, ctx: RouteContext): void {
     }
     const total  = groupBy ? alerts.length : (db.prepare(`SELECT COUNT(*) as c FROM alerts${where}`).get(...params) as any).c;
 
-    // SECURITY: Redact sensitive matched text (API keys, tokens, passwords)
-    // Show first 6 + last 4 chars, mask the rest
-    const SENSITIVE_LABELS = /key|token|password|secret|credential|private/i;
-    const redactedAlerts = (alerts as any[]).map(a => {
-      if (a.matchedText && SENSITIVE_LABELS.test(a.ruleLabel) && a.matchedText.length > 12) {
-        const mt = a.matchedText;
-        a.matchedText = mt.slice(0, 6) + '*'.repeat(Math.min(mt.length - 10, 20)) + mt.slice(-4);
-      }
-      return a;
-    });
+    const redactedAlerts = (alerts as any[]).map(redactAlert);
 
     res.json({ alerts: redactedAlerts, total });
   });
 
   app.get('/api/alerts/export', (_req, res) => {
     const alerts = db.prepare('SELECT * FROM alerts ORDER BY id DESC').all();
-    // SECURITY: Apply same redaction as /api/alerts
-    const SENSITIVE_LABELS = /key|token|password|secret|credential|private/i;
-    const redactedAlerts = (alerts as any[]).map(a => {
-      if (a.matchedText && SENSITIVE_LABELS.test(a.ruleLabel) && a.matchedText.length > 12) {
-        const mt = a.matchedText;
-        a.matchedText = mt.slice(0, 6) + '*'.repeat(Math.min(mt.length - 10, 20)) + mt.slice(-4);
-      }
-      return a;
-    });
+    // Apply the same redaction as GET /api/alerts.
+    const redactedAlerts = (alerts as any[]).map(redactAlert);
     res.setHeader('Content-Disposition', `attachment; filename="claudesec-alerts-${Date.now()}.json"`);
     res.json({ exportedAt: new Date().toISOString(), alerts: redactedAlerts });
   });

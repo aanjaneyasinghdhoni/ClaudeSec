@@ -12,6 +12,7 @@ import RE2 from 're2';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { db, DB_PATH } from './db.js';
@@ -29,6 +30,7 @@ import { registerSearchRoutes } from './routes/search.js';
 import { registerSessionRoutes } from './routes/sessions.js';
 import { registerAlertRoutes } from './routes/alerts.js';
 import { registerRuleRoutes } from './routes/rules.js';
+import { registerProtectedPathRoutes } from './routes/protectedPaths.js';
 import { registerThresholdRuleRoutes } from './routes/thresholdRules.js';
 import { registerHoneytokenRoutes } from './routes/honeytokens.js';
 import { registerExportRoutes } from './routes/exportData.js';
@@ -43,11 +45,12 @@ import { registerEnforceRoutes } from './routes/enforce.js';
 import { registerAuditLogRoutes } from './routes/auditLog.js';
 import { registerRuleOverrideRoutes } from './routes/ruleOverrides.js';
 import { makeAuditLogger } from './auditLog.js';
-import type { CustomRule, HealthBreakdown, EnforceLogEvent } from './routes/context.js';
+import type { CustomRule, ProtectedPath, HealthBreakdown, EnforceLogEvent } from './routes/context.js';
 import { detectHarness, HARNESSES } from '../src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 import { SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from './detection.js';
+import { buildEnforcementSnapshot } from './enforcementSnapshot.js';
 import {
   normalizeAddr,
   isLoopbackAddr,
@@ -480,6 +483,168 @@ function saveCustomRules() {
 }
 
 loadCustomRules();
+
+// ---------------------------------------------------------------------------
+// Protected paths (user-defined, always-on block list)
+//
+// A protected path is a per-user floor: any agent tool call that targets it is
+// BLOCKED before it runs, in EVERY mode (a user-controlled mirror of the hook's
+// hardcoded catastrophic floor). The list is persisted server-side in
+// protected-paths.json (same mechanism as customRules) and mirrored to a file
+// the PreToolUse hook reads fresh per invocation, so changes take effect LIVE
+// with no Claude Code restart.
+//
+// SAFETY: the hook fails OPEN if the mirror file is missing/unreadable, so a
+// failed write here can never block the user.
+// ---------------------------------------------------------------------------
+
+const PROTECTED_PATHS_FILE = path.join(REPO_ROOT, 'protected-paths.json');
+let protectedPaths: ProtectedPath[] = [];
+
+function loadProtectedPaths() {
+  try {
+    if (fs.existsSync(PROTECTED_PATHS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(PROTECTED_PATHS_FILE, 'utf-8'));
+      protectedPaths = Array.isArray(raw) ? raw : [];
+    }
+  } catch { protectedPaths = []; }
+}
+
+function saveProtectedPaths() {
+  // Atomic write (temp + rename) so a crash mid-write can never leave a
+  // truncated/empty file that silently wipes the user's protected paths.
+  // Mode 0o600 — this list is private to the user. Mirrors the artifact writer.
+  const tmp = `${PROTECTED_PATHS_FILE}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(protectedPaths, null, 2), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600); // mode only applies on create; enforce on a pre-existing tmp too
+  fs.renameSync(tmp, PROTECTED_PATHS_FILE);
+  fs.chmodSync(PROTECTED_PATHS_FILE, 0o600);
+}
+
+/**
+ * Resolve ~/.claudesec/hooks — where the installed hook + its artifacts live.
+ *
+ * Intentionally duplicates cli/installHook.ts installPaths(): the server must
+ * NOT import from cli/ (keeps the runtime dependency graph clean), so the path
+ * resolution is mirrored here by hand. Honors CLAUDESEC_HOME exactly as the
+ * installer does. Keep these two in sync if the layout ever changes.
+ */
+function hookArtifactsDir(): string {
+  const homeDir = process.env.CLAUDESEC_HOME ?? path.join(os.homedir(), '.claudesec');
+  return path.join(homeDir, 'hooks');
+}
+
+/**
+ * Mirror the protected-paths list to <hooksDir>/protected-paths.json so the
+ * PreToolUse hook can enforce it. Written atomically (temp + rename) with 0600.
+ * Fail-safe: if the hooks dir doesn't exist (hook not installed) we skip the
+ * write without error — never throws, so a mirror failure can't gate anything.
+ * File shape: [{ "path": "<literal path>", "label": "<label>" }].
+ */
+function writeProtectedPathsArtifact(): void {
+  try {
+    const dir = hookArtifactsDir();
+    if (!fs.existsSync(dir)) {
+      // Hook not installed → nothing to mirror to. If the user has configured
+      // protected paths but the hook isn't installed, those paths will NOT block
+      // anything — warn loudly so the silent gap is visible (directly addresses
+      // the silent-breakage fear). Otherwise (no paths) stay quiet.
+      if (protectedPaths.length > 0) {
+        console.warn(
+          `[protected-paths] ${protectedPaths.length} protected path(s) are configured but the ` +
+          `PreToolUse hook is NOT installed (${dir} missing), so they will NOT block any tool ` +
+          `call. Run \`claudesec install-hook\` to activate them.`,
+        );
+      }
+      return;
+    }
+    const target = path.join(dir, 'protected-paths.json');
+    const payload = protectedPaths.map(p => ({ path: p.path, label: p.label }));
+    const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600); // mode only applies on create; enforce on a pre-existing tmp too
+    fs.renameSync(tmp, target);
+    fs.chmodSync(target, 0o600);
+  } catch (err) {
+    console.warn('[protected-paths] could not write protected-paths.json:', (err as Error)?.message);
+  }
+}
+
+loadProtectedPaths();
+// Mirror once at startup so the hook is in sync even if the list changed while
+// the server was down (or the artifact was deleted).
+writeProtectedPathsArtifact();
+
+// ---------------------------------------------------------------------------
+// Enforcement snapshot (built-in rules + user custom rules)
+//
+// The PreToolUse hook and the MCP-proxy sibling (enforceEval.ts) block on
+// rules-enforcement.json — a flat snapshot where high/critical rules carry
+// action:'block'. The install-time generator writes only the BUILT-IN rules; it
+// has no knowledge of the user's custom rules (those live server-side). So the
+// running server regenerates the FULL snapshot (built-ins + custom) and mirrors
+// it to both locations the readers use:
+//   • <hooksDir>/rules-enforcement.json  — the installed Claude Code hook
+//   • <repo>/rules-enforcement.json       — enforceEval / in-repo hook fallback
+// This is what makes a high/critical CUSTOM rule actually block in enforce mode,
+// instead of only being detected. Always rebuilt from scratch (never appended),
+// so the built-in floor can never be clobbered.
+//
+// SAFETY: fail-open. A failed write logs a warning and returns; the hook treats
+// a missing/unreadable snapshot as "no block rules", so a write failure can only
+// ever UNDER-block, never wrongly block.
+// ---------------------------------------------------------------------------
+
+/** Atomically write `text` to `target` with 0600. Throws on failure (caller guards). */
+function atomicWrite0600(target: string, text: string): void {
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600); // mode only applies on create; enforce on a pre-existing tmp too
+  fs.renameSync(tmp, target);
+  fs.chmodSync(target, 0o600);
+}
+
+/**
+ * Regenerate rules-enforcement.json (built-ins + custom) and mirror it to every
+ * location a reader consumes. Never throws — each destination is guarded so one
+ * unwritable path can't gate the others or the request that triggered the write.
+ */
+function writeEnforcementSnapshot(): void {
+  const snapshot = JSON.stringify(buildEnforcementSnapshot(customRules), null, 2) + '\n';
+
+  // 1. The repo-root artifact — read by enforceEval (MCP proxy) and the in-repo
+  //    hook fallback. Always writable (it is the generator's output location).
+  try {
+    atomicWrite0600(path.join(REPO_ROOT, 'rules-enforcement.json'), snapshot);
+  } catch (err) {
+    console.warn('[enforce-rules] could not write repo-root snapshot:', (err as Error)?.message);
+  }
+
+  // 2. The installed hook's copy — only if the hook is installed. Mirrors the
+  //    protected-paths warn-if-missing behaviour so a custom block rule that
+  //    silently won't fire (no hook) is visible.
+  try {
+    const dir = hookArtifactsDir();
+    if (!fs.existsSync(dir)) {
+      const blockCustom = customRules.filter(r => r.severity === 'high' || r.severity === 'critical').length;
+      if (blockCustom > 0) {
+        console.warn(
+          `[enforce-rules] ${blockCustom} high/critical custom rule(s) are configured but the ` +
+          `PreToolUse hook is NOT installed (${dir} missing), so they will NOT block any tool ` +
+          `call. Run \`claudesec install-hook\` to activate enforce-mode blocking.`,
+        );
+      }
+      return;
+    }
+    atomicWrite0600(path.join(dir, 'rules-enforcement.json'), snapshot);
+  } catch (err) {
+    console.warn('[enforce-rules] could not write hook snapshot:', (err as Error)?.message);
+  }
+}
+
+// Mirror once at startup so a custom rule added while the server was down (or an
+// artifact deleted / a fresh install that only has built-ins) is reflected.
+writeEnforcementSnapshot();
 
 // ---------------------------------------------------------------------------
 // Enforcement config (server-controlled mode + per-rule action overrides)
@@ -1280,7 +1445,10 @@ async function startServer() {
 
   // SECURITY: Restrict CORS to localhost origins only (prevents cross-site request forgery)
   const ALLOWED_ORIGINS = (process.env.CLAUDESEC_CORS_ORIGINS ?? '').split(',').filter(Boolean);
-  const PORT = Number(process.env.PORT ?? 3000);
+  // CLAUDESEC_PORT wins over the generic PORT so a colocated dev server that
+  // also reads PORT (Next.js, CRA, …) can't steer or collide with the dashboard.
+  // Same resolution order as the CLI and the enforcement hook.
+  const PORT = Number(process.env.CLAUDESEC_PORT ?? process.env.PORT ?? 3000);
   const defaultOrigins = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
   const corsOrigins = ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : defaultOrigins;
 
@@ -2119,7 +2287,6 @@ async function startServer() {
 
   // ── OTEL Collector config generator ─────────────────────────────────────
   app.get('/api/collector-config', (_req, res) => {
-    const port = process.env.PORT ?? 3000;
     const yaml = `# OpenTelemetry Collector configuration for ClaudeSec
 # Generated by ClaudeSec v${APP_VERSION} — https://github.com/aanjaneyasinghdhoni/ClaudeSec
 #
@@ -2151,7 +2318,7 @@ processors:
 
 exporters:
   otlphttp:
-    endpoint: http://host.docker.internal:${port}
+    endpoint: http://host.docker.internal:${PORT}
     tls:
       insecure: true
   debug:
@@ -2554,12 +2721,37 @@ service:
   registerRuleRoutes(app, {
     io,
     getCustomRules: () => customRules,
-    addCustomRule: (rule) => { customRules.push(rule); saveCustomRules(); },
+    addCustomRule: (rule) => {
+      customRules.push(rule);
+      saveCustomRules();
+      writeEnforcementSnapshot(); // mirror live so a high/critical rule blocks in enforce
+    },
     removeCustomRule: (id) => {
       const idx = customRules.findIndex(r => r.id === id);
       if (idx === -1) return false;
       customRules.splice(idx, 1);
       saveCustomRules();
+      writeEnforcementSnapshot();
+      return true;
+    },
+    auditLog,
+  });
+
+  // ── Protected paths (user-defined always-on block list) ───────────────────
+  registerProtectedPathRoutes(app, {
+    io,
+    getProtectedPaths: () => protectedPaths,
+    addProtectedPath: (entry) => {
+      protectedPaths.push(entry);
+      saveProtectedPaths();
+      writeProtectedPathsArtifact(); // mirror live so the hook picks it up immediately
+    },
+    removeProtectedPath: (id) => {
+      const idx = protectedPaths.findIndex(p => p.id === id);
+      if (idx === -1) return false;
+      protectedPaths.splice(idx, 1);
+      saveProtectedPaths();
+      writeProtectedPathsArtifact();
       return true;
     },
     auditLog,
@@ -3062,7 +3254,7 @@ service:
       `  ║  [ClaudeSec] WARNING: CLAUDESEC_TRUST_LOCAL=1 is ACTIVE         ║\n` +
       `  ║                                                                  ║\n` +
       `  ║  The authentication gate is DISABLED.  Every client that can    ║\n` +
-      `  ║  reach port ${String(process.env.PORT ?? 3000).padEnd(5)} is treated as fully trusted.         ║\n` +
+      `  ║  reach port ${String(PORT).padEnd(5)} is treated as fully trusted.         ║\n` +
       `  ║                                                                  ║\n` +
       `  ║  This is ONLY safe when host exposure is strictly restricted     ║\n` +
       `  ║  (e.g. Docker publishing on 127.0.0.1 only — the default        ║\n` +

@@ -96,7 +96,13 @@ const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
   { label: 'Low',      value: 'low'      },
 ];
 
-export function AlertsTab() {
+interface AlertsTabProps {
+  // Navigate to the session that produced an alert and pre-select its span.
+  // Optional with a safe no-op default so the tab still renders standalone.
+  onInvestigate?: (traceId: string, spanId: string) => void;
+}
+
+export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
   const [alerts,          setAlerts]          = useState<AlertRow[]>([]);
   const [total,           setTotal]           = useState(0);
   const [severityFilter,  setSeverityFilter]  = useState<SeverityFilter>('all');
@@ -253,8 +259,8 @@ export function AlertsTab() {
       <div className="flex items-center gap-3 px-5 py-3 shrink-0 flex-wrap" style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-border)' }}>
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-orange-400" />
-          <span className="text-sm font-bold text-slate-200">Alert Log</span>
-          <span className="text-[11px] font-mono text-slate-500">{total} total</span>
+          <span className="text-sm font-bold" style={{ color: 'var(--cs-text-base)' }}>Alert Log</span>
+          <span className="text-[11px] font-mono" style={{ color: 'var(--cs-text-faint)' }}>{total} total</span>
         </div>
 
         <div className="flex gap-1 ml-2">
@@ -350,10 +356,22 @@ export function AlertsTab() {
                 const isTriaging  = triaging.has(alert.id);
                 const hitCount    = alert.count ?? 1;
                 const judgeState  = judgeStates[alert.id];
+                // A row is investigable when we know its span/trace and a handler
+                // is wired. Clicking jumps to that session's timeline with the span
+                // pre-selected — the triage cell stops propagation so its buttons
+                // don't trigger navigation.
+                const canInvestigate = !!onInvestigate && !!alert.spanId && !!alert.traceId;
                 return (
                   <React.Fragment key={alert.id}>
                   <tr
-                    className={`transition-colors ${
+                    onClick={canInvestigate ? () => onInvestigate!(alert.traceId, alert.spanId) : undefined}
+                    role={canInvestigate ? 'button' : undefined}
+                    tabIndex={canInvestigate ? 0 : undefined}
+                    onKeyDown={canInvestigate ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onInvestigate!(alert.traceId, alert.spanId); }
+                    } : undefined}
+                    title={canInvestigate ? 'Investigate — jump to this span in the session timeline' : undefined}
+                    className={`transition-colors ${canInvestigate ? 'cursor-pointer' : ''} ${
                       pend || isDismissed
                         ? 'opacity-40 bg-slate-900/30'
                         : 'hover:bg-slate-800/30'
@@ -409,7 +427,7 @@ export function AlertsTab() {
                         <span className="text-slate-700">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5" onClick={e => e.stopPropagation()}>
                       {pend ? (
                         // Undo window: confirm the action took, give a way back.
                         <div className="flex items-center gap-2">

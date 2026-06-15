@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { ShieldCheck, ShieldAlert, Ban, Eye, Activity, AlertTriangle, RefreshCw } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, Ban, Eye, Activity, AlertTriangle, RefreshCw, Copy, Check } from 'lucide-react';
 import { socket } from './socket';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -70,6 +70,38 @@ function relTime(ts: number): string {
 }
 
 const LOG_LIMIT = 500;
+
+// The one command that registers the PreToolUse enforcement hook in Claude Code.
+// Kept as a constant so the copy button and the inline prose can't drift apart.
+const HOOK_INSTALL_CMD = 'node cli/init.mjs install-hook';
+
+// A small inline "command + copy" affordance, matching the copy-button pattern
+// used elsewhere (ProcessesTab / SettingsTab): navigator.clipboard + a 2s tick.
+function CopyableCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard may be blocked (insecure context) — ignore */ }
+  };
+  return (
+    <span className="inline-flex items-center gap-1.5 align-middle">
+      <code className="font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)' }}>{command}</code>
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="shrink-0 inline-flex items-center justify-center p-1 rounded transition-colors hover:opacity-80"
+        style={{ color: copied ? '#22c55e' : 'var(--cs-text-muted)', border: '1px solid var(--cs-border)' }}
+        title={copied ? 'Copied' : 'Copy command'}
+        aria-label={copied ? 'Command copied' : 'Copy command to clipboard'}
+      >
+        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+      </button>
+    </span>
+  );
+}
 
 export function EnforceTab() {
   const [config, setConfig]   = useState<EnforceConfig | null>(null);
@@ -209,6 +241,14 @@ export function EnforceTab() {
           <span className="text-[11px] font-mono px-2 py-0.5 rounded" style={{ color: 'var(--cs-text-faint)', background: 'var(--cs-bg-elevated)' }}>
             PreToolUse hook
           </span>
+          {/* Install command, copyable, always visible — installing the hook is the
+              first thing a new operator needs and shouldn't be copy-paste prose. */}
+          {hookInstalled !== 'yes' && (
+            <div className="ml-auto flex items-center gap-2 text-[11px]" style={{ color: 'var(--cs-text-muted)' }}>
+              <span className="hidden sm:inline">Install the hook:</span>
+              <CopyableCommand command={HOOK_INSTALL_CMD} />
+            </div>
+          )}
         </div>
 
         {/* Mode banner + toggle. Colour treatment follows the EFFECTIVE state, not
@@ -249,7 +289,7 @@ export function EnforceTab() {
               <p className="text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
                 {effEnforce
                   ? 'The PreToolUse hook denies Bash / Edit / Write / MultiEdit calls that match a high-severity rule. The always-on catastrophic floor (rm -rf /, fork bombs, reverse shells, etc.) blocks in either mode. Fail-open: if the hook errors, the call is allowed through.'
-                  : 'The hook records "would-block" events for high-severity matches but allows every call. Flip to Enforce to actually deny them. The catastrophic floor still blocks the 6 most dangerous commands regardless of mode.'}
+                  : 'The hook records "would-block" events for high-severity matches but allows every call. Flip to Enforce to actually deny them. The catastrophic floor (the most dangerous commands) and any protected paths still block regardless of mode.'}
               </p>
 
               {/* The toggle shows the CONFIGURED mode; when a precedence layer
@@ -316,20 +356,21 @@ export function EnforceTab() {
               blocking), amber in monitor. */}
           {hookInstalled !== null && hookInstalled === 'no' && (
             <div
-              className="rounded-xl p-3 flex items-start gap-2.5"
+              className="rounded-xl p-3.5 flex items-start gap-2.5"
               style={{
-                background: effEnforce ? 'rgba(244,63,94,0.08)' : 'rgba(255,178,36,0.08)',
-                border: `1px solid ${effEnforce ? 'rgba(244,63,94,0.35)' : 'rgba(255,178,36,0.35)'}`,
+                background: 'rgba(244,63,94,0.12)',
+                border: '1px solid rgba(244,63,94,0.45)',
               }}
             >
-              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" style={{ color: effEnforce ? '#ff3b5c' : '#ffb224' }} />
+              <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" style={{ color: '#ff3b5c' }} />
               <div className="min-w-0 flex-1 text-xs leading-relaxed" style={{ color: 'var(--cs-text-muted)' }}>
-                <span className="font-semibold" style={{ color: effEnforce ? '#ff6b81' : '#ffb224' }}>
-                  No Claude Code hook is registered.
-                </span>{' '}
-                The dashboard cannot block or observe agent tool calls through the PreToolUse hook —
-                events in the feed below, if any, do not prove blocking works. Register it by running{' '}
-                <code className="font-mono px-1 py-0.5 rounded" style={{ background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)' }}>node cli/init.mjs install-hook</code>{' '}
+                <span className="block text-sm font-bold mb-1" style={{ color: '#ff6b81' }}>
+                  Observing only — nothing is being blocked before it runs.
+                </span>
+                No valid Claude Code PreToolUse hook is registered, so the dashboard cannot block or
+                observe agent tool calls through the hook — events in the feed below, if any, do not prove
+                blocking works. Install the enforcement hook:{' '}
+                <CopyableCommand command={HOOK_INSTALL_CMD} />{' '}
                 from the ClaudeSec directory, then restart Claude Code.
               </div>
             </div>

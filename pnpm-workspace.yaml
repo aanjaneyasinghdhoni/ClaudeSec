@@ -5,3 +5,9 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
   re2: true
+
+# Force-patch transitive deps to clear known advisories (pnpm reads overrides here
+# in 11.x, not from package.json). esbuild <0.28.1 (GHSA-gv7w-rqvm-qjhr) reaches us
+# only through vite/tsx/tailwind; 0.28.1 is a drop-in patch.
+overrides:
+  esbuild: ">=0.28.1"

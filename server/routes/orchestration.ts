@@ -1,22 +1,8 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
-import type { Severity } from '../../src/shared/types.js';
+import type { SpanRecord } from '../types.js';
 import { HARNESSES } from '../../src/harnesses.js';
 import type { RouteContext } from './context.js';
-
-interface SpanRecord {
-  spanId: string;
-  traceId: string;
-  parentId: string;
-  name: string;
-  protocol: string;
-  reason: string;
-  severity: Severity;
-  harness: string;
-  attributes: string;
-  startNano: string;
-  endNano: string;
-}
 
 // Per-harness rollup over the FULL table — counts must stay accurate as the
 // span table grows, so they come straight from SQL (the (harness, severity)

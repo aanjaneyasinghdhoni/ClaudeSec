@@ -50,7 +50,8 @@
           "security/rules",
           "security/enforcement",
           "security/mcp-scan",
-          "security/suppressions"
+          "security/suppressions",
+          "security/owasp-agentic"
         ]
       },
       {

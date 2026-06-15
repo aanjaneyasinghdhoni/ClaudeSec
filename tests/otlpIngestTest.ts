@@ -159,6 +159,9 @@ async function main(): Promise<void> {
       env: {
         ...process.env,
         CLAUDESEC_DB: DB_PATH,
+        // Pin both port vars — CLAUDESEC_PORT outranks PORT, so an inherited
+        // value from the host shell must not steer the test server elsewhere.
+        CLAUDESEC_PORT: String(PORT),
         PORT: String(PORT),
         CLAUDESEC_HOST: '127.0.0.1',
         CLAUDESEC_WATCH: '0',

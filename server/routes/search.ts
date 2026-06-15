@@ -1,21 +1,7 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
-import type { Severity } from '../../src/shared/types.js';
+import type { SpanRecord } from '../types.js';
 import type { RouteContext } from './context.js';
-
-interface SpanRecord {
-  spanId: string;
-  traceId: string;
-  parentId: string;
-  name: string;
-  protocol: string;
-  reason: string;
-  severity: Severity;
-  harness: string;
-  attributes: string;
-  startNano: string;
-  endNano: string;
-}
 
 // ── Full-text search (s54) ───────────────────────────────────────────────
 

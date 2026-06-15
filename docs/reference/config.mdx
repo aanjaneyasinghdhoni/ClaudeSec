@@ -35,6 +35,9 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 | `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
 | `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (fail-open if absent) |
 | `CLAUDESEC_ENFORCE_RULES` | `rules-enforcement.json` | Path to the compiled block-rule snapshot the hook and MCP proxy evaluate against |
+| `CLAUDESEC_PROTECTED_PATHS` | `<hooksDir>/protected-paths.json` | Path to the protected-paths list the hook reads (fail-open if absent) |
+| `CLAUDESEC_HOME` | `~/.claudesec` | ClaudeSec home directory where the installed hook and its rule/path artifacts live |
+| `CLAUDESEC_CLAUDE_SETTINGS` | `~/.claude/settings.json` | Path to the Claude Code settings file `claudesec install-hook` merges the PreToolUse entries into |
 
 ## MCP / skill scanner
 
@@ -75,6 +78,7 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 | `CLAUDESEC_RATE_LIMIT_BURST` | `200` | Token-bucket burst capacity |
 | `CLAUDESEC_MAX_SPANS_BATCH` | `500` | Max spans allowed per OTLP batch |
 | `CLAUDESEC_GRAPH_LIMIT` | `2000` | How many of the most-recent spans the live graph renders. Older spans are **not** deleted — they stay available via Search and Sessions. See [Data retention](/explanation/retention) |
+| `CLAUDESEC_ORCH_LIMIT` | `20000` | How many of the most-recent spans the orchestration (spawn-tree) view queries |
 
 ## Alerts & integrations
 

@@ -1,7 +1,7 @@
 /**
  * tests/catastrophic-parity.test.ts
  *
- * Security control: assert that the catastrophic-6 floor patterns are identical
+ * Security control: assert that the catastrophic floor patterns are identical
  * across every enforcement source:
  *   1. server/enforceEval.ts                 (CATASTROPHIC export)   — tracked
  *   2. cli/hooks/claudesec-enforce.cjs       (CATASTROPHIC array)    — tracked, ships
@@ -106,7 +106,7 @@ const OPTIONAL_SOURCES: { name: string; file: string }[] = [
   },
 ];
 
-const EXPECTED_COUNT = 6;
+const EXPECTED_COUNT = 8;
 
 // ---------------------------------------------------------------------------
 // Compare

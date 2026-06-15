@@ -9,13 +9,13 @@
  * module is the ESM/TypeScript sibling that the proxy imports.
  *
  * Parity with the hook:
- *   • Catastrophic-6 floor patterns (copied verbatim).
+ *   • Catastrophic floor patterns (copied verbatim).
  *   • Effective-block rule compilation from rules-enforcement.json, with per-rule
  *     action overrides from enforce-config.json (alert↔block), fail-open.
  *   • resolveMode(): enforce-config.json `mode` → CLAUDESEC_MODE env → 'monitor'.
  *   • Fail-OPEN everywhere: any read/parse/compile error degrades to "allow".
  *
- * DELIBERATE DIVERGENCE (per the MCP-proxy spec): the hook's catastrophic-6
+ * DELIBERATE DIVERGENCE (per the MCP-proxy spec): the hook's catastrophic
  * floor blocks ALWAYS (even in monitor mode). For the proxy, catastrophic is a
  * TRIGGER that is still gated by MODE — block only in `enforce`; in `monitor`
  * it is logged as a would-block and forwarded. `evaluate()` therefore returns a
@@ -50,7 +50,7 @@ export interface EvalResult {
   kind: 'catastrophic' | 'rule' | null;
 }
 
-// ── Catastrophic-6 floor (copied verbatim from block-catastrophic.cjs /
+// ── Catastrophic floor (copied verbatim from block-catastrophic.cjs /
 //    claudesec-enforce.cjs). These are Bash-shaped patterns; for MCP tool calls
 //    we test them against the full matchable text. ──────────────────────────
 export const CATASTROPHIC: { re: RegExp; why: string }[] = [
@@ -60,6 +60,8 @@ export const CATASTROPHIC: { re: RegExp; why: string }[] = [
   { re: /\b(?:ba)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/tcp\//i, why: 'reverse shell via /dev/tcp' },
   { re: /\bmkfs\.[a-z0-9]+\b/i, why: 'formatting a filesystem (mkfs)' },
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|disk|hd|mmcblk)/i, why: 'overwriting a raw disk device (dd of=/dev/...)' },
+  { re: /(?:cat|base64|tac|xxd|od|head|tail|gpg)\b[^\n|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))[^\n|]*\|[^\n;&]*\b(?:curl|wget|nc|ncat|telnet)\b/i, why: 'reading a secret and piping it into a network tool' },
+  { re: /\b(?:curl|wget)\b[^\n;&|]*(?:-d|--data|--data-binary|--data-raw|-F|--form|-T|--upload-file)[ =]@?[^\n;&|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))/i, why: 'uploading a secret file over the network (curl/wget)' },
 ];
 
 /** Resolve the rules-enforcement.json snapshot path (override-aware). */

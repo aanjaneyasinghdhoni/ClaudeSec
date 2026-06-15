@@ -28,16 +28,51 @@ interface FileAgg {
   branch: string;
 }
 
-const getAllSpans = db.prepare(`SELECT * FROM spans`);
-
 const READ_TOOLS = new Set(['Read', 'file_read', 'Glob', 'cat', 'head', 'tail', 'Grep']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'file_edit', 'touch', 'mv', 'cp']);
+
+// Push the row filter into SQLite so we never load and JSON.parse the whole
+// spans table in Node. A row can only become a file-access entry if its tool
+// resolves to a read/write tool AND it carries a path-like attribute — so we
+// let SQLite (via JSON1's json_extract) discard everything else up front.
+//
+// The WHERE is a deliberate *superset* of the in-Node predicate in
+// aggregateFiles(): the tool arm keeps any row whose resolved tool name
+// (attrs.tool ?? attrs['gen_ai.tool.name'] ?? name) is a known read/write tool,
+// and the path arm keeps only rows carrying one of the path attributes the
+// aggregator reads. Final tool resolution, path normalization and aggregation
+// still run in Node against the parsed rows, so the `??`/typeof-string
+// semantics — and therefore the response — stay byte-for-byte identical.
+const FILE_TOOLS_ARR = [...READ_TOOLS, ...WRITE_TOOLS];
+const FILE_TOOL_PLACEHOLDERS = FILE_TOOLS_ARR.map(() => '?').join(', ');
+const getFileSpans = db.prepare(`
+  SELECT spanId, traceId, name, severity, harness, attributes
+  FROM spans
+  WHERE json_valid(attributes)
+    AND (
+      json_extract(attributes, '$.tool')               IN (${FILE_TOOL_PLACEHOLDERS})
+      OR json_extract(attributes, '$."gen_ai.tool.name"') IN (${FILE_TOOL_PLACEHOLDERS})
+      OR (
+        json_extract(attributes, '$.tool')               IS NULL
+        AND json_extract(attributes, '$."gen_ai.tool.name"') IS NULL
+        AND name IN (${FILE_TOOL_PLACEHOLDERS})
+      )
+    )
+    AND (
+      json_extract(attributes, '$.file_path')  IS NOT NULL
+      OR json_extract(attributes, '$.path')      IS NOT NULL
+      OR json_extract(attributes, '$.pattern')   IS NOT NULL
+      OR json_extract(attributes, '$."tool.input"') IS NOT NULL
+    )
+`);
 const SENSITIVE_PATTERNS = [/\.env\b/, /\.ssh\//, /\/etc\/(passwd|shadow|sudoers|hosts)/, /credentials/, /\.pem$/, /id_rsa/];
 
 // Build the per-file aggregation from every span that touched a file. The cwd /
 // git.branch attributes are stamped by the transcript watcher, so we can group a
 // file under the repo/folder it was accessed from.
-function aggregateFiles(spans: SpanRecord[]): Map<string, FileAgg> {
+type FileSpanRow = Pick<SpanRecord, 'name' | 'severity' | 'harness' | 'attributes'>;
+
+function aggregateFiles(spans: FileSpanRow[]): Map<string, FileAgg> {
   const fileMap = new Map<string, FileAgg>();
 
   for (const span of spans) {
@@ -97,8 +132,13 @@ export function registerFileAccessRoutes(app: Express, _ctx: RouteContext): void
   // The flat response always reports `total` so the client can page through every
   // file (no hard cap — the maintainer wants to see all of them).
   app.get('/api/file-access', (req, res) => {
-    const allSpans = getAllSpans.all() as SpanRecord[];
-    const fileMap = aggregateFiles(allSpans);
+    // Only file-touching rows are loaded and JSON.parsed (SQL-side prefilter),
+    // not the full spans table. The args feed the three IN(...) placeholder
+    // groups in getFileSpans (tool, gen_ai.tool.name, name), in order.
+    const fileSpans = getFileSpans.all(
+      ...FILE_TOOLS_ARR, ...FILE_TOOLS_ARR, ...FILE_TOOLS_ARR,
+    ) as Pick<SpanRecord, 'spanId' | 'traceId' | 'name' | 'severity' | 'harness' | 'attributes'>[];
+    const fileMap = aggregateFiles(fileSpans);
 
     const allFiles = [...fileMap.values()]
       .map(f => ({
