@@ -33,7 +33,7 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CLAUDESEC_MODE` | `monitor` | Hook mode: `monitor` logs would-blocks (default), `enforce` blocks high-severity tool calls |
-| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
+| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch). Best-effort recorded in the enforcement feed so the bypass is auditable, not silent |
 | `CLAUDESEC_ALLOW_LOCAL_FETCH` | — | Set `1` to let a `WebFetch` reach loopback / private (RFC1918) ranges in `enforce` mode (e.g. a local dev server). Cloud-metadata and link-local addresses stay blocked regardless. See [SSRF on fetch](/security/enforcement#ssrf-on-fetch) |
 | `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (fail-open if absent) |
 | `CLAUDESEC_ENFORCE_RULES` | `rules-enforcement.json` | Path to the compiled block-rule snapshot the hook and MCP proxy evaluate against |

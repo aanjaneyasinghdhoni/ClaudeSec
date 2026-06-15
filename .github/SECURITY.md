@@ -108,7 +108,10 @@ individual developer workstations or internal team networks behind a VPN.
 - Webhook delivery is best-effort. Do not rely on it for critical alerting without a
   dedicated incident-management system.
 - Enforcement (the PreToolUse hook and MCP proxy) is opt-in, Claude-Code-specific (the hook),
-  and fail-open. It can be bypassed with `CLAUDESEC_HOOKS_BYPASS=1`. The MCP proxy applies the
+  and fail-open. It can be bypassed with `CLAUDESEC_HOOKS_BYPASS=1`; that bypass is now recorded
+  (best-effort) in the tamper-evident enforcement feed, so accidental and operational bypasses are
+  visible to an operator — though a same-UID attacker who can set the variable can also tamper
+  further. The MCP proxy applies the
   *same* floors as the hook (a parity test pins their verdicts), including the SSRF-on-fetch floor
   for fetch-shaped MCP tools, so a non-Claude-Code agent routed through the proxy is also blocked
   from internal/metadata fetches.

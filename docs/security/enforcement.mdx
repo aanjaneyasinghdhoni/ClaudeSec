@@ -203,7 +203,9 @@ Need to run something the hook would block, just once? Set the escape-hatch vari
 CLAUDESEC_HOOKS_BYPASS=1 claude ...
 ```
 
-With it set, the hook allows everything and exits immediately. Because enforcement is a Claude-Code hook, removing or not registering the hook also disables it entirely — which is exactly why the honest framing above matters: enforcement raises the bar for an agent, it does not sandbox the host.
+With it set, the hook allows everything and exits — but it is no longer silent. Before allowing the call, the hook records a **bypass event** in the enforcement feed (label `Enforcement bypassed (CLAUDESEC_HOOKS_BYPASS=1)`, with the tool name and a short summary of what was allowed), so an operator or incident responder can see that enforcement was disabled and for what. This recording is best-effort and fail-open: if the dashboard is unreachable the call is still allowed, never blocked or hung.
+
+This makes accidental and operational bypasses auditable. It is **not** a tamper barrier: a same-UID attacker who can set `CLAUDESEC_HOOKS_BYPASS=1` can also unregister the hook or tamper further. Because enforcement is a Claude-Code hook, removing or not registering the hook also disables it entirely — which is exactly why the honest framing above matters: enforcement raises the bar for an agent, it does not sandbox the host.
 
 <Warning>
   `CLAUDESEC_HOOKS_BYPASS=1` is checked by the hook before any rule evaluation — including the catastrophic floor. Any subprocess spawned by an agent that inherits this variable will also bypass all enforcement. If you set it in a shell session where an agent is running, every tool call in that session is allowed through, regardless of mode or rule severity. Treat it accordingly: use it for a single targeted invocation, then unset it.

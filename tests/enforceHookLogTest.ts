@@ -15,6 +15,10 @@
  *   2. Enforce rule block -> exit 2 AND a POST with blocked:true.
  *   3. The same rule in MONITOR mode -> exit 0 (allowed) AND a POST with
  *      blocked:false (a would-block).
+ *   4. CLAUDESEC_HOOKS_BYPASS=1 -> exit 0 (allowed) AND a POST recording the
+ *      bypass (blocked:false, wouldBlock:false, a bypass label, and a command
+ *      summary naming the tool that was allowed) — so the escape hatch is
+ *      auditable rather than silent.
  *
  * The block-rule trigger is a high-severity SQL-destruction rule that is NOT one
  * of the six catastrophic patterns; its keywords are assembled at runtime so the
@@ -218,6 +222,36 @@ async function main(): Promise<void> {
       check('case3 monitor would-block: blocked === false', () => assert.strictEqual(b?.blocked, false));
       check('case3 monitor would-block: wouldBlock !== false', () =>
         assert.notStrictEqual(b?.wouldBlock, false));
+    }
+
+    mock.bodies.length = 0;
+
+    // ── Case 4: CLAUDESEC_HOOKS_BYPASS=1 → allowed, but RECORDED ──────────────
+    // The bypass allows the call (exit 0) yet still flushes an event so the
+    // escape hatch is visible in the tamper-evident feed. We feed a catastrophic
+    // command to prove that even a normally-floored call is allowed under bypass,
+    // and that the recorded summary names the tool + target that slipped through.
+    {
+      const stdin = JSON.stringify({ tool_name: 'Bash', tool_input: { command: CATASTROPHIC_CMD } });
+      const { code } = await runHook(stdin, {
+        CLAUDESEC_PORT: String(mock.port),
+        CLAUDESEC_HOOKS_BYPASS: '1',
+        CLAUDESEC_ENFORCE_CONFIG: monitorCfg,
+        CLAUDESEC_ENFORCE_RULES: SNAPSHOT,
+      });
+      await waitForBody(mock.bodies);
+      check('case4 bypass: exit code is 0 (allowed)', () => assert.strictEqual(code, 0));
+      const b = mock.bodies[0];
+      check('case4 bypass: posted an event', () => assert.ok(b, 'no POST captured'));
+      check('case4 bypass: blocked === false', () => assert.strictEqual(b?.blocked, false));
+      check('case4 bypass: wouldBlock === false', () => assert.strictEqual(b?.wouldBlock, false));
+      check('case4 bypass: label names the bypass', () =>
+        assert.ok(typeof b?.label === 'string' && /bypass/i.test(b.label), `label was ${String(b?.label)}`));
+      check('case4 bypass: command summary names the tool', () =>
+        assert.ok(typeof b?.command === 'string' && b.command.includes('Bash'),
+          `command was ${String(b?.command)}`));
+      check('case4 bypass: non-empty severity', () =>
+        assert.ok(typeof b?.severity === 'string' && b.severity.length > 0));
     }
   } finally {
     mock.close();

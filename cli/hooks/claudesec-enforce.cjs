@@ -762,9 +762,57 @@ function redact(text) {
   return t;
 }
 
+/**
+ * Best-effort extract of a tool name + a short target summary from the raw hook
+ * stdin, WITHOUT running the rule engine. Used only by the bypass path, which
+ * runs before the main parse. Fail-OPEN on anything malformed: a bad payload
+ * yields empty strings, never an exception — the bypass must allow regardless.
+ */
+function summarizeForBypass(input) {
+  let toolName = '';
+  let target = '';
+  try {
+    const data = JSON.parse(input || '{}');
+    toolName = String((data && data.tool_name) || '');
+    const ti = (data && data.tool_input) || {};
+    // Whatever best identifies WHAT was allowed: a Bash command, a fetch URL,
+    // or the file the call targets. First non-empty wins.
+    target = String(
+      ti.command || ti.url || ti.file_path || ti.path || ti.notebook_path || '',
+    );
+  } catch (_) {
+    // malformed stdin → leave both empty (fail-open), the bypass still logs+allows
+  }
+  return { toolName, target };
+}
+
 function run(input) {
-  // 1. Bypass.
-  if (process.env.CLAUDESEC_HOOKS_BYPASS === '1') return process.exit(0);
+  // 1. Bypass. An explicit escape hatch (CLAUDESEC_HOOKS_BYPASS=1) allows every
+  // tool call — but I record it FIRST so the bypass leaves a trace in the
+  // tamper-evident enforce feed. An investigator must be able to see that
+  // enforcement was disabled and WHAT was allowed under it. Best-effort and
+  // fail-open: postMonitorLog guarantees the callback fires exactly once (on
+  // response/error/timeout), so a down dashboard can never make the bypass hang
+  // or crash the tool pipeline — we still exit 0.
+  if (process.env.CLAUDESEC_HOOKS_BYPASS === '1') {
+    const { toolName, target } = summarizeForBypass(input);
+    // Mirror the shape of every other enforce-feed event; the server adds `ts`,
+    // scrubs, and persists with the hash chain. Embed the tool name in the
+    // command summary (the feed has no dedicated tool field) so the entry reads
+    // as "<Tool>: <what was allowed>".
+    const summary = redact([toolName, target].filter(Boolean).join(': ')) || '(no tool input)';
+    return postMonitorLog(
+      {
+        mode: resolveMode(),
+        label: 'Enforcement bypassed (CLAUDESEC_HOOKS_BYPASS=1)',
+        severity: 'high',
+        command: summary,
+        blocked: false,
+        wouldBlock: false,
+      },
+      () => process.exit(0), // exit only AFTER the POST flushes (or its backstop fires)
+    );
+  }
 
   let data;
   try {
