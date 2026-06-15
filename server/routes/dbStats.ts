@@ -47,12 +47,19 @@ export function registerDbStatsRoutes(app: Express, ctx: RouteContext): void {
 
   app.post('/api/db-stats/retention', (req, res) => {
     const { maxSpans, retentionDays } = req.body as { maxSpans?: number; retentionDays?: number };
-    if (maxSpans !== undefined) {
-      if (maxSpans < 100) return res.status(400).json({ error: 'maxSpans must be >= 100' }) as any;
+    // Reject non-finite (NaN from a cleared field serializes to JSON null, which
+    // arrives as `null` not `undefined`) and out-of-range values with a 400, so a
+    // bad input can never be silently skipped while the UI flashes "Saved".
+    if (maxSpans !== undefined && maxSpans !== null) {
+      if (!Number.isFinite(maxSpans) || maxSpans < 100) {
+        return res.status(400).json({ error: 'maxSpans must be a finite number >= 100' }) as any;
+      }
       setConfig.run('retention.max_spans', String(maxSpans));
     }
-    if (retentionDays !== undefined) {
-      if (retentionDays < 1) return res.status(400).json({ error: 'retentionDays must be >= 1' }) as any;
+    if (retentionDays !== undefined && retentionDays !== null) {
+      if (!Number.isFinite(retentionDays) || retentionDays < 1) {
+        return res.status(400).json({ error: 'retentionDays must be a finite number >= 1' }) as any;
+      }
       setConfig.run('retention.days', String(retentionDays));
     }
     auditLog?.(req, 'retention.set', 'retention', { maxSpans: getMaxSpans(), retentionDays: getRetentionDays() });

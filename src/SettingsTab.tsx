@@ -37,7 +37,7 @@ interface RateLimitInfo {
 interface WebhookConfig {
   configured: boolean;
   urlPreview: string | null;
-  threshold: 'low' | 'medium' | 'high';
+  threshold: 'low' | 'medium' | 'high' | 'critical';
   envOverride: boolean;
 }
 
@@ -152,10 +152,17 @@ function SaveButton({ onClick, disabled, label = 'Save' }: SaveButtonProps) {
 
   const handle = async () => {
     setBusy(true);
-    await onClick();
-    setBusy(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    try {
+      // Only show "Saved" if onClick resolves. A validation/network failure
+      // rejects, so the success state never flashes on a save that didn't happen.
+      await onClick();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      /* caller surfaces the error inline; don't claim success */
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -204,6 +211,18 @@ export function RetentionSection() {
 
   const save = useCallback(async () => {
     setError('');
+    // Clearing a number input yields NaN; JSON.stringify(NaN) → null, which the
+    // server treats as "field absent" and skips — so the save would no-op while
+    // the button still flashed "Saved". Validate up front and surface the problem
+    // inline instead of lying. Throwing also stops SaveButton showing "Saved".
+    if (!Number.isFinite(maxSpans) || maxSpans < 100) {
+      setError('Max Spans must be a number ≥ 100.');
+      throw new Error('invalid maxSpans');
+    }
+    if (!Number.isFinite(retentionDays) || retentionDays < 1) {
+      setError('Retention Days must be a number ≥ 1.');
+      throw new Error('invalid retentionDays');
+    }
     const res = await fetch('/api/db-stats/retention', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

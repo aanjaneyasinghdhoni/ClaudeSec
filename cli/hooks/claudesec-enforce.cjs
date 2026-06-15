@@ -273,7 +273,12 @@ function hookArtifactsDir() {
  *      directory the agent ran in, so the dashboard could read 'monitor' while the
  *      installed hook ran 'enforce'. The global file is the one source of truth.
  *   3. Beside THIS hook (__dirname) — Docker/portable fallback, only when the
- *      global file is absent (a hook shipped self-contained with no ~/.claudesec).
+ *      global file is absent AND this hook is not the global install
+ *      (__dirname !== the global hooks dir). The installed hook lives in the
+ *      global dir, so there the beside-file IS the global file; gating on the
+ *      mismatch keeps a custom/Docker copy in parity with the server (which has
+ *      no beside-fallback) while still letting a self-contained Docker hook with
+ *      no ~/.claudesec read its bundled config.
  * When nothing readable exists, return the global path so the absent-file read
  * fails cleanly and resolveMode falls through to CLAUDESEC_MODE → 'monitor'.
  */
@@ -283,11 +288,22 @@ function resolveConfigPath() {
     return path.resolve(process.env.CLAUDESEC_ENFORCE_CONFIG);
   }
   // 2. User-global control plane (primary).
-  const global = path.join(hookArtifactsDir(), 'enforce-config.json');
+  const globalDir = hookArtifactsDir();
+  const global = path.join(globalDir, 'enforce-config.json');
   if (fs.existsSync(global)) return global;
-  // 3. Docker/portable fallback — beside this hook, only when the global is absent.
-  const beside = path.join(__dirname, 'enforce-config.json');
-  if (fs.existsSync(beside)) return beside;
+  // 3. Docker/portable fallback — beside this hook, only when the global is absent
+  //    AND this hook is NOT the global install. The installed hook lives IN the
+  //    global hooks dir, so __dirname === globalDir there and a beside-file is the
+  //    same global file (no divergence). But a custom/Docker copy or a hook run
+  //    straight from cli/hooks/ has a different __dirname — gating on the mismatch
+  //    keeps the server (which has no beside-fallback) and the hook resolving the
+  //    SAME file, while preserving Docker behavior (no global dir → mismatch → use
+  //    the bundled beside-file).
+  const here = path.resolve(__dirname);
+  if (here !== path.resolve(globalDir)) {
+    const beside = path.join(here, 'enforce-config.json');
+    if (fs.existsSync(beside)) return beside;
+  }
   return global;
 }
 

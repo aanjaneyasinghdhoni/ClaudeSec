@@ -227,6 +227,116 @@ async function runCases(): Promise<void> {
 
 await runCases();
 
+// ───────────────────────────────────────────────────────────────────────────
+// Beside-the-hook fallback parity (the asymmetric-fallback gap).
+//
+// The hook used to ALWAYS check path.join(__dirname, 'enforce-config.json') as a
+// step-3 fallback, while the server never reads a beside-file. On a custom/Docker
+// copy or a hook run straight from cli/hooks/ (where __dirname is NOT the global
+// hooks dir), a stray enforce-config.json dropped beside the hook would steer the
+// hook while the server ignored it — the exact "dashboard lies" divergence.
+//
+// This case copies the REAL hook to a non-global temp dir, drops a config BESIDE
+// it, AND provides a global file with the OPPOSITE mode. Because the global file
+// exists, BOTH sides resolve it (the hook's step-2 short-circuits before the
+// beside-fallback), so they must agree and the beside-file must be ignored.
+// Before the fix the hook also read the beside-file unconditionally, but with the
+// global present step 2 already wins, so this case specifically locks the
+// invariant: a stray beside-config next to a NON-global hook copy can never
+// override the global control plane the dashboard reads.
+//
+// (The Docker self-contained case — no global dir at all — is INTENTIONALLY left
+//  to the beside-fallback: there is no global control plane for the server to
+//  read either, so that path is out of the parity matrix by design.)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Copy the tracked hook into a fresh non-global dir and drop a beside-config. */
+function makeHookCopyWithBesideConfig(besideMode: Mode): string {
+  const dir = fs.mkdtempSync(path.join(SANDBOX, 'hookcopy-'));
+  fs.copyFileSync(HOOK, path.join(dir, 'claudesec-enforce.cjs'));
+  fs.writeFileSync(path.join(dir, 'enforce-config.json'), JSON.stringify({ mode: besideMode, overrides: {} }));
+  return dir;
+}
+
+/** Spawn a SPECIFIC hook file (a copy) and infer its effective mode from exit code. */
+function hookCopyEffectiveMode(hookPath: string, env: Record<string, string | undefined>, cwd: string): Promise<Mode> {
+  const stdin = JSON.stringify({ tool_name: 'Bash', tool_input: { command: PROBE_COMMAND } });
+  return new Promise((resolve, reject) => {
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnv.CLAUDESEC_MODE;
+    delete childEnv.CLAUDESEC_HOOKS_BYPASS;
+    delete childEnv.CLAUDESEC_ENFORCE_CONFIG;
+    delete childEnv.CLAUDESEC_HOME;
+    childEnv.CLAUDESEC_ENFORCE_RULES = RULES_SNAPSHOT;
+    childEnv.CLAUDESEC_PORT = '9';
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete childEnv[k];
+      else childEnv[k] = v;
+    }
+    const child = spawn(process.execPath, [hookPath], { cwd, env: childEnv });
+    let settled = false;
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } if (!settled) { settled = true; reject(new Error('hook timed out')); } }, 4000);
+    timer.unref?.();
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (code === 2) resolve('enforce');
+      else if (code === 0) resolve('monitor');
+      else reject(new Error(`unexpected hook exit code ${code}`));
+    });
+    child.on('error', (e) => { clearTimeout(timer); if (!settled) { settled = true; reject(e); } });
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+
+async function runBesideCases(): Promise<void> {
+  const neutralCwd = fs.mkdtempSync(path.join(SANDBOX, 'cwd-beside-'));
+
+  // A) Non-global hook copy with beside=enforce, BUT a global file = monitor.
+  //    Both must resolve monitor (global wins; beside ignored). Before the fix the
+  //    hook read the beside-file and resolved enforce → parity break.
+  {
+    const hookDir = makeHookCopyWithBesideConfig('enforce');
+    const env = { CLAUDESEC_HOME: makeHome('monitor') };
+    let serverMode: Mode = 'monitor';
+    withEnv(env, () => { serverMode = resolveEffectiveMode().effectiveMode; });
+    const hookMode = await hookCopyEffectiveMode(path.join(hookDir, 'claudesec-enforce.cjs'), env, neutralCwd);
+    check('beside=enforce + global=monitor: server resolves monitor', () => {
+      assert.strictEqual(serverMode, 'monitor', `server resolved ${serverMode}`);
+    });
+    check('beside=enforce + global=monitor: hook resolves monitor (beside ignored)', () => {
+      assert.strictEqual(hookMode, 'monitor', `hook resolved ${hookMode} — beside-file leaked into resolution`);
+    });
+    check('beside=enforce + global=monitor: hook === server (PARITY)', () => {
+      assert.strictEqual(hookMode, serverMode, `PARITY BREAK — hook=${hookMode}, server=${serverMode}`);
+    });
+  }
+
+  // B) Inverse: non-global hook copy with beside=monitor, BUT global file = enforce.
+  //    Again the global wins on both sides; the beside-file must not demote the hook
+  //    to monitor while the dashboard reads enforce.
+  {
+    const hookDir = makeHookCopyWithBesideConfig('monitor');
+    const env = { CLAUDESEC_HOME: makeHome('enforce') };
+    let serverMode: Mode = 'monitor';
+    withEnv(env, () => { serverMode = resolveEffectiveMode().effectiveMode; });
+    const hookMode = await hookCopyEffectiveMode(path.join(hookDir, 'claudesec-enforce.cjs'), env, neutralCwd);
+    check('beside=monitor + global=enforce: server resolves enforce', () => {
+      assert.strictEqual(serverMode, 'enforce', `server resolved ${serverMode}`);
+    });
+    check('beside=monitor + global=enforce: hook resolves enforce (beside ignored)', () => {
+      assert.strictEqual(hookMode, 'enforce', `hook resolved ${hookMode} — beside-file leaked into resolution`);
+    });
+    check('beside=monitor + global=enforce: hook === server (PARITY)', () => {
+      assert.strictEqual(hookMode, serverMode, `PARITY BREAK — hook=${hookMode}, server=${serverMode}`);
+    });
+  }
+}
+
+await runBesideCases();
+
 try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch { /* best-effort */ }
 
 const total = passed + failures.length;

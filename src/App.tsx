@@ -630,9 +630,10 @@ export default function App() {
   // Spans (Workflow) don't carry a repo of their own, but sessions do (one repo
   // per trace). Build a traceId → repo lookup so the repository filter can scope
   // the span list by the repo of each span's owning session. A session's repo
-  // column is GROUP_CONCAT'd; a trace lives in exactly one git-root in practice,
-  // but defensively we treat a multi-value string as 'unknown'-safe by matching
-  // on substring containment below.
+  // column is GROUP_CONCAT'd on a NEWLINE (a path can legally contain a comma, so
+  // a comma separator would split a real git-root into bogus segments); a trace
+  // lives in exactly one git-root in practice, but defensively we treat a
+  // multi-value string as membership-matched below.
   const repoByTrace = useMemo(() => {
     const m = new Map<string, string>();
     for (const s of sessions) m.set(s.traceId, s.repo ?? UNKNOWN_REPO);
@@ -653,8 +654,9 @@ export default function App() {
       const matchRepo = (() => {
         if (!repoFilter) return true;
         const traceRepo = repoByTrace.get(wf.traceId) ?? UNKNOWN_REPO;
-        // A session's repo can be a comma-joined GROUP_CONCAT; match on membership.
-        return traceRepo === repoFilter || traceRepo.split(',').includes(repoFilter);
+        // A session's repo can be a newline-joined GROUP_CONCAT; match on membership.
+        // Newline can't appear in a path, so this never mis-splits a real git-root.
+        return traceRepo === repoFilter || traceRepo.split('\n').includes(repoFilter);
       })();
 
       const matchHideNone = !hideNone || wf.severity !== 'none';

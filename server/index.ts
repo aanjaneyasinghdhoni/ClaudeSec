@@ -2492,7 +2492,7 @@ service:
       { key: 'CLAUDESEC_MAX_SPANS_BATCH',    description: 'Max spans allowed per OTLP batch',         default: '500',    category: 'Performance' },
       { key: 'CLAUDESEC_GRAPH_LIMIT',        description: 'How many of the most-recent spans the live graph renders (older spans stay available via Search/Sessions)', default: '2000', category: 'Performance' },
       { key: 'CLAUDESEC_MAX_SPANS',          description: 'Total span capacity before pruning',       default: '50000',  category: 'Retention' },
-      { key: 'CLAUDESEC_RETENTION_DAYS',     description: 'Days to keep data before age-based prune', default: '30',     category: 'Retention' },
+      { key: 'CLAUDESEC_RETENTION_DAYS',     description: 'Days to keep data before age-based prune', default: '183',    category: 'Retention' },
       { key: 'CLAUDESEC_WEBHOOK_URL',        description: 'Webhook endpoint for alert delivery',      default: '',       category: 'Alerts',   sensitive: true },
       { key: 'CLAUDESEC_WEBHOOK_THRESHOLD',  description: 'Minimum severity to trigger webhook',      default: 'high',   category: 'Alerts' },
       { key: 'CLAUDESEC_CORS_ORIGINS',       description: 'Comma-separated allowed CORS origins',     default: 'localhost', category: 'Security' },
