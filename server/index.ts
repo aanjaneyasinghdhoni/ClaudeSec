@@ -43,9 +43,17 @@ import { registerLiveActivityRoutes } from './routes/liveActivity.js';
 import { registerWebhookRoutes } from './routes/webhook.js';
 import { registerEnforceRoutes } from './routes/enforce.js';
 import { registerAuditLogRoutes } from './routes/auditLog.js';
+import { registerAuditVerifyRoutes } from './routes/auditVerify.js';
 import { registerRuleOverrideRoutes } from './routes/ruleOverrides.js';
 import { makeAuditLogger } from './auditLog.js';
-import type { CustomRule, ProtectedPath, HealthBreakdown, EnforceLogEvent } from './routes/context.js';
+import {
+  ENFORCE_LOG_MAX,
+  appendEnforceLog as persistEnforceLog,
+  readEnforceLog as readPersistedEnforceLog,
+  enforceLogCount as persistedEnforceLogCount,
+  enforceLogRecentCount,
+} from './enforceLogStore.js';
+import type { CustomRule, ProtectedPath, HealthBreakdown } from './routes/context.js';
 import { detectHarness, HARNESSES } from '../src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
 import { resolveRepo, backfillRepos } from './repoIdentity.js';
@@ -1237,12 +1245,11 @@ interface DetectHit {
 }
 
 // ── Enforcement event log (PreToolUse hook → /api/enforce-log) ──────────────
-// In-memory ring buffer of the last N enforcement decisions reported by the
-// opt-in claudesec-enforce.cjs PreToolUse hook. Lets the dashboard show
-// "what would be / was blocked". Intentionally NOT persisted to SQLite — this
-// is ephemeral observability data, cleared on restart.
-const ENFORCE_LOG_MAX = 500;
-const enforceLog: EnforceLogEvent[] = [];
+// The last N enforcement decisions reported by the opt-in claudesec-enforce.cjs
+// PreToolUse hook, so the dashboard can show "what would be / was blocked". Now
+// PERSISTED to SQLite (server/enforceLogStore.ts) with the same tamper-evident
+// hash chain as the operator audit log, so the feed survives a restart. Capped
+// + pruned on insert; the live Socket.io broadcast is unchanged.
 
 function detectSeverity(text: string): DetectHit {
   // SECURITY: batch the suppression + disabled-rule lookups — both cached for
@@ -2500,18 +2507,19 @@ service:
       detail: isEnforce ? 'High-severity tool calls are blocked.' : 'Logging only — nothing is blocked.',
     });
 
-    // Recent enforcement activity (in-memory ring buffer; ephemeral)
+    // Recent enforcement activity (persisted to SQLite; survives restart)
     const ENFORCE_WINDOW_MS = 24 * 60 * 60 * 1000;
-    const recentEnforce = enforceLog.filter(e => Date.now() - e.ts < ENFORCE_WINDOW_MS).length;
+    const recentEnforce = enforceLogRecentCount(ENFORCE_WINDOW_MS);
+    const totalEnforce = persistedEnforceLogCount();
     settings.push({
       key: 'enforce-log',
       category: 'Enforcement',
-      description: 'Enforcement events reported by the PreToolUse hook in the last 24h (in-memory; cleared on restart).',
-      isSet: enforceLog.length > 0,
+      description: 'Enforcement events reported by the PreToolUse hook in the last 24h (persisted, tamper-evident; survives restart).',
+      isSet: totalEnforce > 0,
       effectiveValue: recentEnforce > 0 ? `${recentEnforce} event${recentEnforce === 1 ? '' : 's'} (24h)` : 'no recent events',
       enabled: recentEnforce > 0,
       state: recentEnforce > 0 ? 'active' : 'off',
-      detail: enforceLog.length > 0 ? `${enforceLog.length} total buffered.` : 'No hook events received yet.',
+      detail: totalEnforce > 0 ? `${totalEnforce} total persisted.` : 'No hook events received yet.',
     });
 
     // — Security —
@@ -2772,14 +2780,11 @@ service:
     // scrubOptions — honouring CLAUDESEC_DISABLE_SCRUB — before it is stored or
     // broadcast.
     scrubEnforceText: (s: string) => scrubText(s, scrubOptions),
-    appendEnforceLog: (evt: EnforceLogEvent) => {
-      enforceLog.push(evt);
-      if (enforceLog.length > ENFORCE_LOG_MAX) {
-        enforceLog.splice(0, enforceLog.length - ENFORCE_LOG_MAX);
-      }
-    },
-    readEnforceLog: (limit) => enforceLog.slice(-limit).reverse(), // most-recent first
-    enforceLogCount: () => enforceLog.length,
+    // Persisted, tamper-evident enforce feed (server/enforceLogStore.ts) —
+    // survives restart. The route + Socket.io broadcast are unchanged.
+    appendEnforceLog: persistEnforceLog,
+    readEnforceLog: readPersistedEnforceLog, // most-recent first
+    enforceLogCount: persistedEnforceLogCount,
     enforceLogMax: ENFORCE_LOG_MAX,
     getEnforceMode,
     getEnforceOverrides,
@@ -2841,6 +2846,8 @@ service:
 
   // ── Operator audit log (read-only) ────────────────────────────────────────
   registerAuditLogRoutes(app, { io });
+  // ── Tamper-evidence: verify the audit + enforce hash chains (read-only) ────
+  registerAuditVerifyRoutes(app, { io });
 
   // ── Alerts ───────────────────────────────────────────────────────────────
   registerAlertRoutes(app, { io });

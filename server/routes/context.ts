@@ -105,7 +105,7 @@ export interface RouteContext {
   enforceConfigFile?: string;
 }
 
-/** Enforcement-log event (PreToolUse hook feed; owned by index.ts). */
+/** Enforcement-log event (PreToolUse hook feed; persisted by server/enforceLogStore.ts). */
 export interface EnforceLogEvent {
   ts: number;
   mode: string;
@@ -113,6 +113,10 @@ export interface EnforceLogEvent {
   severity: string;
   command: string;
   wouldBlock: boolean;
+  // Whether the call was actually DENIED (catastrophic floor or enforce rule),
+  // vs. a monitor "would-block". The catastrophic floor blocks even in monitor
+  // mode, so this can be true regardless of `mode` — the UI keys off it.
+  blocked: boolean;
 }
 
 /**

@@ -16,6 +16,7 @@
 import type { Request } from 'express';
 import { db } from './db.js';
 import { scrubText, type ScrubOptions } from './scrub.js';
+import { canonicalString, computeRowHash, verifyChain, type ChainStatus } from './auditChain.js';
 
 // Hard cap on retained rows. The oldest rows are pruned on insert once the
 // table grows past this, so a long-lived install can't accumulate an unbounded
@@ -24,8 +25,8 @@ import { scrubText, type ScrubOptions } from './scrub.js';
 const MAX_AUDIT_ROWS = 10_000;
 
 const insertAudit = db.prepare(`
-  INSERT INTO operator_audit_log (ts, actor, action, target, detail, sourceIp)
-  VALUES (@ts, @actor, @action, @target, @detail, @sourceIp)
+  INSERT INTO operator_audit_log (ts, actor, action, target, detail, sourceIp, prevHash, rowHash)
+  VALUES (@ts, @actor, @action, @target, @detail, @sourceIp, @prevHash, @rowHash)
 `);
 
 const countAudit = db.prepare(`SELECT COUNT(*) AS c FROM operator_audit_log`);
@@ -34,6 +35,64 @@ const pruneAudit = db.prepare(
      SELECT id FROM operator_audit_log ORDER BY id ASC LIMIT ?
    )`,
 );
+
+// O(1) inserts: we cache the rowHash of the most recently inserted row so each
+// insert links to it WITHOUT rescanning the table. Seeded lazily from the last
+// row in the DB on first use (covers a restart that re-opens an existing log).
+// Pruning the oldest rows never touches the newest, so the tail hash is stable.
+let lastAuditRowHash: string | undefined;
+
+function tailRowHash(): string {
+  if (lastAuditRowHash !== undefined) return lastAuditRowHash;
+  try {
+    const row = db
+      .prepare(`SELECT rowHash FROM operator_audit_log ORDER BY id DESC LIMIT 1`)
+      .get() as { rowHash?: string } | undefined;
+    lastAuditRowHash = row?.rowHash ?? '';
+  } catch {
+    lastAuditRowHash = '';
+  }
+  return lastAuditRowHash;
+}
+
+// Fixed canonical field order for an audit row — the hash-chain contract. The id
+// is auto-increment (unknown before insert) so it is NOT hashed; the chain is
+// anchored by ts/actor/action/target/detail/sourceIp + the previous rowHash.
+function auditCanonical(r: {
+  ts: number; actor: string; action: string; target: string; detail: string; sourceIp: string;
+}): string {
+  return canonicalString([r.ts, r.actor, r.action, r.target, r.detail, r.sourceIp]);
+}
+
+/**
+ * Verify the operator audit log's hash chain end-to-end. O(n) — recomputes every
+ * hashed row from the start. Legacy (pre-upgrade) rows with empty hashes are
+ * skipped cleanly. Fail-open: a read/hash error reports ok:false rather than
+ * throwing, so a verify call can never crash the server.
+ */
+export function verifyAuditChain(): ChainStatus {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, ts, actor, action, target, detail, sourceIp, prevHash, rowHash
+           FROM operator_audit_log ORDER BY id ASC`,
+      )
+      .all() as Array<{
+        id: number; ts: number; actor: string; action: string; target: string;
+        detail: string; sourceIp: string; prevHash: string; rowHash: string;
+      }>;
+    return verifyChain(
+      rows.map(r => ({
+        id: r.id,
+        prevHash: r.prevHash,
+        rowHash: r.rowHash,
+        canonical: auditCanonical(r),
+      })),
+    );
+  } catch {
+    return { ok: false, rows: 0, hashedRows: 0, signed: false };
+  }
+}
 
 /**
  * Decide who performed the action.
@@ -62,7 +121,7 @@ export function makeAuditLogger(
       const raw = detail === undefined ? '{}' : JSON.stringify(detail);
       const scrubbed = scrubText(raw, getScrubOptions());
 
-      insertAudit.run({
+      const row = {
         ts:       Date.now(),
         actor:    deriveActor(req, isLocalRequest),
         action:   String(action).slice(0, 128),
@@ -70,7 +129,20 @@ export function makeAuditLogger(
         detail:   scrubbed.slice(0, 4000),
         // req.socket.remoteAddress only — never X-Forwarded-For (spoofable).
         sourceIp: String(req.socket?.remoteAddress ?? 'unknown'),
-      });
+      };
+
+      // Hash-chain this row to the previous one. prevHash is the cached tail
+      // rowHash (O(1) — no rescan); rowHash links content + prevHash. A hashing
+      // error returns '' (fail-open), which the verifier treats as unchained.
+      const prevHash = tailRowHash();
+      const rowHash  = computeRowHash(auditCanonical(row), prevHash);
+      insertAudit.run({ ...row, prevHash, rowHash });
+      // Advance the cached tail only when the hash actually computed. If a one-off
+      // crypto failure fails-open to '' (see computeRowHash), caching that empty
+      // string would chain the NEXT row onto '' and make the verifier report the
+      // whole chain broken from here on. Leaving the cache untouched lets the next
+      // insert re-link to the last good hash instead.
+      if (rowHash !== '') lastAuditRowHash = rowHash;
 
       // Bound the table: prune the oldest rows once we pass the cap.
       const count = (countAudit.get() as { c: number }).c;

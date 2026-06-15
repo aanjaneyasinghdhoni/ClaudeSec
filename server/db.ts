@@ -279,6 +279,37 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_operator_audit_log_ts ON operator_audit_log(ts);
 `);
 
+// Tamper-evidence: each row carries the hash of the previous row (server/auditChain.ts),
+// so editing an earlier row breaks the chain from that point on. Additive +
+// idempotent, same migration style as the spans columns above. Existing rows get
+// '' (empty) hashes and are treated as a legacy, unchained prefix by the verifier.
+try { db.prepare(`ALTER TABLE operator_audit_log ADD COLUMN prevHash TEXT NOT NULL DEFAULT ''`).run(); } catch {}
+try { db.prepare(`ALTER TABLE operator_audit_log ADD COLUMN rowHash  TEXT NOT NULL DEFAULT ''`).run(); } catch {}
+
+// ---------------------------------------------------------------------------
+// Persisted enforce/block feed — the PreToolUse hook's "would-block" / "blocked"
+// events. Previously an in-memory ring buffer that vanished on restart; now
+// persisted so the dashboard's Enforce feed survives a restart and carries the
+// same tamper-evident hash chain as the audit log (server/auditChain.ts). Capped
+// and pruned on insert (server/index.ts), so it can't grow without bound.
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS enforce_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER NOT NULL,
+    mode       TEXT NOT NULL DEFAULT 'monitor',
+    label      TEXT NOT NULL DEFAULT '',
+    severity   TEXT NOT NULL DEFAULT '',
+    command    TEXT NOT NULL DEFAULT '',
+    wouldBlock INTEGER NOT NULL DEFAULT 1,
+    blocked    INTEGER NOT NULL DEFAULT 0,
+    prevHash   TEXT NOT NULL DEFAULT '',
+    rowHash    TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_enforce_log_ts ON enforce_log(ts);
+`);
+
 // ---------------------------------------------------------------------------
 // Per-rule enable/disable overrides — lets an operator permanently silence a
 // noisy built-in or custom rule (distinct from a time-boxed suppression).
