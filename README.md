@@ -78,8 +78,10 @@ development with C++" workload and Python so `better-sqlite3` and `re2` can comp
   `monitor` by default — the always-on **catastrophic floor** (root-preserving `rm -rf /`, system-dir
   wipes with developer carve-outs, fork bombs, `curl … | sh`, reverse shells, raw-disk overwrites,
   common Windows destructive commands, and reading a secret and piping/uploading it off-machine in
-  one command) and any **protected paths** you mark in the dashboard — denied on read, write, edit,
-  and delete — block even in monitor; every other rule blocks only in `enforce` mode. It **blocks
+  one command) and any **protected paths** — a small, user-removable default set (`~/.ssh`,
+  `~/.aws/credentials`, `~/.config/gcloud`, `~/.kube/config`, `~/.npmrc`, `.env`-style secrets) plus
+  anything you mark in the dashboard — denied on read, write, edit, and delete — block even in
+  monitor; every other rule blocks only in `enforce` mode. It **blocks
   actions, not edits**: `Bash` is matched in full against the rules, but an `Edit`/`Write` is gated
   on the **file path + action** plus a tiny live-secret check on the content — never the whole file
   body against the rule set — so editing security code or fixtures is never blocked. A `WebFetch` to
@@ -89,7 +91,9 @@ development with C++" workload and Python so `better-sqlite3` and `re2` can comp
   detect-only). Pre-execution blocking
   reaches **Claude Code only** today — it's the one agent with a pre-exec hook; the others (Codex,
   Copilot) are **observe-only** unless routed through the optional cross-agent MCP proxy
-  (`claudesec mcp-proxy`); any other MCP-speaking agent can be gated the same way. It's a
+  (`claudesec mcp-proxy`), which applies the **same** floors as the hook — catastrophic, protected
+  paths, self-protection, and the fetch-SSRF guard — with a parity test pinning its verdicts to the
+  hook's; any other MCP-speaking agent can be gated the same way. It's a
   **tripwire, not a sandbox** — a best-effort, fail-open defense-in-depth layer. It can catch and
   block known-bad tool calls before they run, but an agent (or a prompt-injected command) that sets
   `CLAUDESEC_HOOKS_BYPASS=1`, restructures a command, or spawns a subprocess can evade it. Use it

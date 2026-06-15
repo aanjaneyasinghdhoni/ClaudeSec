@@ -24,14 +24,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synchronous and matches the literal host, so a public name that resolves to an
   internal IP (DNS rebinding) is not caught here — the server-side SSRF guard,
   which resolves every host, remains the backstop for the paths it controls.
+- **The SSRF floor now covers the MCP proxy too.** The same fetch-SSRF guard is
+  enforced server-side in the cross-agent MCP proxy, so a non-Claude-Code agent
+  (Codex, Copilot, Claude Desktop) routed through the proxy is also blocked from
+  reaching internal / cloud-metadata hosts via a fetch-shaped `tools/call`.
+- **The MCP proxy blocks catastrophic commands like the hook does.** The proxy
+  now extracts the **raw command** from a command-shaped `tools/call` (instead of
+  matching the serialized JSON blob), so the catastrophic floor's
+  boundary-anchored patterns fire on a cross-agent `rm -rf /` exactly as they do
+  on the hook. A behavioral parity test pins the proxy's verdicts to the hook's.
+- **Default protected paths.** The protected-path floor now ships a small,
+  conservative, user-removable default set so a fresh install protects the
+  high-value credential stores out of the box: `~/.ssh`, `~/.aws/credentials`,
+  `~/.config/gcloud`, `~/.kube/config`, `~/.npmrc`, and `.env`-style secret files
+  (with `.env.example` / `.sample` / `.template` carve-outs). Your own entries
+  merge on top, and any default can be removed.
 - **Tamper-evident logs.** The operator audit log and the enforcement
   would-block/block feed are now append-only and **hash-chained** — each row
-  links to the one before it, so any later edit to an earlier row is detectable.
-  An optional local key (`~/.claudesec/audit-key`) signs the chain. A new
-  `GET /api/audit/verify` endpoint recomputes both chains and reports whether
-  they are intact, pinpointing the first altered row if not. This is
-  tamper-*evident*, not tamper-*proof*: without the key, someone with database
-  write access could rewrite a row and recompute the rest.
+  links to the one before it, so any later edit, reordering, or deletion of an
+  earlier row is detectable, and a wholesale wipe is flagged by reset detection.
+  Retention pruning **re-anchors** the surviving rows, so a pruned-but-intact log
+  verifies as intact (no false "tampered"). An optional local key
+  (`~/.claudesec/hooks/audit-key`, under the self-protected hooks dir) signs the
+  chain. A new `GET /api/audit/verify` endpoint recomputes both chains and reports
+  whether they are intact, pinpointing the first altered row if not. This is
+  tamper-*evident*, not tamper-*proof*: a same-user attacker who can read the key
+  and recompute the whole chain can forge a consistent history, and tail-truncation
+  of the newest rows is a residual gap.
 - **The enforcement feed survives restart.** What used to be an in-memory ring
   buffer is now persisted to a capped SQLite table (the most recent 500 events),
   so the Enforce tab's history isn't lost when the server restarts.
@@ -55,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on-disk location (following symlinks, with an existing-ancestor walk for files
   that don't exist yet), so a symlink into a protected tree can't slip past. A
   time-of-check/time-of-use race remains an inherent limit of any pre-exec hook.
+- **Self-protection now covers project-level settings.** The always-on
+  self-protection floor — which stops an agent from editing the enforcement
+  control plane — now guards the project-level `./.claude/settings.json` and
+  `settings.local.json` (which Claude Code also honors) in addition to the
+  home-dir settings, so an agent can't register a competing hook to displace the
+  enforcer.
 - **A predictable, logged database location.** The database now defaults to an
   absolute `~/.claudesec/spans.db`, and the resolved path is logged at boot so a
   misconfigured `CLAUDESEC_DB` is obvious. Startup is import-safe (importing the

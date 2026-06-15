@@ -9,7 +9,7 @@ Detection tells you what an agent *already did*. **Enforcement** can stop a tool
   **Enforcement is opt-in. Out of the box, ClaudeSec only observes — it blocks nothing.** There is **zero pre-execution blocking** until you [install the hook](#install-the-hook). Even then, it reaches **Claude Code only**, is **monitor by default**, and is **fail-open** (see below). It raises the bar for an agent; it is not an OS sandbox or a hard guarantee.
 </Warning>
 
-When Claude Code is about to run a `Bash`, `Edit`, `Write`, `Read`, or `WebFetch` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent). Two **always-on floors** block in either mode — the [catastrophic floor](#the-catastrophic-floor) and your [protected paths](#protected-paths-always-on) — while the broader high- and critical-severity rules block only once you switch to [enforce](#modes).
+When Claude Code is about to run a `Bash`, `Edit`, `Write`, `Read`, or `WebFetch` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent). Several **always-on floors** block in either mode — the [catastrophic floor](#the-catastrophic-floor), the [SSRF-on-fetch](#ssrf-on-fetch) cloud-metadata tier, [self-protection](#self-protection-the-control-plane) of the enforcement control plane, the live-secret edit check, and your [protected paths](#protected-paths-always-on) (including a [sane default set](#a-sane-default-set-out-of-the-box)) — while the broader high- and critical-severity rules block only once you switch to [enforce](#modes).
 
 ### What the hook actually inspects (block actions, not edits)
 
@@ -63,8 +63,8 @@ The hook runs in one of two modes, and **`monitor` is the default**:
 
 | Mode | What it does |
 |------|--------------|
-| `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the two always-on floors: the *catastrophic floor* and your *protected paths*. |
-| `enforce` | Actually **denies** high- and critical-severity command / file tool calls, in addition to both always-on floors. The critical tier is active secret *exfiltration*. |
+| `monitor` (default) | Logs every "would-block" to the dashboard but **never blocks** — except the always-on floors: the *catastrophic floor*, the *cloud-metadata SSRF* tier, *self-protection* of the control plane, the *live-secret* edit check, and your *protected paths* (defaults included). |
+| `enforce` | Actually **denies** high- and critical-severity command / file tool calls, in addition to every always-on floor. The critical tier is active secret *exfiltration*. |
 
 The broader rule library — and any **custom regex rules** you add in the dashboard — only ever *blocks* in `enforce` mode. Custom rules follow the same convention as the built-ins: they **detect by default**, and in `enforce` mode a **high- or critical-severity** custom rule also **blocks** (low/medium custom rules stay detect-only). The server mirrors your custom rules into the hook's `rules-enforcement.json` snapshot so the hook enforces the same set. To always-block a specific file or directory in *either* mode, use [protected paths](#protected-paths-always-on) instead.
 
@@ -104,9 +104,35 @@ Protected-path checks resolve the **realpath** of a target before matching, so a
   **Honest limitation — TOCTOU.** Realpath resolution happens at check time. A path that is swapped between the hook's check and the actual write (a time-of-check/time-of-use race) is a residual gap inherent to any pre-exec hook — this raises the bar, it is not an OS-level guarantee.
 </Note>
 
+### Self-protection (the control plane)
+
+An agent must never be able to edit the enforcement control plane and unhook the enforcer. A **self-protection floor** therefore **always blocks** — in either mode — any agent tool call (a `Write`/`Edit`, or a Bash redirect) that targets:
+
+- the whole `~/.claudesec/hooks/` directory — the installed hook, `enforce-config.json`, the `rules-enforcement.json` snapshot, `protected-paths.json`, and the `audit-key`;
+- the Claude Code settings files that register the PreToolUse hook — both the **home-dir** `~/.claude/settings.json` / `settings.local.json` **and** the **project-level** `./.claude/settings.json` / `settings.local.json` in the directory the agent is working in. Claude Code honors project-level settings too, so an agent could otherwise register a competing hook to displace the enforcer; both scopes are guarded.
+
+This guards **agent** tool calls only. The ClaudeSec server writes these same files from its own process on boot — a different process, not subject to this floor.
+
 ### Protected paths (always-on)
 
 Beyond the catastrophic floor, you can mark **specific files or directories as protected** — a per-user floor that **always blocks**, in either mode, exactly like the catastrophic floor. Add them in **Protect → Rules → Protected paths** (or via `POST /api/protected-paths`). A protected entry is denied on **read, write, edit, and delete** — the hook registers a `Read` matcher alongside the write/edit matchers, so any Claude Code tool call whose **target path** or **Bash command** (e.g. `cat`/`rm`) references a protected entry is blocked before it runs.
+
+#### A sane default set, out of the box
+
+A fresh install protects nothing if the list is empty, so ClaudeSec ships a small, conservative set of **default protected paths** — the high-value credential stores an agent should never read or overwrite:
+
+| Default | What it protects |
+|---|---|
+| `~/.ssh` | SSH private keys |
+| `~/.aws/credentials` | AWS credentials |
+| `~/.config/gcloud` | gcloud config + tokens |
+| `~/.kube/config` | Kubernetes cluster credentials |
+| `~/.npmrc` | npm auth tokens |
+| `.env`-style secret files | dotenv secrets, matched **by shape** — `.env`, `.env.local`, `.env.production`, … |
+
+The dotenv default carves out the well-known committed templates — `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `.env.tpl` — so editing scaffolding that holds no real credentials is never blocked. It matches the file **target** only (a read/write/edit of a real `.env`), not a free-form Bash command, so a plain `cat .env` isn't walled off by this default — the always-on exfil floor already covers the dangerous "read a secret and pipe it to the network" case.
+
+These defaults are **deliberately minimal** and **user-removable** — they aren't pinned. Your own entries are merged on top, and you can drop any default from the list if it gets in the way. Both the hook and the MCP proxy load the same merged set, so the defaults apply to a cross-agent call too.
 
 - Matching is a case-insensitive substring of the file *target* (`file_path` / `path` / `notebook_path`) or the Bash command — **never** the edit *content*, so editing a file that merely *mentions* a protected path is fine. A leading `~` and a standalone `$HOME` / `${HOME}` expand to your home dir; arbitrary shell variables, globs, and command substitution are not resolved (a static hook's inherent limit — server-side detection remains the backstop).
 - Protected paths are **detection-independent**: they don't depend on any rule and ignore enforce mode.
@@ -187,16 +213,27 @@ With it set, the hook allows everything and exits immediately. Because enforceme
 
 The PreToolUse hook only reaches **Claude Code**. To enforce the *same* rules for **any** MCP-speaking agent — Codex, Copilot, Claude Desktop — ClaudeSec ships a **cross-agent MCP enforcement proxy**: a stdio gateway that wraps a downstream [MCP](https://modelcontextprotocol.io) server and gates every `tools/call` against the same `rules-enforcement.json` + `enforce-config.json`.
 
-The proxy speaks raw [JSON-RPC 2.0 over stdio](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports). It is a transparent pipe for `initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, and all responses; it intercepts **only** `tools/call`. For each call it builds the matchable text `toolName + ' ' + JSON.stringify(arguments)` and evaluates it exactly like the hook:
+The proxy speaks raw [JSON-RPC 2.0 over stdio](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports). It is a transparent pipe for `initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, and all responses; it intercepts **only** `tools/call`. The hook and the proxy share a single evaluation core (`server/enforceEval.ts`), so a `tools/call` hits the **same floors and the same rule set** the hook applies to a Claude Code tool call — a behavioral parity test (`tests/enforceParityTest.ts`) pins the proxy's verdict to the hook's so they cannot drift. For each call the proxy detects the tool **shape** and extracts the right text, exactly as the hook does:
 
-- **`enforce`** + a high- or critical-severity `block` rule (or the catastrophic floor) matches → the call is **not** forwarded; the agent gets a `tools/call` result with `isError: true` and an explanatory message (a clean, model-readable refusal — not a transport error), and a would-block is logged to the dashboard.
+- **command-shaped** tools (`bash`/`sh`/`exec`/`run_command`/…) → the **raw command string** is pulled out of its argument and matched. This matters: the catastrophic floor's patterns are anchored to a command boundary, so wrapping the command in a JSON blob (`{"command":"rm -rf /"}`) would destroy those anchors and silently miss `rm -rf /`. The proxy evaluates the unwrapped command, not the serialized blob.
+- **edit-shaped** tools (`edit`/`write`/`create_file`/`apply_patch`/…) → the **target path** feeds the self-protection and protected-paths floors; the **new content** is checked only by the minimal live-secret floor — never the broad rule set.
+- **fetch-shaped** tools (any call carrying a `url`/`uri`/`endpoint` argument) → the URL feeds the **SSRF-on-fetch floor** (see below).
+- anything else → the serialized arguments are matched against the rule engine.
+
+It then evaluates the extracted text:
+
+- **`enforce`** + a high- or critical-severity `block` rule (or any always-on floor) matches → the call is **not** forwarded; the agent gets a `tools/call` result with `isError: true` and an explanatory message (a clean, model-readable refusal — not a transport error), and a would-block is logged to the dashboard.
 - **`monitor`** (default) + match → logs a would-block, then forwards normally.
 - no match → forwards.
 
 Mode is resolved per call (`enforce-config.json` → `CLAUDESEC_MODE` → `monitor`), so dashboard toggles take effect live. Like the hook, it **fails open** (any parse/proxy error forwards the original message) and honors `CLAUDESEC_HOOKS_BYPASS=1` (forward everything).
 
+#### SSRF over the proxy, too
+
+The same [SSRF-on-fetch floor](#ssrf-on-fetch) the hook applies to a Claude Code `WebFetch` is enforced **server-side in the proxy** for any fetch-shaped MCP tool. A non-Claude-Code agent (Codex, Copilot, Claude Desktop) routed through the proxy can no longer reach a cloud-metadata or internal host that the hook would have blocked — cloud-metadata / link-local is blocked in either mode, loopback/private in `enforce` (with the same `CLAUDESEC_ALLOW_LOCAL_FETCH` opt-out). The DNS-rebinding limitation is identical: the classifier matches the literal host and does not resolve a public name.
+
 <Note>
-  **Catastrophic-floor behavior differs between the hook and the proxy.** The PreToolUse hook blocks the catastrophic floor in *either* mode — monitor or enforce. The MCP proxy evaluates the same floor patterns, but they are gated by mode: in `monitor` (default) the proxy only logs a would-block and forwards normally; only in `enforce` does the proxy actually deny the call. If you are using the proxy to gate a non-Claude-Code agent and want the catastrophic floor to block, you must set the mode to `enforce`.
+  **Catastrophic-floor behavior differs between the hook and the proxy.** The proxy evaluates the *same* floor patterns against the same raw command — but they are gated by mode. The PreToolUse hook blocks the catastrophic floor in *either* mode; the proxy only **logs** a would-block in `monitor` (default) and **denies** the call in `enforce`. This is a deliberate proxy contract, not a coverage gap (the parity test verifies the trigger matches the hook's exactly). If you are gating a non-Claude-Code agent and want the catastrophic floor to block, set the mode to `enforce`. The cloud-metadata SSRF tier is the exception — it is mode-independent and blocks in either mode on both layers.
 </Note>
 
 ### Wiring an agent
@@ -233,3 +270,17 @@ The agent now talks to ClaudeSec, which transparently relays to (and gates) the 
 ## How the rules are built
 
 Both the hook and the MCP proxy compile their block-set from a `rules-enforcement.json` snapshot, regenerated from the live rule engine by `scripts/build-enforcement-rules.ts` (run: `tsx scripts/build-enforcement-rules.ts`). A rule blocks only if its effective action (snapshot action, possibly overridden) is `block`. The shared evaluation core lives in `enforceEval.ts` (imported by the proxy); the hook reproduces the same semantics dependency-free in `.claude/hooks/claudesec-enforce.cjs`. See [Security Rules](/security/rules) for the underlying rule library.
+
+## Limitations & threat model
+
+ClaudeSec's enforcement is built to stop a **misbehaving agent** — a model that has been talked into running a destructive command, exfiltrating a secret, or fetching a cloud-metadata endpoint. It is **not** a defense against a determined **same-user attacker**. The hook, the proxy, and the dashboard all run as *you*, on *your* machine, with *your* permissions. A process running under the same user account has the same reach over the same files — there are inherent ceilings, and we'd rather state them plainly than imply a guarantee the design can't make.
+
+- **Enforcement is best-effort and fail-open.** Every layer — hook and proxy — allows the call through on any error, missing config, or unparseable input, so a broken config can never lock you out. It covers the Claude Code PreToolUse hook and the MCP proxy. It does **not** intercept arbitrary egress: a process the agent spawns outside those two chokepoints (a raw socket, a non-proxied tool, a child process that doesn't inherit the hook) is not gated. This raises the bar; it is not an OS sandbox.
+
+- **Mutating enforcement routes are loopback-trusted.** On `localhost` the API requires no token (that is the local-first default), so a **same-host process** could call the enforcement API to change the **mode** (flip `enforce` back to `monitor`) or clear **user-added** protected paths. What it **cannot** turn off, in any mode, are the **always-on floors**: the catastrophic floor, self-protection, the live-secret edit floor, the cloud-metadata SSRF floor, and the **default** protected paths. Those block regardless of mode and regardless of the configured rule actions — flipping to `monitor` does not disarm them.
+
+- **The audit log is tamper-evident, not tamper-proof.** The hash chain detects in-place edits, reordering, and deletion (it pinpoints the first broken row), and reset detection catches a wholesale wipe. But a same-user attacker who can recompute the entire chain — and read the local HMAC key, which now lives under the self-protected hooks directory (raising the bar, not eliminating it) — can forge a self-consistent history. **Truncating the newest rows off the tail** is the residual gap the chain cannot detect on its own. See the [Audit Log API](/api-reference/audit-log#how-tamper-evident-works) for the full treatment.
+
+- **DNS rebinding and symlink TOCTOU remain known gaps.** The synchronous hook (and proxy) classify a fetch URL by its **literal host**, so a public hostname that *resolves* to an internal IP is not caught at this layer — the server-side, DNS-resolving SSRF guard (`server/ssrf.ts`) is the backstop for the outbound paths *it* controls. And protected-path realpath resolution happens at check time, so a path swapped between the check and the write (a time-of-check/time-of-use race) is an inherent limit of any pre-exec hook.
+
+If your threat model includes a hostile process running as your own user, layer ClaudeSec under an OS-level sandbox, separate user account, or container boundary — enforcement is one defense-in-depth control, not the whole perimeter.

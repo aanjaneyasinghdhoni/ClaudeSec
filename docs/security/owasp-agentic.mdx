@@ -168,7 +168,8 @@ messages to peer agents.
 | Capability | Type |
 |---|---|
 | Orchestration tab visualises agent-to-agent call graphs and highlights anomalous cross-agent patterns | VISIBILITY |
-| MCP enforcement proxy gates `tools/call` at the wire level for any MCP-speaking agent | BLOCKS in enforce mode |
+| MCP enforcement proxy gates `tools/call` at the wire level for any MCP-speaking agent, applying the **same** floors as the Claude Code hook (catastrophic, self-protection, protected paths, live-secret, SSRF) — a behavioral parity test pins proxy verdicts to the hook's | BLOCKS in enforce mode (cloud-metadata SSRF in either mode) |
+| The proxy extracts the **raw command** from a command-shaped `tools/call` (not the serialized JSON blob), so the catastrophic floor's boundary-anchored patterns fire on a cross-agent `rm -rf /` exactly as they do on the hook | BLOCKS in enforce mode |
 | Prompt injection rules fire on the content of inter-agent messages that surface in tool calls | DETECTS (HIGH) |
 
 **Honest limits:** The MCP proxy intercepts calls the agent makes *through* ClaudeSec's proxy.
@@ -223,7 +224,7 @@ sub-processes, or persisting beyond its session — without the user's knowledge
 | Capability | Type |
 |---|---|
 | SSRF guard blocks outbound requests to private/loopback/metadata ranges on the optional egress paths (server-side, DNS-resolving — defeats rebinding) | BLOCKS (server-side) |
-| SSRF-on-fetch floor blocks a Claude Code `WebFetch` to cloud-metadata/link-local (either mode) or private/loopback ranges (enforce) — literal-host match, so DNS rebinding is a known gap | BLOCKS (hook installed) |
+| SSRF-on-fetch floor blocks a Claude Code `WebFetch` **and** any fetch-shaped MCP `tools/call` through the proxy to cloud-metadata/link-local (either mode) or private/loopback ranges (enforce) — literal-host match, so DNS rebinding is a known gap | BLOCKS (hook installed / via proxy) |
 | Exfiltration rules: secrets/env piped to `curl`/`wget`/`nc`/`scp`/`rsync` | BLOCKS always (catastrophic floor, two high-precision patterns) / DETECTS (CRITICAL) |
 | Netcat file transfer to remote host | DETECTS (CRITICAL) |
 | Process tab surfaces all running agent processes by PID | VISIBILITY |
@@ -260,6 +261,11 @@ Being specific about gaps is as important as describing what works:
   agents can only be gated via the MCP enforcement proxy, and only if they are wired through it.
 - **OS-level sandbox** — the hook and proxy fail open. They raise the bar; they do not replace
   a proper sandboxed execution environment.
+- **A same-user (same-UID) attacker** — ClaudeSec defends against a *misbehaving agent*, not a
+  hostile process running as your own account. Such a process could flip the enforcement mode or
+  clear user-added protected paths (the always-on floors still hold), recompute the audit chain to
+  forge a consistent history, or truncate its newest rows. See
+  [Enforcement → Limitations & threat model](/security/enforcement#limitations-threat-model).
 - **Third-party audit** — ClaudeSec has not undergone an independent security review. The
   detection library is maintained by one person.
 

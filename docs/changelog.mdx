@@ -23,14 +23,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SSRF protection on agent fetches.** With the hook installed, a Claude Code
   `WebFetch` to a cloud-metadata or link-local address is blocked in either mode,
   and loopback / private ranges are blocked in `enforce` — set
-  `CLAUDESEC_ALLOW_LOCAL_FETCH=1` to allow a local dev server. The check matches
+  `CLAUDESEC_ALLOW_LOCAL_FETCH=1` to allow a local dev server. The same SSRF floor
+  is now also enforced in the **MCP proxy**, so a non-Claude-Code agent routed
+  through it is blocked from internal / metadata fetches too. The check matches
   the literal host, so a public name that resolves to an internal IP (DNS
   rebinding) is not caught here; the server-side SSRF guard remains the backstop
   for the paths it controls.
+- **MCP proxy blocks catastrophic commands like the hook.** The proxy now matches
+  the **raw command** from a command-shaped `tools/call` (not the serialized JSON
+  blob), so the catastrophic floor fires on a cross-agent `rm -rf /` exactly as on
+  the hook — a parity test pins the proxy's verdicts to the hook's.
+- **Default protected paths.** A small, user-removable default set is protected
+  out of the box: `~/.ssh`, `~/.aws/credentials`, `~/.config/gcloud`,
+  `~/.kube/config`, `~/.npmrc`, and `.env`-style secret files (with
+  `.env.example` / `.sample` / `.template` carve-outs).
 - **Tamper-evident logs.** The operator audit log and the enforcement
   would-block/block feed are now append-only and **hash-chained**, so any later
-  edit to an earlier row is detectable. An optional local key signs the chain,
-  and `GET /api/audit/verify` recomputes both chains and reports whether they are
+  edit, reordering, or deletion of an earlier row is detectable, and a wholesale
+  wipe is flagged. Retention pruning **re-anchors** the survivors, so a
+  pruned-but-intact log verifies as intact. An optional local key (under the
+  self-protected `~/.claudesec/hooks/`) signs the chain, and
+  `GET /api/audit/verify` recomputes both chains and reports whether they are
   intact. This is tamper-*evident*, not tamper-*proof*.
 - **The enforcement feed survives restart.** The Enforce tab's history is now
   persisted to a capped SQLite table instead of an in-memory buffer.
@@ -48,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Symlink-aware protected paths.** Protected-path checks resolve the real
   on-disk location before matching, so a symlink into a protected tree can't slip
   past. A time-of-check/time-of-use race remains an inherent limit.
+- **Self-protection covers project-level settings.** The always-on
+  self-protection floor now guards `./.claude/settings.json` and
+  `settings.local.json` (which Claude Code also honors) alongside the home-dir
+  settings, so an agent can't register a competing hook to displace the enforcer.
 - **A predictable, logged database location.** The database defaults to an
   absolute `~/.claudesec/spans.db` and logs its resolved path at boot. Startup is
   import-safe and shutdown is graceful — the database is checkpointed and closed

@@ -49,10 +49,13 @@ not itself an isolated sandbox and carries the limitations any local server does
   server path). Pattern matching produces false positives. It is defence-in-depth, not a
   guarantee.
 - **Audit logs** — the operator audit log and the enforcement block-feed are append-only and
-  **hash-chained**, so a later edit to an earlier row is detectable (`GET /api/audit/verify`). An
-  optional local key (`~/.claudesec/audit-key`) signs the chain. This is tamper-*evident*, not
-  tamper-*proof* — without the key, someone with database write access could rewrite a row and
-  recompute the chain.
+  **hash-chained**, so a later edit, reordering, or deletion of an earlier row is detectable
+  (`GET /api/audit/verify`), and a wholesale wipe is flagged by reset detection. Retention pruning
+  **re-anchors** the surviving rows, so it is never mistaken for tampering. An optional local key
+  (`~/.claudesec/hooks/audit-key`, under the self-protected hooks dir) signs the chain. This is
+  tamper-*evident*, not tamper-*proof* — a same-user attacker who can read the key and recompute the
+  whole chain can forge a consistent history, and tail-truncation of the newest rows is a residual
+  gap the chain cannot detect on its own.
 
 **Relevant upstream CVEs** — two vulnerabilities were disclosed in 2025–2026 against Anthropic's
 Claude Code CLI itself (not ClaudeSec), and are relevant context for users of both tools:
@@ -105,7 +108,16 @@ individual developer workstations or internal team networks behind a VPN.
 - Webhook delivery is best-effort. Do not rely on it for critical alerting without a
   dedicated incident-management system.
 - Enforcement (the PreToolUse hook and MCP proxy) is opt-in, Claude-Code-specific (the hook),
-  and fail-open. It can be bypassed with `CLAUDESEC_HOOKS_BYPASS=1`.
+  and fail-open. It can be bypassed with `CLAUDESEC_HOOKS_BYPASS=1`. The MCP proxy applies the
+  *same* floors as the hook (a parity test pins their verdicts), including the SSRF-on-fetch floor
+  for fetch-shaped MCP tools, so a non-Claude-Code agent routed through the proxy is also blocked
+  from internal/metadata fetches.
+- **Same-user (same-UID) ceiling.** ClaudeSec defends against a *misbehaving agent*, not a hostile
+  process running as the operator's own account. Because the local API is loopback-trusted (no
+  token on localhost), a same-host process could flip the enforcement mode or clear user-added
+  protected paths — but the always-on floors (catastrophic, self-protection, live-secret,
+  cloud-metadata SSRF, and the default protected paths) still hold regardless of mode. For that
+  threat model, layer an OS sandbox or separate user account beneath ClaudeSec.
 
 ---
 

@@ -134,7 +134,7 @@ All data lives in a single file at `~/.claudesec/spans.db`, created automaticall
 - **WAL + `busy_timeout`.** The database runs in WAL mode (concurrent reads during writes); `busy_timeout = 5000` makes a momentarily-contended writer wait up to 5s for the lock rather than fail with `SQLITE_BUSY`.
 - **Graceful shutdown.** On `SIGTERM` / `SIGINT` the server stops accepting connections, checkpoints the WAL back into the main file, and closes the handle — so an abrupt stop can't leave a half-applied WAL.
 - **Online binary backups.** A consistent `.db` snapshot is written to `~/.claudesec/backups/` (`0600`, most-recent 7 retained) shortly after boot and daily thereafter, using SQLite's online backup API. This is distinct from the hourly human-readable JSON auto-export in `exports/`.
-- **Tamper-evident logs.** `operator_audit_log` and `enforce_log` carry a per-row hash chain (optionally HMAC-keyed by a local `~/.claudesec/audit-key`); `GET /api/audit/verify` recomputes both chains. See the [Audit Log API](/api-reference/audit-log).
+- **Tamper-evident logs.** `operator_audit_log` and `enforce_log` carry a per-row hash chain (optionally HMAC-keyed by a local `~/.claudesec/hooks/audit-key`, under the self-protected hooks dir); `GET /api/audit/verify` recomputes both chains. Pruning **re-anchors** the surviving rows in-transaction, so retention never reads as tampering, and a wholesale wipe (rows present, none hashed) is flagged as broken. See the [Audit Log API](/api-reference/audit-log).
 
 ### Import-safe startup
 

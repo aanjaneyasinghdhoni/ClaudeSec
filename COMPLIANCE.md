@@ -91,7 +91,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 |---|---|---|---|
 | **A.8.11** | Data masking | **Secret scrubbing** (`server/scrub.ts`): keys, tokens, JWTs, cloud credentials, database connection-string credentials, home paths, usernames, and emails are redacted before anything is stored, broadcast, or exported (on by default). Alert `matchedText` is stored **already scrubbed** — even a `critical` exfiltration alert records the secret *type / redacted shape*, never the live value | Classification scheme; verifying masking meets policy (scrubbing is best-effort regex) |
 | **A.8.12** | Data leakage prevention | A dedicated `critical` severity tier flags active secret **exfiltration** — a credential / `.env` being transmitted off the machine (the broad critical tier blocks in `enforce` mode, while two high-precision read-secret-and-send-it patterns sit on the always-on floor and block in either mode once the opt-in hook is installed); honeytokens fire an exfiltration alert on any match; broader exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
-| **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access; the operator audit log and enforcement block-feed are hash-chained (tamper-*evident*, optionally HMAC-keyed) | Log retention policy, time-source governance; tamper-evidence is detective, not preventive — protect the key/DB |
+| **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access; the operator audit log and enforcement block-feed are hash-chained (tamper-*evident*, optionally HMAC-keyed by a key under the self-protected `~/.claudesec/hooks/`). The chain **re-anchors** on retention pruning (so pruning is not mistaken for tampering) and flags a wholesale wipe; `GET /api/audit/verify` reports both | Log retention policy, time-source governance; tamper-evidence is detective, not preventive — it does not stop a same-UID attacker who recomputes the chain or truncates the tail. Protect the key/DB |
 | **A.8.16** | Monitoring activities | Continuous evaluation of every span against the rule set; live anomaly surfacing and alerting | SOC processes, correlation across other sources |
 | **A.8.23** | Web filtering / egress control | SSRF guard (`server/ssrf.ts`) DNS-resolves targets at call time and allows only globally-routable unicast addresses — blocking loopback, private, link-local, and `169.254.169.254` metadata; re-resolves on every request to defeat DNS rebinding | Proxy/filtering at the network layer |
 | **A.8.25 / A.8.28** | Secure development lifecycle / secure coding | CodeQL static analysis (weekly + on PR), `pnpm audit --prod`, RE2/linear-time regex compilation for ReDoS safety, ReDoS self-test gate | Applies to the *project*; deployer runs own SDLC for its systems |
@@ -240,16 +240,41 @@ deployer obligation. Control identifiers are taken from the published frameworks
   default) and surfaced on the dashboard, which also **verifies the hook is registered** and
   will not show a "blocking active" state unless enforce is effective *and* a hook is
   present (no false green). The hook's always-on catastrophic floor is parity-tested in the
-  test gate (`tests/catastrophic-parity.test.ts` covers `cli/hooks/claudesec-enforce.cjs`) and
-  is proven linear-time. For `Edit`/`Write` the hook **blocks on the file path + action**
-  (against protected paths) plus a minimal high-confidence live-secret floor on the content — it
-  does **not** scan the file body against the rule set, so legitimate edits to security code or
-  test fixtures are not blocked (full-content threat *detection* still runs server-side). With the
-  hook installed, a `WebFetch` to a cloud-metadata / link-local address is blocked in either mode,
-  and loopback/private ranges in `enforce` (opt-out via `CLAUDESEC_ALLOW_LOCAL_FETCH`); a public
-  name that resolves to an internal IP (DNS rebinding) is a known gap the synchronous hook does not
-  catch. Protected-path checks resolve symlinks (realpath) before matching; a
-  time-of-check/time-of-use race remains an inherent residual limitation.
+  test gate (`tests/catastrophic-parity.test.ts` covers `cli/hooks/claudesec-enforce.cjs`), and a
+  behavioral parity test (`tests/enforceParityTest.ts`) pins the **MCP proxy's verdicts to the
+  hook's** so the cross-agent layer enforces the *same* floors and rules — including the catastrophic
+  floor against the **raw command** a command-shaped `tools/call` carries (not the serialized JSON
+  blob), and the **SSRF-on-fetch floor** for a fetch-shaped MCP tool, so a non-Claude-Code agent
+  routed through the proxy cannot reach an internal/metadata host either. The floor patterns are
+  proven linear-time. The **protected-paths floor ships a small, conservative default set** that is
+  protected out of the box and **user-removable** — `~/.ssh`, `~/.aws/credentials`, `~/.config/gcloud`,
+  `~/.kube/config`, `~/.npmrc`, and `.env`-style secret files (matched by shape, with
+  `.env.example`/`.sample`/`.template` carve-outs). A **self-protection floor** always blocks (either
+  mode) any agent write to the enforcement control plane — `~/.claudesec/hooks/` plus the Claude Code
+  settings that register the hook, at **both** the home-dir and **project-level** (`./.claude/`) scopes.
+  For `Edit`/`Write` the hook **blocks on the file path + action** (against protected paths) plus a
+  minimal high-confidence live-secret floor on the content — it does **not** scan the file body against
+  the rule set, so legitimate edits to security code or test fixtures are not blocked (full-content
+  threat *detection* still runs server-side). With the hook installed, a `WebFetch` to a
+  cloud-metadata / link-local address is blocked in either mode, and loopback/private ranges in
+  `enforce` (opt-out via `CLAUDESEC_ALLOW_LOCAL_FETCH`); a public name that resolves to an internal
+  IP (DNS rebinding) is a known gap the synchronous hook does not catch. Protected-path checks resolve
+  symlinks (realpath) before matching; a time-of-check/time-of-use race remains an inherent residual
+  limitation.
+- **Threat-model boundary — same-user (same-UID) ceiling.** ClaudeSec defends against a
+  *misbehaving agent*, not a hostile process running as the operator's own account. Enforcement is
+  best-effort and **fail-open**, covering the Claude Code PreToolUse hook and the MCP proxy — not
+  arbitrary egress. Mutating enforcement routes are **loopback-trusted** (no token on localhost), so
+  a same-host process could change the enforcement **mode** or clear **user-added** protected paths —
+  but the **always-on floors** (catastrophic, self-protection, live-secret, cloud-metadata SSRF, and
+  the **default** protected paths) remain in force regardless of mode. The audit log is
+  tamper-**evident** (it detects in-place edits, reordering, and deletion via the chain, and a
+  wholesale wipe via reset detection) but **not** tamper-**proof**: a same-UID attacker who can
+  recompute the whole chain and read the local HMAC key — now stored under the self-protected hooks
+  directory, which raises but does not eliminate the bar — can forge a consistent history;
+  **tail-truncation** of the newest rows is the residual gap. For a threat model that includes a
+  hostile same-user process, layer an OS sandbox, separate account, or container boundary beneath
+  ClaudeSec.
 
 ---
 

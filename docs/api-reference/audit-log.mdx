@@ -20,17 +20,39 @@ The log is ordered newest-first and supports cursor pagination via the `before` 
 ## How "tamper-evident" works
 
 Each row is **hash-chained** to the previous one: a row's hash is computed over its content plus
-the hash of the row before it. Editing or deleting any earlier row breaks every hash from that
-point on, so a recomputation can pinpoint the first row that no longer matches. By default the
-chain is a plain SHA-256. If a local key file exists at `~/.claudesec/audit-key` (minted
-owner-only on first run when writable), the chain is an HMAC-SHA256 keyed by that secret instead.
+the hash of the row before it. Editing, reordering, or deleting any earlier row breaks every hash
+from that point on, so a recomputation can pinpoint the first row that no longer matches. By
+default the chain is a plain SHA-256. If a local key file exists at `~/.claudesec/hooks/audit-key`
+(minted owner-only on first run when writable), the chain is an HMAC-SHA256 keyed by that secret
+instead. The key lives **under the self-protected hooks directory**, so the enforcement
+self-protection floor guards it from agent reads and overwrites. (Installs that minted the key at
+the older `~/.claudesec/audit-key` location are migrated in place on first run — the existing
+bytes are preserved, so the chain keeps verifying.)
+
+### Pruning re-anchors the chain
+
+Retention prunes the **oldest** rows once a log passes its cap. A naive chain would then report a
+false "tampered," because the new oldest row still pointed at a hash that no longer exists. ClaudeSec
+**re-anchors** instead: after a prune, the surviving rows are re-threaded from a fresh seed in the
+same transaction, so a verify never sees a half-pruned state and a pruned-but-otherwise-intact log
+reports as **intact**. Pruning a long-lived log does not make `verify` cry tamper.
+
+### Reset detection
+
+Verify also catches a **wholesale wipe**. A genuinely empty log (no rows) is fine, but a log that
+has rows where **none** carry a hash is reported as **broken** — that is the signature of someone
+blanking every hash or swapping in an all-unhashed database to defeat the check. Rows that predate
+hashing (a real legacy upgrade) are skipped cleanly; only an all-rows-unhashed table trips reset
+detection.
 
 <Note>
   **Honest limitation — tamper-*evident*, not tamper-*proof*.** The chain makes after-the-fact
-  edits *detectable*; it does not make them *impossible*. Without the HMAC key, anyone with write
-  access to the database could rewrite a row and recompute the rest of the chain. The local key is
-  the unforgeability backstop — keep it readable only by the owner, and back it up separately if
-  you rely on it.
+  edits, reordering, deletion, and a wholesale wipe *detectable*; it does not make them *impossible*.
+  A same-user attacker who can read the local HMAC key (or, without a key, anyone with database write
+  access) can recompute the whole chain and forge a self-consistent history; truncating the newest
+  rows off the tail is the residual gap the chain cannot detect on its own. Storing the key under the
+  self-protected hooks directory raises that bar but does not eliminate it. Keep the key readable only
+  by the owner, and back it up separately if you rely on it.
 </Note>
 
 ## Endpoints
@@ -117,7 +139,9 @@ curl "http://localhost:3000/api/audit-log?limit=25&before=40"
 
 Recompute the [hash chains](#how-tamper-evident-works) for **both** append-only logs — the
 operator audit log and the persisted [enforcement feed](/api-reference/enforcement-api) — and
-report whether each is intact. This is a read-only check; it never mutates anything.
+report whether each is intact. This is a read-only check; it never mutates anything. A log that has
+only been **pruned** (re-anchored, see above) reports `ok: true`; a log that has been **wiped**
+(rows present, none hashed) reports `ok: false`.
 
 ```bash
 curl http://localhost:3000/api/audit/verify
@@ -141,4 +165,4 @@ curl http://localhost:3000/api/audit/verify
 | `*.rows` | Total rows scanned |
 | `*.hashedRows` | Rows that participate in the chain (rows that predate hashing are skipped) |
 | `*.signed` | `true` when an HMAC key is in use (otherwise a plain SHA-256 chain) |
-| `*.brokenAtId` | Present only on failure — the `id` of the first row whose stored hash no longer matches a recomputation, i.e. where the log was tampered with |
+| `*.brokenAtId` | Present only on failure — the `id` of the first row whose stored hash no longer matches a recomputation, i.e. where the log was tampered with. Absent when failure is a wholesale wipe (rows present, none hashed) rather than an in-place edit |
