@@ -69,7 +69,7 @@ ClaudeSec reads sensitive material, so it is built local-first:
 
 - **Loopback only** — the server binds `127.0.0.1` by default.
 - **No egress** — nothing is sent anywhere unless you opt in. There are three optional outbound paths, all off unless set: `OTEL_FORWARD_URL` (forward OTLP traces), `CLAUDESEC_WEBHOOK_URL` (alert delivery), and `CLAUDESEC_JUDGE_URL` (the optional LLM-as-judge). All are SSRF-guarded; the judge additionally allows loopback, so it can run fully on-device.
-- **Owner-only database** — `spans_internal.db` is created with `0600` permissions.
+- **Owner-only database** — `spans.db` is created with `0600` permissions.
 - **Secret scrubbing on by default** — see [Privacy & Security](/security/privacy).
 
 ---
@@ -89,7 +89,7 @@ flowchart LR
     REMOTE["Remote / CI agents"] -->|"OTLP POST /v1/traces"| ING
     W --> ING["ingestSpan()"]
     ING --> RULES["~639 rules + secret scrub"]
-    RULES --> DB[("SQLite · spans_internal.db · 0600")]
+    RULES --> DB[("SQLite · spans.db · 0600")]
     DB --> IO["Socket.io"]
     IO --> UI["Dashboard · 127.0.0.1:3000"]
 ```

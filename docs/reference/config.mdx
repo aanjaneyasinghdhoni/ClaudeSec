@@ -21,7 +21,7 @@ All configuration is **optional** — ClaudeSec runs with sensible defaults and 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CLAUDESEC_DB` | `spans_internal.db` | SQLite database path. Point throwaway / test instances elsewhere to isolate them |
+| `CLAUDESEC_DB` | `~/.claudesec/spans.db` | SQLite database path. Point throwaway / test instances elsewhere to isolate them |
 | `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the destructive data-wipe is disabled by default |
 | `CLAUDESEC_SEED_DEMO` | — | Set `1` to seed an **empty** database once with synthetic demo sessions on startup. Used by the isolated demo container; never touches a database that already has data |
 

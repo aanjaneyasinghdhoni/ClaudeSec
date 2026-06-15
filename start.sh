@@ -226,12 +226,11 @@ if [ "$MODE" = "demo-local" ]; then
   DEMO_DB="$DEMO_HOME/demo.db"
 
   # Refuse outright if the demo DB would carry the live database's filename.
-  # The live DB is named "spans_internal.db" (and historically "spans.db"); the
-  # demo DB must not collide with either, old or new.
+  # The live DB is named "spans.db"; the demo DB must never collide with it.
   case "$(basename "$DEMO_DB")" in
-    spans.db|spans_internal.db)
+    spans.db)
       echo "Error: refusing to seed — the demo DB path resolves to the live" >&2
-      echo "       database filename (spans.db / spans_internal.db). Aborting to protect real data." >&2
+      echo "       database filename (spans.db). Aborting to protect real data." >&2
       exit 1
       ;;
   esac

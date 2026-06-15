@@ -226,7 +226,7 @@ sub-processes, or persisting beyond its session — without the user's knowledge
 | Exfiltration rules: secrets/env piped to `curl`/`wget`/`nc`/`scp`/`rsync` | BLOCKS always (catastrophic floor, two high-precision patterns) / DETECTS (CRITICAL) |
 | Netcat file transfer to remote host | DETECTS (CRITICAL) |
 | Process tab surfaces all running agent processes by PID | VISIBILITY |
-| `spans_internal.db` provides a persistent audit log of every tool call, independent of the agent's own logs | AUDIT |
+| `spans.db` provides a persistent audit log of every tool call, independent of the agent's own logs | AUDIT |
 
 ---
 

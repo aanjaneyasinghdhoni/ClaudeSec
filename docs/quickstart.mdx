@@ -76,7 +76,7 @@ node cli/init.mjs            # install + start the service, open the dashboard
 node cli/init.mjs stop       # stop and remove the service
 ```
 
-Installing the service also removes any legacy ClaudeSec OTEL config it finds — the watcher needs none. Your data in `~/.claudesec` / `spans_internal.db` is left untouched; to wipe stored data, run `node cli/init.mjs reset`.
+Installing the service also removes any legacy ClaudeSec OTEL config it finds — the watcher needs none. Your data in `~/.claudesec/spans.db` is left untouched; to wipe stored data, run `node cli/init.mjs reset`.
 
 ---
 

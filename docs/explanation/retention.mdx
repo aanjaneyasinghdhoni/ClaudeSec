@@ -3,7 +3,7 @@ title: "Data retention & dashboard capacity"
 description: "What ClaudeSec keeps, how pruning actually works, and how to tune capacity for heavy use."
 ---
 
-ClaudeSec is built to **keep your data**. There is no aggressive auto-delete: spans, sessions, and alerts stay in the local SQLite database (`spans_internal.db`) until they cross one of two configured limits, or you prune by hand. This page explains exactly how that works so you can reason about capacity.
+ClaudeSec is built to **keep your data**. There is no aggressive auto-delete: spans, sessions, and alerts stay in the local SQLite database (`spans.db`) until they cross one of two configured limits, or you prune by hand. This page explains exactly how that works so you can reason about capacity.
 
 ## The two limits
 
@@ -45,7 +45,7 @@ export CLAUDESEC_MAX_SPANS=200000
 
 Trade-offs to weigh:
 
-- **Disk and memory.** More spans means a larger `spans_internal.db` and a larger FTS index. SQLite handles this well, but the file grows roughly linearly with span count.
+- **Disk and memory.** More spans means a larger `spans.db` and a larger FTS index. SQLite handles this well, but the file grows roughly linearly with span count.
 - **Query and prune cost.** Searches and prune passes touch more rows. Day-to-day queries stay fast thanks to the FTS5 index; the periodic prune simply has more to scan.
 - **Graph rendering is unaffected.** Because the graph is bounded by `CLAUDESEC_GRAPH_LIMIT`, a bigger `CLAUDESEC_MAX_SPANS` does not slow the graph down — only Search and Sessions see the larger window.
 
