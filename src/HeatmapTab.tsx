@@ -23,7 +23,7 @@ const HOURS = Array.from({ length: 24 }, (_, i) =>
 
 // Interpolate green→yellow→red based on ratio 0..1
 function threatColor(ratio: number): string {
-  if (ratio === 0)      return 'rgba(30,41,59,0.8)';      // bg-slate-800 — no data
+  if (ratio === 0)      return 'var(--cs-bg-elevated)';   // empty surface — no data (theme-aware)
   if (ratio < 0.0001)  return 'rgba(34,197,94,0.25)';    // green — safe activity
   if (ratio < 0.25)    return 'rgba(34,197,94,0.6)';
   if (ratio < 0.5)     return 'rgba(234,179,8,0.7)';     // yellow
@@ -110,7 +110,7 @@ export function HeatmapTab() {
     if (mode === 'spans') {
       const ratio = cell.spans / data.maxSpans;
       return ratio === 0
-        ? 'rgba(30,41,59,0.8)'
+        ? 'var(--cs-bg-elevated)'
         : `rgba(var(--cs-accent-rgb),${0.15 + ratio * 0.85})`;
     }
     if (mode === 'threat-abs') {

@@ -178,7 +178,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 - **What data is processed.** OpenTelemetry spans describing AI-agent activity: tool
   names, command lines, file paths, and (when enhanced telemetry is enabled) prompts and
   arguments. This material **may contain secrets or personal data** by nature.
-- **Where it lives.** A single local SQLite database (`spans.db`), created with `0600`
+- **Where it lives.** A single local SQLite database (`spans_internal.db`), created with `0600`
   (owner-only) permissions, plus hourly JSON snapshots in `exports/` (also `0600`; the
   most recent 24 are kept). Nothing is stored off the host.
 - **Secret & PII scrubbing.** On by default. Before any span is persisted, broadcast, or

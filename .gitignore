@@ -41,4 +41,3 @@ screenshots/
 # OS / editor noise
 .DS_Store
 *.log
-.gstack/

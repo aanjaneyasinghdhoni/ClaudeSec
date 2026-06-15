@@ -12,7 +12,7 @@ ClaudeSec sees your agents' commands, prompts, and code. It is built so none of 
   - `OTEL_FORWARD_URL` — forwards received OTLP traces to an upstream collector. SSRF-guarded (private and loopback ranges blocked).
   - `CLAUDESEC_WEBHOOK_URL` — delivers alerts to a Slack / Discord / generic JSON endpoint. SSRF-guarded (private and loopback ranges blocked).
   - `CLAUDESEC_JUDGE_URL` — the optional [LLM-as-judge](/how-to/local-llm). SSRF-guarded for non-loopback URLs; loopback is allowed so the judge can run fully on-device (the recommended no-egress setup).
-- **Owner-only database** — `spans.db` is created with `0600` permissions (owner read/write only).
+- **Owner-only database** — `spans_internal.db` is created with `0600` permissions (owner read/write only).
 - **Username scrubbing** — process command lines and OS usernames are masked (`/Users/***`, `user: ***`) before being shown or exported.
 
 ## Secret scrubbing (on by default)

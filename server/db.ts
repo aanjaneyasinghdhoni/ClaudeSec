@@ -1,13 +1,57 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
+import path from 'path';
 
 // ---------------------------------------------------------------------------
 // SQLite setup
 // ---------------------------------------------------------------------------
 
 // DB path is configurable via CLAUDESEC_DB so test/throwaway server instances
-// can point at an isolated database and NEVER touch the live spans.db.
-export const DB_PATH = process.env.CLAUDESEC_DB ?? 'spans.db';
+// can point at an isolated database and NEVER touch the live spans_internal.db.
+export const DB_PATH = process.env.CLAUDESEC_DB ?? 'spans_internal.db';
+
+/**
+ * One-time, idempotent rename of a legacy `spans.db` to the current default
+ * `spans_internal.db`. Earlier releases stored everything in `spans.db`; this
+ * keeps those users' data instead of silently opening a fresh, empty file.
+ *
+ * Rules (all conservative, data-first):
+ *   • Only acts when the target does NOT yet exist — we NEVER overwrite a DB.
+ *   • Only acts when a legacy `spans.db` sits in the SAME directory as the
+ *     resolved target. `fs.renameSync` is atomic and preserves the data; we
+ *     never copy-then-delete and never unlink.
+ *   • Moves the `-wal` / `-shm` siblings alongside, mirroring the chmod loop.
+ *   • Fails open: any error is swallowed and we simply open whatever path was
+ *     configured — consistent with the rest of the codebase's posture.
+ *
+ * Note: if CLAUDESEC_DB is explicitly pinned to a path ending in `spans.db`,
+ * that file already exists, so the "target absent" guard short-circuits and the
+ * legacy deployment opens untouched.
+ */
+export function migrateLegacyDbName(targetPath: string): void {
+  try {
+    if (fs.existsSync(targetPath)) return; // never overwrite an existing target
+
+    const legacyPath = path.join(path.dirname(targetPath), 'spans.db');
+    if (path.resolve(legacyPath) === path.resolve(targetPath)) return; // target IS the legacy file
+    if (!fs.existsSync(legacyPath)) return; // nothing to migrate
+
+    for (const suffix of ['', '-wal', '-shm']) {
+      const from = `${legacyPath}${suffix}`;
+      const to = `${targetPath}${suffix}`;
+      // Only move the main file unconditionally; move siblings if present and
+      // not already at the destination.
+      if (fs.existsSync(from) && !fs.existsSync(to)) {
+        fs.renameSync(from, to);
+      }
+    }
+  } catch {
+    // Fail open: proceed to open the configured path as-is.
+  }
+}
+
+migrateLegacyDbName(DB_PATH);
+
 export const db = new Database(DB_PATH);
 
 // SECURITY: WAL mode allows concurrent reads during writes — prevents blocking under load

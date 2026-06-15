@@ -6,8 +6,10 @@
  *   node scripts/db-query.cjs "SELECT count(*) FROM spans"
  *   node scripts/db-query.cjs "SELECT name, severity FROM spans ORDER BY startNano DESC LIMIT 20"
  *
- * Respects CLAUDESEC_DB (defaults to spans.db).
+ * Respects CLAUDESEC_DB (defaults to spans_internal.db, falling back to the
+ * legacy spans.db name if that is the only file present).
  */
+const fs = require('fs');
 const path = require('path');
 const Database = require(path.join(__dirname, '..', 'node_modules', 'better-sqlite3'));
 
@@ -24,7 +26,14 @@ if (/;/.test(stripped) || !/^(?:select|with)\b/i.test(stripped)) {
   process.exit(2);
 }
 
-const dbPath = process.env.CLAUDESEC_DB || 'spans.db';
+function resolveDbPath() {
+  if (process.env.CLAUDESEC_DB) return process.env.CLAUDESEC_DB;
+  // Prefer the current name; fall back to the legacy name during migration.
+  return fs.existsSync('spans_internal.db') || !fs.existsSync('spans.db')
+    ? 'spans_internal.db'
+    : 'spans.db';
+}
+const dbPath = resolveDbPath();
 const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 try {
   const rows = db.prepare(stripped).all();
