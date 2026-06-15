@@ -51,9 +51,15 @@ function runBash(command: string): Promise<{ code: number | null }> {
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.CLAUDESEC_MODE;
     delete env.CLAUDESEC_HOOKS_BYPASS;
-    delete env.CLAUDESEC_ENFORCE_CONFIG;
     delete env.CLAUDESEC_ENFORCE_RULES;
     delete env.CLAUDESEC_PROTECTED_PATHS;
+    // Pin the resolved mode to the safe MONITOR default deterministically: point
+    // the config at a path that does not exist, so resolution falls through
+    // file → CLAUDESEC_MODE (deleted) → 'monitor'. Without this the hook would
+    // read the machine's USER-GLOBAL ~/.claudesec/hooks/enforce-config.json (often
+    // 'enforce' on a dev box) and a rule-block could mask the always-on
+    // catastrophic floor this test exists to prove. The floor fires in every mode.
+    env.CLAUDESEC_ENFORCE_CONFIG = path.join(REPO_ROOT, 'tests', '.nonexistent-enforce-config.json');
     env.CLAUDESEC_PORT = '9'; // dead port — the block POST goes nowhere
 
     const child = spawn(process.execPath, [HOOK], { cwd: REPO_ROOT, env });

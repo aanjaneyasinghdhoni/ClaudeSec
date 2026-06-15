@@ -554,12 +554,48 @@ export function resolveSnapshotPath(): string {
   return path.join(REPO_ROOT, 'rules-enforcement.json');
 }
 
-/** Resolve the enforce-config.json path (override-aware). */
-export function resolveConfigPath(): string {
+/**
+ * CANONICAL enforce-config.json resolution — the SINGLE source of truth for the
+ * effective-mode file, shared by the server status reader (enforceStatus.ts
+ * re-exports this) AND mirrored byte-for-byte by the PreToolUse hooks
+ * (.claude/hooks + cli/hooks claudesec-enforce.cjs). A parity test
+ * (tests/enforceConfigPathParityTest.ts) asserts the hook and the server resolve
+ * the IDENTICAL file + mode for the same environment, so the dashboard can never
+ * report a mode the installed hook does not actually run.
+ *
+ * Precedence (fail-OPEN / monitor-by-default; documented once, here):
+ *   1. CLAUDESEC_ENFORCE_CONFIG — explicit path override (tests / isolated server).
+ *   2. <CLAUDESEC_HOME or ~/.claudesec>/hooks/enforce-config.json — the USER-GLOBAL
+ *      control plane the installed hook reads. This is the primary, machine-wide
+ *      source of truth. It is intentionally NOT per-cwd: a previous bug made the
+ *      mode depend on which directory you were in (a repo-root enforce-config.json
+ *      shadowed the global one), so the dashboard could show 'monitor' while the
+ *      installed hook ran 'enforce'. The repo-root file is no longer in the
+ *      precedence on EITHER side.
+ *   3. Docker/portable fallback — beside the resolver (hookFallbackDir): the hook
+ *      passes its own __dirname; the server (no global file, no install) passes
+ *      its hooks dir, which is the same global path, so this only matters for a
+ *      hook running self-contained where the global dir doesn't exist (Docker).
+ * `hookFallbackDir` lets the hook supply its installed location; the server omits
+ * it (its primary IS the global path, so a separate fallback is redundant).
+ */
+export function resolveConfigPath(hookFallbackDir?: string): string {
+  // 1. Explicit override.
   if (process.env.CLAUDESEC_ENFORCE_CONFIG) {
     return path.resolve(process.env.CLAUDESEC_ENFORCE_CONFIG);
   }
-  return path.join(REPO_ROOT, 'enforce-config.json');
+  // 2. User-global control plane (primary).
+  const global = path.join(hookArtifactsDir(), 'enforce-config.json');
+  if (fs.existsSync(global)) return global;
+  // 3. Docker/portable fallback — only when a caller supplied one AND the global
+  //    file is absent (e.g. a hook shipped inside a container, no ~/.claudesec).
+  if (hookFallbackDir) {
+    const beside = path.join(hookFallbackDir, 'enforce-config.json');
+    if (fs.existsSync(beside)) return beside;
+  }
+  // No readable file → return the global path so the (absent) file read fails
+  // cleanly and resolveMode falls through to CLAUDESEC_MODE → 'monitor'.
+  return global;
 }
 
 /**

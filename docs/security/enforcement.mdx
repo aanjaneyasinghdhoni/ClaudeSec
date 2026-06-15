@@ -163,11 +163,12 @@ Or set `CLAUDESEC_MODE=enforce` in the hook's environment.
 
 ### Mode precedence
 
-The hook resolves its mode with a **fixed, deterministic order**. The first layer that supplies a valid `monitor`/`enforce` value wins:
+The hook resolves its mode with a **fixed, deterministic order**, and the dashboard's status reader resolves it the **same way** — there is one source of truth, so what the **Enforce** tab reports is exactly what the hook runs. The first layer that supplies a valid `monitor`/`enforce` value wins:
 
-1. **`enforce-config.json`** — the file the dashboard toggle writes (highest precedence).
-2. **`CLAUDESEC_MODE`** — the environment variable.
-3. **`monitor`** — the default when neither of the above is set.
+1. **`CLAUDESEC_ENFORCE_CONFIG`** — an explicit path override, if set (used by tests / an isolated server).
+2. **`~/.claudesec/hooks/enforce-config.json`** — the **user-global** control-plane file the dashboard toggle writes (honoring `CLAUDESEC_HOME`). This is the single, machine-wide source of truth — it is **not** per-directory, so the mode never depends on which project you are in.
+3. **`CLAUDESEC_MODE`** — the environment variable.
+4. **`monitor`** — the default when none of the above supplies a valid value.
 
 The consequence trips people up: **the config file wins over the env var.** If you set `CLAUDESEC_MODE=enforce` but `enforce-config.json` says `monitor`, the hook runs `monitor` — the env value is ignored. The **Enforce** tab surfaces this directly: when the env var is being overridden by the config file, it shows a warning naming both values, so a stale config can't silently leave you in the wrong mode.
 

@@ -70,14 +70,17 @@ function runFetch(toolInput: unknown, opts: Opts = {}): Promise<{ code: number |
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.CLAUDESEC_MODE;
     delete env.CLAUDESEC_HOOKS_BYPASS;
-    delete env.CLAUDESEC_ENFORCE_CONFIG;
     delete env.CLAUDESEC_ENFORCE_RULES;
     delete env.CLAUDESEC_PROTECTED_PATHS;
     delete env.CLAUDESEC_ALLOW_LOCAL_FETCH;
     env.CLAUDESEC_PORT = '9'; // dead port — the block POST goes nowhere
-    // Drive enforce mode via the config FILE override (resolveMode reads it before
-    // CLAUDESEC_MODE; the repo-root config otherwise pins 'monitor'). Monitor is
-    // the hook's safe default when no config/env is set.
+    // Pin the resolved mode deterministically. By default point the config at a
+    // path that does not exist, so resolution falls through file → CLAUDESEC_MODE →
+    // 'monitor' regardless of the machine's USER-GLOBAL
+    // ~/.claudesec/hooks/enforce-config.json (often 'enforce' on a dev box). Drive
+    // enforce mode via the config FILE override (resolveMode reads it before
+    // CLAUDESEC_MODE).
+    env.CLAUDESEC_ENFORCE_CONFIG = path.join(REPO_ROOT, 'tests', '.nonexistent-enforce-config.json');
     if (opts.mode === 'enforce') env.CLAUDESEC_ENFORCE_CONFIG = ENFORCE_CONFIG;
     else if (opts.mode) env.CLAUDESEC_MODE = opts.mode;
     if (opts.allowLocal) env.CLAUDESEC_ALLOW_LOCAL_FETCH = '1';

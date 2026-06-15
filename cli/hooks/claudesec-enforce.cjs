@@ -249,17 +249,46 @@ function resolveSnapshotPath() {
   return path.resolve(__dirname, '..', '..', 'rules-enforcement.json');
 }
 
-/** Resolve the enforce-config.json path (server-written effective mode). */
+/**
+ * Resolve ~/.claudesec/hooks — the USER-GLOBAL enforcement control plane.
+ * Honors CLAUDESEC_HOME exactly as the installer/server do. Mirrors
+ * hookArtifactsDir() in server/enforceEval.ts (parity test).
+ */
+function hookArtifactsDir() {
+  const homeDir = process.env.CLAUDESEC_HOME || path.join(os.homedir(), '.claudesec');
+  return path.join(homeDir, 'hooks');
+}
+
+/**
+ * CANONICAL enforce-config.json resolution — kept byte-for-byte in step with
+ * server/enforceEval.ts resolveConfigPath() so the dashboard's reported effective
+ * mode is EXACTLY what this hook runs. A parity test
+ * (tests/enforceConfigPathParityTest.ts) enforces the agreement.
+ *
+ * Precedence (fail-OPEN / monitor-by-default):
+ *   1. CLAUDESEC_ENFORCE_CONFIG — explicit path override (tests / isolated server).
+ *   2. <CLAUDESEC_HOME or ~/.claudesec>/hooks/enforce-config.json — the USER-GLOBAL
+ *      control plane (primary, machine-wide). NOT per-cwd: a repo-root config file
+ *      is deliberately NO LONGER consulted — it once made the mode depend on which
+ *      directory the agent ran in, so the dashboard could read 'monitor' while the
+ *      installed hook ran 'enforce'. The global file is the one source of truth.
+ *   3. Beside THIS hook (__dirname) — Docker/portable fallback, only when the
+ *      global file is absent (a hook shipped self-contained with no ~/.claudesec).
+ * When nothing readable exists, return the global path so the absent-file read
+ * fails cleanly and resolveMode falls through to CLAUDESEC_MODE → 'monitor'.
+ */
 function resolveConfigPath() {
-  // 1. Explicit override (absolute or relative) — used by tests / isolated server.
+  // 1. Explicit override.
   if (process.env.CLAUDESEC_ENFORCE_CONFIG) {
     return path.resolve(process.env.CLAUDESEC_ENFORCE_CONFIG);
   }
-  // 2. Next to this hook (installed layout), if present.
+  // 2. User-global control plane (primary).
+  const global = path.join(hookArtifactsDir(), 'enforce-config.json');
+  if (fs.existsSync(global)) return global;
+  // 3. Docker/portable fallback — beside this hook, only when the global is absent.
   const beside = path.join(__dirname, 'enforce-config.json');
   if (fs.existsSync(beside)) return beside;
-  // 3. Fallback: running in-repo → <repo>/enforce-config.json.
-  return path.resolve(__dirname, '..', '..', 'enforce-config.json');
+  return global;
 }
 
 /**
