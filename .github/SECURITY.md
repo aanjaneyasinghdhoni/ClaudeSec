@@ -27,7 +27,7 @@ I will acknowledge your report within **48 hours** and aim to share a status upd
 
 ## Security Posture Statement
 
-As of **2026-06-13**, no CVEs have been reported against ClaudeSec itself. ClaudeSec is a
+As of **2026-06-15**, no CVEs have been reported against ClaudeSec itself. ClaudeSec is a
 local-first, single-maintainer open-source project — it has not undergone a third-party
 penetration test or formal security audit, and makes no claim of certification.
 
@@ -48,6 +48,11 @@ not itself an isolated sandbox and carries the limitations any local server does
 - **Threat detection engine** — 639 regex rules, RE2-compiled (linear-time, ReDoS-safe on the
   server path). Pattern matching produces false positives. It is defence-in-depth, not a
   guarantee.
+- **Audit logs** — the operator audit log and the enforcement block-feed are append-only and
+  **hash-chained**, so a later edit to an earlier row is detectable (`GET /api/audit/verify`). An
+  optional local key (`~/.claudesec/audit-key`) signs the chain. This is tamper-*evident*, not
+  tamper-*proof* — without the key, someone with database write access could rewrite a row and
+  recompute the chain.
 
 **Relevant upstream CVEs** — two vulnerabilities were disclosed in 2025–2026 against Anthropic's
 Claude Code CLI itself (not ClaudeSec), and are relevant context for users of both tools:
@@ -60,7 +65,11 @@ Claude Code CLI itself (not ClaudeSec), and are relevant context for users of bo
   repository's settings file, redirecting authenticated traffic before any trust prompt. Fixed
   in Claude Code v2.0.65. ClaudeSec's own SSRF guard blocks requests to private/loopback ranges
   on all optional outbound paths (`OTEL_FORWARD_URL`, `CLAUDESEC_WEBHOOK_URL`,
-  `CLAUDESEC_JUDGE_URL`).
+  `CLAUDESEC_JUDGE_URL`), and — when the enforcement hook is installed — blocks a Claude Code
+  `WebFetch` to a cloud-metadata / link-local host in either mode (loopback/private ranges in
+  `enforce`). The hook matches the literal host, so it does not resolve a public name that points
+  at an internal IP (DNS rebinding); the server-side guard, which DNS-resolves every target, covers
+  the paths it controls.
 
 ---
 

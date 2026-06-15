@@ -112,7 +112,7 @@ A threshold alert fires at most once per `window_min` minutes per session to pre
 
 ## SQLite schema
 
-All data lives in a single file (`spans.db`) created automatically on first run under `~/.claudesec`. The file is gitignored.
+All data lives in a single file at `~/.claudesec/spans.db`, created automatically on first run (the parent directory is created if missing). The resolved absolute path is **logged at boot**, and is overridable with `CLAUDESEC_DB`. The file is gitignored.
 
 | Table | Purpose |
 |-------|---------|
@@ -125,7 +125,20 @@ All data lives in a single file (`spans.db`) created automatically on first run 
 | `webhook_deliveries` | Log of every webhook delivery attempt (last 500 rows). |
 | `config` | Key-value store for runtime configuration (webhook URL, retention settings). |
 | `suppressions` | Active rule snoozes — rules suppressed until a given timestamp. |
+| `operator_audit_log` | Append-only record of config-mutating actions; **hash-chained** (tamper-evident). |
+| `enforce_log` | Persisted enforcement would-block/block feed; capped at 500 and **hash-chained**. |
 | `spans_fts` | FTS5 virtual table mirroring `spans(spanId, name, attributes)`. |
+
+### Durability & lifecycle
+
+- **WAL + `busy_timeout`.** The database runs in WAL mode (concurrent reads during writes); `busy_timeout = 5000` makes a momentarily-contended writer wait up to 5s for the lock rather than fail with `SQLITE_BUSY`.
+- **Graceful shutdown.** On `SIGTERM` / `SIGINT` the server stops accepting connections, checkpoints the WAL back into the main file, and closes the handle — so an abrupt stop can't leave a half-applied WAL.
+- **Online binary backups.** A consistent `.db` snapshot is written to `~/.claudesec/backups/` (`0600`, most-recent 7 retained) shortly after boot and daily thereafter, using SQLite's online backup API. This is distinct from the hourly human-readable JSON auto-export in `exports/`.
+- **Tamper-evident logs.** `operator_audit_log` and `enforce_log` carry a per-row hash chain (optionally HMAC-keyed by a local `~/.claudesec/audit-key`); `GET /api/audit/verify` recomputes both chains. See the [Audit Log API](/api-reference/audit-log).
+
+### Import-safe startup
+
+`server/index.ts` is **side-effect-free on import**: merely importing the module starts no HTTP listener, schedules no timers, and writes no hook-config mirrors. The server only autostarts — and only then derives the hook artifacts (protected-paths, rules snapshot, enforce mode) from the database — when the file is the process entry point. Set `CLAUDESEC_NO_AUTOSTART=1` to force import-only behaviour regardless of how the module is invoked.
 
 ### FTS5 full-text index
 

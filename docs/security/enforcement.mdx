@@ -9,7 +9,18 @@ Detection tells you what an agent *already did*. **Enforcement** can stop a tool
   **Enforcement is opt-in. Out of the box, ClaudeSec only observes — it blocks nothing.** There is **zero pre-execution blocking** until you [install the hook](#install-the-hook). Even then, it reaches **Claude Code only**, is **monitor by default**, and is **fail-open** (see below). It raises the bar for an agent; it is not an OS sandbox or a hard guarantee.
 </Warning>
 
-When Claude Code is about to run a `Bash`, `Edit`, `Write`, or `MultiEdit` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent). Two **always-on floors** block in either mode — the [catastrophic floor](#the-catastrophic-floor) and your [protected paths](#protected-paths-always-on) — while the broader high- and critical-severity rules block only once you switch to [enforce](#modes).
+When Claude Code is about to run a `Bash`, `Edit`, `Write`, `Read`, or `WebFetch` tool call, it passes the proposed payload to the hook on stdin. The hook evaluates that payload and either allows it (exit 0) or denies it (exit 2, with a reason shown to the agent). Two **always-on floors** block in either mode — the [catastrophic floor](#the-catastrophic-floor) and your [protected paths](#protected-paths-always-on) — while the broader high- and critical-severity rules block only once you switch to [enforce](#modes).
+
+### What the hook actually inspects (block actions, not edits)
+
+The hook does **not** scan the body of every file you write against the rule library — that would block legitimate edits to security code, attack-pattern docs, or secret-shaped test fixtures. Instead it gates on the **action and its target**:
+
+- **`Bash`** — the full command is evaluated against the rule engine **and** the always-on [catastrophic floor](#the-catastrophic-floor). This is the one tool whose entire payload is matched against the rules.
+- **`Edit` / `Write` / `MultiEdit`** — the block decision is the **file path + action**, checked against your [protected paths](#protected-paths-always-on). The only thing the hook reads from the file *content* is a tiny, high-confidence **live-secret floor**: it refuses to write an unambiguous live credential (an AWS key, a GitHub token, a private-key block, …), with documentation placeholders (e.g. AWS's canonical `AKIAIOSFODNN7EXAMPLE`) allowlisted. The static body of the code being written is **never** matched against the broader rule set.
+- **`Read`** — runs only the protected-paths floor, so a read of a protected secret can be denied before it happens. It is never matched against the command rules.
+- **`WebFetch`** — runs the [SSRF-on-fetch floor](#ssrf-on-fetch) so a fetch aimed at a cloud-metadata or internal host is denied before the request leaves the machine.
+
+This is the key distinction from **detection**: the dashboard's threat detection still inspects full span content, so you keep visibility into everything an agent did even when the enforcement floor, by design, only blocks on the path + action.
 
 <Warning>
   The hook is the **Claude Code layer** — it is agent-specific and bypassable (see [Bypass](#bypass)), **not** an OS-level sandbox. It also **fails open**: any error, missing config, or unparseable input results in *allow*, so a broken enforcement config can never lock you out. For agents that aren't Claude Code, the same rules are enforced at the **MCP wire level** — see [Cross-agent enforcement](#cross-agent-enforcement-mcp-proxy).
@@ -28,7 +39,7 @@ This is **consent-gated**: before it touches anything, it prints the exact targe
 1. **Builds the rules snapshot locally.** It runs `scripts/build-enforcement-rules.ts` against your in-repo rule source to generate a fresh `rules-enforcement.json`. This is a pure local build — **no network call, ever** — so the hook blocks exactly the rules in *your* checkout.
 2. **Copies the hook + snapshot** into `~/.claudesec/hooks/` (`claudesec-enforce.cjs` and its `rules-enforcement.json`, side by side).
 3. **Backs up your settings first.** If `~/.claude/settings.json` already exists, it's copied to a timestamped `.bak-<ts>` before any write.
-4. **Merges PreToolUse entries** into `~/.claude/settings.json` — one matching `Bash`, one matching `Edit|Write|MultiEdit|NotebookEdit`, and one matching `Read` (so a protected path is also denied on read). Every other key, hook, and matcher in your settings is preserved untouched.
+4. **Merges PreToolUse entries** into `~/.claude/settings.json` — one matching `Bash`, one matching `Edit|Write|MultiEdit|NotebookEdit`, one matching `Read` (so a protected path is also denied on read), and one matching `WebFetch|WebSearch` (so an [SSRF](#ssrf-on-fetch) to a cloud-metadata / internal host is denied before the request leaves the machine). Every other key, hook, and matcher in your settings is preserved untouched.
 5. **Logs the action** to `~/.claudesec/install.log`.
 
 It is **idempotent**: re-running refreshes the copied hook and snapshot and never duplicates the settings entries. Restart Claude Code afterward so it loads the hook.
@@ -44,7 +55,7 @@ node cli/init.mjs uninstall-hook            # remove only ClaudeSec's settings e
 node cli/init.mjs uninstall-hook --purge    # also delete ~/.claudesec/hooks/
 ```
 
-Uninstall removes **only** ClaudeSec's own three PreToolUse entries — everything else in your settings stays. It backs up `settings.json` first, the same way install does. Add `--purge` to also delete the copied hook and snapshot under `~/.claudesec/hooks/`. Restart Claude Code to drop the hook.
+Uninstall removes **only** ClaudeSec's own four PreToolUse entries — everything else in your settings stays. It backs up `settings.json` first, the same way install does. Add `--purge` to also delete the copied hook and snapshot under `~/.claudesec/hooks/`. Restart Claude Code to drop the hook.
 
 ## Modes
 
@@ -59,18 +70,39 @@ The broader rule library — and any **custom regex rules** you add in the dashb
 
 ### The catastrophic floor
 
-A small set of bash patterns **always** block, in either mode — the unambiguous "you almost certainly did not mean this" commands, plus two high-precision secret-exfiltration patterns:
+A set of bash patterns **always** block, in either mode — the unambiguous "you almost certainly did not mean this" commands, plus two high-precision secret-exfiltration patterns:
 
-- `rm -rf` against the filesystem root (`/`)
+- `rm -rf` against the filesystem root (`/`), including the `--no-preserve-root` form that exists only to defeat that guard
+- recursive deletes of a critical system tree or the whole home — `/etc`, `/boot`, `/usr` (and `/usr/{bin,lib,sbin,…}`), `/var` (and `/var/{lib,log,db,…}`), `~` / `$HOME`. Developer territory is **carved out** so routine cleanup is never walled off: `/usr/local` (Homebrew, global npm), `/var/folders` and `/var/tmp` (the macOS `$TMPDIR`), and any sub-path like `~/project` stay allowed
 - fork bombs
 - piping a remote download straight into a shell (`curl … | sh` / `wget … | sh`)
-- reverse shells via `/dev/tcp`
+- reverse shells via `/dev/tcp` and `/dev/udp`, and netcat reverse shells (`nc -e` / `nc -c`)
 - formatting a filesystem (`mkfs.*`)
-- overwriting a raw disk device (`dd of=/dev/…`)
+- overwriting or redirecting onto a raw disk device (`dd of=/dev/…`, `> /dev/sda`), including a single partition (`/dev/sda1`, `/dev/nvme0n1p2`)
+- common Windows destructive commands — `format <drive:>`, `diskpart`, `bcdedit`, `del /f /q /s`, `rd /s`, deleting volume shadow copies (`vssadmin delete shadows`), secure-wiping free space (`cipher /w`), and wiping the event log (`wevtutil cl`). Each is anchored so the ordinary dev word (`npm run format`, a `formatter`) never matches
 - reading a secret and piping it to the network in one command (`cat ~/.ssh/id_rsa | curl …`)
 - uploading a secret file directly to the network (`curl -d @.env https://…`)
 
-The last two are deliberately narrow — they fire only when a command both reads a known secret and ships it off-machine — so they block this always, even in monitor mode, without flagging ordinary network calls.
+The last two are deliberately narrow — they fire only when a command both reads a known secret and ships it off-machine — so they block this always, even in monitor mode, without flagging ordinary network calls. Every floor pattern is RE2-compiled and proven **linear-time** by a self-test, so a long or adversarial command line can never cause catastrophic regex backtracking.
+
+### SSRF on fetch
+
+When the hook is installed, a `WebFetch` aimed at a server-side-request-forgery target is blocked before the request leaves the machine — the classic agent-SSRF where a model is talked into fetching `http://169.254.169.254/latest/meta-data/…` and exfiltrating a cloud credential.
+
+- **Cloud-metadata and link-local addresses are blocked in *either* mode** (mode-independent floor): the whole `169.254.0.0/16` and IPv6 `fe80::/10` ranges, plus the GCP metadata hostnames (`metadata`, `metadata.google.internal`, `metadata.goog`). These have no legitimate `WebFetch` use.
+- **Loopback and private (RFC1918) ranges are blocked in `enforce` mode** — `127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `::1`. Set `CLAUDESEC_ALLOW_LOCAL_FETCH=1` to opt out (e.g. when an agent must legitimately fetch a local dev server); cloud-metadata stays blocked regardless.
+
+<Warning>
+  **Honest limitation — DNS rebinding.** The hook is synchronous and matches on the URL's literal host, so a **public hostname that resolves to an internal IP** is not caught here. The server-side SSRF guard (`server/ssrf.ts`), which DNS-resolves every host at fetch time, is the backstop for the outbound paths *it* controls (webhook / forward / judge); the hook's fetch floor catches the literal-address case that those server paths never see.
+</Warning>
+
+### Symlink-aware protected paths
+
+Protected-path checks resolve the **realpath** of a target before matching, so a symlink that points into a protected tree is blocked even though its literal spelling doesn't name the protected path. For a file that doesn't exist yet (a fresh `Write`), the hook resolves the nearest existing ancestor directory and re-appends the new tail, so you can't slip a write past the floor through a symlinked parent directory.
+
+<Note>
+  **Honest limitation — TOCTOU.** Realpath resolution happens at check time. A path that is swapped between the hook's check and the actual write (a time-of-check/time-of-use race) is a residual gap inherent to any pre-exec hook — this raises the bar, it is not an OS-level guarantee.
+</Note>
 
 ### Protected paths (always-on)
 
@@ -135,7 +167,7 @@ Every decision the hook reports streams to the **Enforce** tab over Socket.io an
 curl 'http://localhost:3000/api/enforce-log?limit=100'
 ```
 
-The feed is an in-memory ring buffer — it is cleared on server restart. **Settings → Configuration Status** also summarizes recent enforcement activity (events in the last 24h) alongside the live mode.
+The feed is **persisted to SQLite** (a capped table, pruned to the most recent 500 events) and **tamper-evident** — each event is hash-chained to the one before it, the same way the [operator audit log](/api-reference/audit-log) is, so it survives a server restart and any later edit to an earlier row is detectable. **Settings → Configuration Status** also summarizes recent enforcement activity (events in the last 24h) alongside the live mode.
 
 ## Bypass
 

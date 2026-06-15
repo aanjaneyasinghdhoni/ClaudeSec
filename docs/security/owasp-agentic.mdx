@@ -66,10 +66,10 @@ privileged tool access.
 
 | Capability | Type |
 |---|---|
-| `rm -rf /` and `rm -rf \` recursive root deletion | BLOCKS always (catastrophic floor) |
-| `mkfs.*` filesystem format, `dd of=/dev/…` raw-device overwrite | BLOCKS always |
+| `rm -rf /` (incl. `--no-preserve-root`) and recursive wipes of system trees (`/etc`, `/boot`, `/usr`, `/var`, `~`) with developer carve-outs (`/usr/local`, macOS `/var/folders` & `/var/tmp`) | BLOCKS always (catastrophic floor) |
+| `mkfs.*` filesystem format, `dd of=/dev/…` / `> /dev/sda` raw-device overwrite, Windows `format`/`diskpart`/`bcdedit`/`del /f /q /s`/`rd /s`/`vssadmin delete shadows` | BLOCKS always |
 | Fork bomb patterns | BLOCKS always |
-| `/dev/tcp/` reverse shell | BLOCKS always |
+| Reverse shells via `/dev/tcp`, `/dev/udp`, or netcat (`nc -e`/`nc -c`) | BLOCKS always |
 | SQL `DROP TABLE/DATABASE/SCHEMA`, `TRUNCATE TABLE` | DETECTS (HIGH) / BLOCKS in enforce mode |
 | `eval(`, `exec(` injection patterns | DETECTS (HIGH) / BLOCKS in enforce mode |
 | `chmod [0-7]*7[0-7]*` world-accessible permissions | DETECTS (LOW) |
@@ -92,7 +92,7 @@ privilege within the system it has access to.
 | SSH directory `~/.ssh/` access | DETECTS (HIGH) |
 | macOS Keychain `security find-generic-password` | DETECTS (MEDIUM) |
 | Secret scrubbing redacts credential shapes before storage | DEFENCE (prevents ClaudeSec itself from storing live keys) |
-| Real-world case: CVE-2026-21852 — `ANTHROPIC_BASE_URL` env-var override exfiltrating API keys before trust prompt | DETECTS as environment-variable access / env-override; SSRF guard blocks redirection to external non-trusted hosts on outbound paths |
+| Real-world case: CVE-2026-21852 — `ANTHROPIC_BASE_URL` env-var override exfiltrating API keys before trust prompt | DETECTS as environment-variable access / env-override; the SSRF guard blocks redirection to private/loopback/metadata hosts on the operator-configured outbound paths, and (with the hook installed) the SSRF-on-fetch floor blocks a `WebFetch` to a cloud-metadata / internal host |
 
 **Honest limits:** ClaudeSec detects credential *patterns* in span text. A credential that is
 passed in a way that never appears in a tool-call attribute (e.g. injected into a subprocess
@@ -222,11 +222,12 @@ sub-processes, or persisting beyond its session — without the user's knowledge
 
 | Capability | Type |
 |---|---|
-| SSRF guard blocks outbound requests to private/loopback ranges on all optional egress paths | BLOCKS (server-side) |
+| SSRF guard blocks outbound requests to private/loopback/metadata ranges on the optional egress paths (server-side, DNS-resolving — defeats rebinding) | BLOCKS (server-side) |
+| SSRF-on-fetch floor blocks a Claude Code `WebFetch` to cloud-metadata/link-local (either mode) or private/loopback ranges (enforce) — literal-host match, so DNS rebinding is a known gap | BLOCKS (hook installed) |
 | Exfiltration rules: secrets/env piped to `curl`/`wget`/`nc`/`scp`/`rsync` | BLOCKS always (catastrophic floor, two high-precision patterns) / DETECTS (CRITICAL) |
 | Netcat file transfer to remote host | DETECTS (CRITICAL) |
 | Process tab surfaces all running agent processes by PID | VISIBILITY |
-| `spans.db` provides a persistent audit log of every tool call, independent of the agent's own logs | AUDIT |
+| `spans.db` provides a persistent audit log of every tool call, independent of the agent's own logs; the operator audit log and the enforcement block-feed are hash-chained (tamper-evident, verifiable via `GET /api/audit/verify`) | AUDIT |
 
 ---
 

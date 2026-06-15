@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Enforcement now blocks actions, not edits.** For an `Edit` or `Write`, the
+  hook decides on the **file path and the action** — checked against your
+  protected paths plus a tiny, high-confidence live-secret check on the content —
+  instead of scanning the whole file body against the rule library. Editing
+  security code, attack-pattern docs, or secret-shaped test fixtures no longer
+  trips a block. `Bash` is still matched in full, and the dashboard's threat
+  detection still inspects complete content, so visibility is unchanged.
+- **SSRF protection on agent fetches.** With the hook installed, a Claude Code
+  `WebFetch` to a cloud-metadata or link-local address (`169.254.169.254`, the
+  GCP metadata hostnames, IPv6 link-local) is blocked in either mode, and
+  loopback / private ranges are blocked in `enforce` — set
+  `CLAUDESEC_ALLOW_LOCAL_FETCH=1` to allow a local dev server. The check is
+  synchronous and matches the literal host, so a public name that resolves to an
+  internal IP (DNS rebinding) is not caught here — the server-side SSRF guard,
+  which resolves every host, remains the backstop for the paths it controls.
+- **Tamper-evident logs.** The operator audit log and the enforcement
+  would-block/block feed are now append-only and **hash-chained** — each row
+  links to the one before it, so any later edit to an earlier row is detectable.
+  An optional local key (`~/.claudesec/audit-key`) signs the chain. A new
+  `GET /api/audit/verify` endpoint recomputes both chains and reports whether
+  they are intact, pinpointing the first altered row if not. This is
+  tamper-*evident*, not tamper-*proof*: without the key, someone with database
+  write access could rewrite a row and recompute the rest.
+- **The enforcement feed survives restart.** What used to be an in-memory ring
+  buffer is now persisted to a capped SQLite table (the most recent 500 events),
+  so the Enforce tab's history isn't lost when the server restarts.
+- **Database backups.** A consistent binary snapshot of the database is written
+  to `~/.claudesec/backups/` shortly after boot and daily thereafter (owner-only,
+  most recent 7 kept) — a drop-in `.db` you can restore by pointing
+  `CLAUDESEC_DB` at it. This is separate from the hourly JSON export.
+
+### Changed
+
+- **A broader, always-on catastrophic floor.** Beyond `rm -rf /` and fork bombs,
+  the floor now also blocks `rm --no-preserve-root`, recursive wipes of system
+  trees (`/etc`, `/boot`, `/usr`, `/var`) — with developer carve-outs so
+  `/usr/local`, the macOS temp dirs (`/var/folders`, `/var/tmp`), and your own
+  sub-paths stay allowed — netcat and `/dev/udp` reverse shells, raw-disk
+  overwrites and redirects, and the common Windows destructive commands
+  (`format`, `diskpart`, `bcdedit`, `del /f /q /s`, `rd /s`, `vssadmin delete
+  shadows`, `cipher /w`, `wevtutil cl`). Every pattern is proven linear-time by a
+  self-test. This floor is always on, in either mode.
+- **Symlink-aware protected paths.** Protected-path checks now resolve the real
+  on-disk location (following symlinks, with an existing-ancestor walk for files
+  that don't exist yet), so a symlink into a protected tree can't slip past. A
+  time-of-check/time-of-use race remains an inherent limit of any pre-exec hook.
+- **A predictable, logged database location.** The database now defaults to an
+  absolute `~/.claudesec/spans.db`, and the resolved path is logged at boot so a
+  misconfigured `CLAUDESEC_DB` is obvious. Startup is import-safe (importing the
+  server module starts no listener, timers, or config writes;
+  `CLAUDESEC_NO_AUTOSTART=1` forces that explicitly), and shutdown is graceful —
+  on `SIGTERM`/`SIGINT` the database is checkpointed and closed cleanly, and a
+  `busy_timeout` lets a momentarily-contended writer wait rather than fail.
+
 ## [1.3.0] - 2026-06-11
 
 ### Added

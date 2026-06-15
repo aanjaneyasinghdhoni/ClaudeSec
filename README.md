@@ -75,12 +75,18 @@ development with C++" workload and Python so `better-sqlite3` and `re2` can comp
 - **Enforcement (opt-in, Claude Code only)** — out of the box ClaudeSec only *observes*: there is
   **zero pre-execution blocking** until you register the Claude Code PreToolUse hook with one command
   (`node cli/init.mjs install-hook`; `./start.sh` also offers to do it for you). Once installed it's
-  `monitor` by default — the always-on **catastrophic floor** (`rm -rf /`, fork bombs, `curl … | sh`,
-  …, and blocks reading a secret and piping/uploading it to the network in one command, e.g.
-  `cat ~/.ssh/id_rsa | curl …`) and any **protected paths** you mark in the dashboard — denied on
-  read, write, edit, and delete — block even in monitor; every other rule blocks only in `enforce`
-  mode. Custom regex rules added in the UI **detect by default**; in `enforce` mode a **high- or
-  critical-severity** custom rule also blocks (low/medium stay detect-only). Pre-execution blocking
+  `monitor` by default — the always-on **catastrophic floor** (root-preserving `rm -rf /`, system-dir
+  wipes with developer carve-outs, fork bombs, `curl … | sh`, reverse shells, raw-disk overwrites,
+  common Windows destructive commands, and reading a secret and piping/uploading it off-machine in
+  one command) and any **protected paths** you mark in the dashboard — denied on read, write, edit,
+  and delete — block even in monitor; every other rule blocks only in `enforce` mode. It **blocks
+  actions, not edits**: `Bash` is matched in full against the rules, but an `Edit`/`Write` is gated
+  on the **file path + action** plus a tiny live-secret check on the content — never the whole file
+  body against the rule set — so editing security code or fixtures is never blocked. A `WebFetch` to
+  a cloud-metadata / internal host is blocked before the request leaves the machine (DNS rebinding is
+  a known gap of the synchronous hook). Custom regex rules added in the UI **detect by default**; in
+  `enforce` mode a **high- or critical-severity** custom rule also blocks (low/medium stay
+  detect-only). Pre-execution blocking
   reaches **Claude Code only** today — it's the one agent with a pre-exec hook; the others (Codex,
   Copilot) are **observe-only** unless routed through the optional cross-agent MCP proxy
   (`claudesec mcp-proxy`); any other MCP-speaking agent can be gated the same way. It's a

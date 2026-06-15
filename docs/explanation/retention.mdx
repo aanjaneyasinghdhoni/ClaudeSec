@@ -58,3 +58,7 @@ curl -X POST http://localhost:3000/api/db-stats/prune
 ```
 
 See the [Configuration reference](/reference/config) for every retention and performance variable.
+
+## Backups
+
+Independently of retention, ClaudeSec writes a **consistent binary snapshot** of the live database to `~/.claudesec/backups/` — once shortly after the server boots and daily thereafter, using SQLite's online backup API (which is safe to run while the database is open and being written, unlike a plain file copy under WAL). Backups are created `0600` and pruned to the **most recent 7**. They are a drop-in `.db` you can restore by pointing `CLAUDESEC_DB` at one. This is separate from the hourly human-readable JSON auto-export in `exports/`.

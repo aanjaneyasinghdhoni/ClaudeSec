@@ -21,9 +21,10 @@ All configuration is **optional** — ClaudeSec runs with sensible defaults and 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CLAUDESEC_DB` | `~/.claudesec/spans.db` | SQLite database path. Point throwaway / test instances elsewhere to isolate them |
+| `CLAUDESEC_DB` | `~/.claudesec/spans.db` | SQLite database path (absolute; the resolved path is **logged at boot**). Point throwaway / test instances elsewhere to isolate them |
 | `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the destructive data-wipe is disabled by default |
 | `CLAUDESEC_SEED_DEMO` | — | Set `1` to seed an **empty** database once with synthetic demo sessions on startup. Used by the isolated demo container; never touches a database that already has data |
+| `CLAUDESEC_NO_AUTOSTART` | — | Set `1` to make importing `server/index.ts` side-effect-free — no HTTP listener, no timers, no hook-config mirror writes. Used by tests and tooling that import the module without running the server |
 
 ## Enforcement
 
@@ -33,6 +34,7 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 |----------|---------|---------|
 | `CLAUDESEC_MODE` | `monitor` | Hook mode: `monitor` logs would-blocks (default), `enforce` blocks high-severity tool calls |
 | `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
+| `CLAUDESEC_ALLOW_LOCAL_FETCH` | — | Set `1` to let a `WebFetch` reach loopback / private (RFC1918) ranges in `enforce` mode (e.g. a local dev server). Cloud-metadata and link-local addresses stay blocked regardless. See [SSRF on fetch](/security/enforcement#ssrf-on-fetch) |
 | `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (fail-open if absent) |
 | `CLAUDESEC_ENFORCE_RULES` | `rules-enforcement.json` | Path to the compiled block-rule snapshot the hook and MCP proxy evaluate against |
 | `CLAUDESEC_PROTECTED_PATHS` | `<hooksDir>/protected-paths.json` | Path to the protected-paths list the hook reads (fail-open if absent) |

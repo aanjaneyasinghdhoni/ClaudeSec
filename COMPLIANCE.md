@@ -91,7 +91,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 |---|---|---|---|
 | **A.8.11** | Data masking | **Secret scrubbing** (`server/scrub.ts`): keys, tokens, JWTs, cloud credentials, database connection-string credentials, home paths, usernames, and emails are redacted before anything is stored, broadcast, or exported (on by default). Alert `matchedText` is stored **already scrubbed** — even a `critical` exfiltration alert records the secret *type / redacted shape*, never the live value | Classification scheme; verifying masking meets policy (scrubbing is best-effort regex) |
 | **A.8.12** | Data leakage prevention | A dedicated `critical` severity tier flags active secret **exfiltration** — a credential / `.env` being transmitted off the machine (the broad critical tier blocks in `enforce` mode, while two high-precision read-secret-and-send-it patterns sit on the always-on floor and block in either mode once the opt-in hook is installed); honeytokens fire an exfiltration alert on any match; broader exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
-| **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access | Log retention policy, tamper-evidence, time-source governance |
+| **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access; the operator audit log and enforcement block-feed are hash-chained (tamper-*evident*, optionally HMAC-keyed) | Log retention policy, time-source governance; tamper-evidence is detective, not preventive — protect the key/DB |
 | **A.8.16** | Monitoring activities | Continuous evaluation of every span against the rule set; live anomaly surfacing and alerting | SOC processes, correlation across other sources |
 | **A.8.23** | Web filtering / egress control | SSRF guard (`server/ssrf.ts`) DNS-resolves targets at call time and allows only globally-routable unicast addresses — blocking loopback, private, link-local, and `169.254.169.254` metadata; re-resolves on every request to defeat DNS rebinding | Proxy/filtering at the network layer |
 | **A.8.25 / A.8.28** | Secure development lifecycle / secure coding | CodeQL static analysis (weekly + on PR), `pnpm audit --prod`, RE2/linear-time regex compilation for ReDoS safety, ReDoS self-test gate | Applies to the *project*; deployer runs own SDLC for its systems |
@@ -116,7 +116,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **MEASURE — MS-3.1 / MS-3.2** | AI risk tracked over time | Continuous post-deployment monitoring of agent behavior; per-session health scoring surfaces degradation and anomalous activity | Defining metrics/thresholds; periodic review cadence |
 | **MEASURE — MS-2.4** | Security & privacy assessed | Detection of credential theft, exfiltration, prompt-injection patterns in agent activity; MCP/skill scanner | Formal pre-deployment evaluation of the deployer's AI systems |
 | **MANAGE — MG-2.3** | Emergency interventions | Once the opt-in, Claude-Code-only hook is installed, `enforce` mode + the always-on catastrophic floor and protected paths (e.g. `rm -rf /`, fork bombs, piped RCE) act as a best-effort, fail-open tool-call-level intervention, with the dashboard verifying the hook is registered before claiming blocking is active; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority — fail-open blocking is not one |
-| **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail (note: enforcement-hook events are buffered in memory only and do not survive a restart) | Incident log, severity classification, post-incident review |
+| **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail; the operator audit log and the enforcement block-feed are persisted and **hash-chained** (tamper-evident; verifiable via `GET /api/audit/verify`) | Incident log, severity classification, post-incident review |
 | **GOVERN — GV-1.x / GV-4.x** | Policies, cross-functional escalation | (Tool provides evidence inputs only) | **Deployer obligation** — policies, accountability, escalation paths are organizational, not tool features |
 
 **ISO/IEC 42001:2023 (Annex A)**
@@ -124,7 +124,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | Control | Name | How ClaudeSec supports it | Deployer still owns |
 |---|---|---|---|
 | **A.6.2.6** | AI system operation and monitoring | Real-time, continuous monitoring of AI agent operations with alerting on anomalies | Defining alert thresholds and remediation processes |
-| **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call (the spans/alerts tables) sufficient for incident investigation and audit; note the enforcement would-block feed is an in-memory ring buffer and is not durable | Log retention periods and access controls per policy |
+| **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call (the spans/alerts tables) sufficient for incident investigation and audit; the enforcement would-block/block feed is persisted to SQLite and **hash-chained** (tamper-evident; survives restart) | Log retention periods and access controls per policy |
 | **A.8.4** | Communication of incidents | Webhook delivery of HIGH-severity alerts to Slack/Discord/JSON endpoints; per-session reports | Notification thresholds, regulatory/affected-party reporting |
 | **A.9.2** | Processes for responsible use of AI systems | Once installed, the opt-in, Claude-Code-only enforcement layer can gate agent tool calls against an acceptable-use rule set (`monitor`/`enforce`) on a best-effort, fail-open basis, with the dashboard verifying the hook is registered before claiming blocking is active | The acceptable-use policy itself and human-oversight procedures; not relying on fail-open gating |
 | **A.2.2 / A.3.2 / A.5.2** | AI policy, roles, impact assessment | (Deployer obligation) | **Deployer owns** the AIMS, policy, RACI, and AI impact assessments |
@@ -178,9 +178,10 @@ deployer obligation. Control identifiers are taken from the published frameworks
 - **What data is processed.** OpenTelemetry spans describing AI-agent activity: tool
   names, command lines, file paths, and (when enhanced telemetry is enabled) prompts and
   arguments. This material **may contain secrets or personal data** by nature.
-- **Where it lives.** A single local SQLite database (`spans.db`), created with `0600`
-  (owner-only) permissions, plus hourly JSON snapshots in `exports/` (also `0600`; the
-  most recent 24 are kept). Nothing is stored off the host.
+- **Where it lives.** A single local SQLite database at `~/.claudesec/spans.db`, created with
+  `0600` (owner-only) permissions, plus hourly JSON snapshots in `exports/` (also `0600`; the
+  most recent 24 are kept) and periodic online binary backups in `~/.claudesec/backups/` (`0600`;
+  the most recent 7 are kept). Nothing is stored off the host.
 - **Secret & PII scrubbing.** On by default. Before any span is persisted, broadcast, or
   exported, `server/scrub.ts` redacts known secret formats (API keys, tokens, JWTs, cloud
   credentials, private keys, database connection-string credentials), home directory paths,
@@ -239,7 +240,16 @@ deployer obligation. Control identifiers are taken from the published frameworks
   default) and surfaced on the dashboard, which also **verifies the hook is registered** and
   will not show a "blocking active" state unless enforce is effective *and* a hook is
   present (no false green). The hook's always-on catastrophic floor is parity-tested in the
-  test gate (`tests/catastrophic-parity.test.ts` covers `cli/hooks/claudesec-enforce.cjs`).
+  test gate (`tests/catastrophic-parity.test.ts` covers `cli/hooks/claudesec-enforce.cjs`) and
+  is proven linear-time. For `Edit`/`Write` the hook **blocks on the file path + action**
+  (against protected paths) plus a minimal high-confidence live-secret floor on the content — it
+  does **not** scan the file body against the rule set, so legitimate edits to security code or
+  test fixtures are not blocked (full-content threat *detection* still runs server-side). With the
+  hook installed, a `WebFetch` to a cloud-metadata / link-local address is blocked in either mode,
+  and loopback/private ranges in `enforce` (opt-out via `CLAUDESEC_ALLOW_LOCAL_FETCH`); a public
+  name that resolves to an internal IP (DNS rebinding) is a known gap the synchronous hook does not
+  catch. Protected-path checks resolve symlinks (realpath) before matching; a
+  time-of-check/time-of-use race remains an inherent residual limitation.
 
 ---
 

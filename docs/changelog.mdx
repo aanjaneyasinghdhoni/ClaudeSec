@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## Unreleased
+
+### Added
+
+- **Enforcement now blocks actions, not edits.** For an `Edit` or `Write`, the
+  hook decides on the **file path and the action** — checked against your
+  protected paths plus a tiny, high-confidence live-secret check on the content —
+  instead of scanning the whole file body against the rule library. Editing
+  security code, attack-pattern docs, or secret-shaped test fixtures no longer
+  trips a block. `Bash` is still matched in full, and the dashboard's threat
+  detection still inspects complete content, so visibility is unchanged.
+- **SSRF protection on agent fetches.** With the hook installed, a Claude Code
+  `WebFetch` to a cloud-metadata or link-local address is blocked in either mode,
+  and loopback / private ranges are blocked in `enforce` — set
+  `CLAUDESEC_ALLOW_LOCAL_FETCH=1` to allow a local dev server. The check matches
+  the literal host, so a public name that resolves to an internal IP (DNS
+  rebinding) is not caught here; the server-side SSRF guard remains the backstop
+  for the paths it controls.
+- **Tamper-evident logs.** The operator audit log and the enforcement
+  would-block/block feed are now append-only and **hash-chained**, so any later
+  edit to an earlier row is detectable. An optional local key signs the chain,
+  and `GET /api/audit/verify` recomputes both chains and reports whether they are
+  intact. This is tamper-*evident*, not tamper-*proof*.
+- **The enforcement feed survives restart.** The Enforce tab's history is now
+  persisted to a capped SQLite table instead of an in-memory buffer.
+- **Database backups.** A consistent binary snapshot is written to
+  `~/.claudesec/backups/` shortly after boot and daily thereafter (owner-only,
+  most recent 7 kept), separate from the hourly JSON export.
+
+### Changed
+
+- **A broader, always-on catastrophic floor.** Beyond `rm -rf /` and fork bombs,
+  the floor now blocks `rm --no-preserve-root`, recursive wipes of system trees
+  (with developer carve-outs for `/usr/local` and the macOS temp dirs), netcat
+  and `/dev/udp` reverse shells, raw-disk overwrites, and the common Windows
+  destructive commands — every pattern proven linear-time by a self-test.
+- **Symlink-aware protected paths.** Protected-path checks resolve the real
+  on-disk location before matching, so a symlink into a protected tree can't slip
+  past. A time-of-check/time-of-use race remains an inherent limit.
+- **A predictable, logged database location.** The database defaults to an
+  absolute `~/.claudesec/spans.db` and logs its resolved path at boot. Startup is
+  import-safe and shutdown is graceful — the database is checkpointed and closed
+  cleanly on `SIGTERM`/`SIGINT`.
+
+---
+
 ## 1.3.0 — 2026-06-11
 
 ### Added

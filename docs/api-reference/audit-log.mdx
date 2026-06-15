@@ -17,6 +17,22 @@ intervention.
 
 The log is ordered newest-first and supports cursor pagination via the `before` parameter.
 
+## How "tamper-evident" works
+
+Each row is **hash-chained** to the previous one: a row's hash is computed over its content plus
+the hash of the row before it. Editing or deleting any earlier row breaks every hash from that
+point on, so a recomputation can pinpoint the first row that no longer matches. By default the
+chain is a plain SHA-256. If a local key file exists at `~/.claudesec/audit-key` (minted
+owner-only on first run when writable), the chain is an HMAC-SHA256 keyed by that secret instead.
+
+<Note>
+  **Honest limitation — tamper-*evident*, not tamper-*proof*.** The chain makes after-the-fact
+  edits *detectable*; it does not make them *impossible*. Without the HMAC key, anyone with write
+  access to the database could rewrite a row and recompute the rest of the chain. The local key is
+  the unforgeability backstop — keep it readable only by the owner, and back it up separately if
+  you rely on it.
+</Note>
+
 ## Endpoints
 
 ### GET /api/audit-log
@@ -96,3 +112,33 @@ curl "http://localhost:3000/api/audit-log?limit=25"
 # Next page (use nextBefore from the previous response)
 curl "http://localhost:3000/api/audit-log?limit=25&before=40"
 ```
+
+### GET /api/audit/verify
+
+Recompute the [hash chains](#how-tamper-evident-works) for **both** append-only logs — the
+operator audit log and the persisted [enforcement feed](/api-reference/enforcement-api) — and
+report whether each is intact. This is a read-only check; it never mutates anything.
+
+```bash
+curl http://localhost:3000/api/audit/verify
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "audit":   { "ok": true, "rows": 42, "hashedRows": 42, "signed": true },
+  "enforce": { "ok": true, "rows": 18, "hashedRows": 18, "signed": true }
+}
+```
+
+| Field | Description |
+|---|---|
+| `ok` | `true` only when **both** chains verify |
+| `audit` / `enforce` | Per-log result |
+| `*.ok` | Whether this chain is intact |
+| `*.rows` | Total rows scanned |
+| `*.hashedRows` | Rows that participate in the chain (rows that predate hashing are skipped) |
+| `*.signed` | `true` when an HMAC key is in use (otherwise a plain SHA-256 chain) |
+| `*.brokenAtId` | Present only on failure — the `id` of the first row whose stored hash no longer matches a recomputation, i.e. where the log was tampered with |

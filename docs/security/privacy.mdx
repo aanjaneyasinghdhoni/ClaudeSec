@@ -12,7 +12,8 @@ ClaudeSec sees your agents' commands, prompts, and code. It is built so none of 
   - `OTEL_FORWARD_URL` — forwards received OTLP traces to an upstream collector. SSRF-guarded (private and loopback ranges blocked).
   - `CLAUDESEC_WEBHOOK_URL` — delivers alerts to a Slack / Discord / generic JSON endpoint. SSRF-guarded (private and loopback ranges blocked).
   - `CLAUDESEC_JUDGE_URL` — the optional [LLM-as-judge](/how-to/local-llm). SSRF-guarded for non-loopback URLs; loopback is allowed so the judge can run fully on-device (the recommended no-egress setup).
-- **Owner-only database** — `spans.db` is created with `0600` permissions (owner read/write only).
+- **SSRF guard on agent fetches** — when the [enforcement hook](/security/enforcement#ssrf-on-fetch) is installed, a Claude Code `WebFetch` to a cloud-metadata or link-local address (`169.254.169.254`, `fe80::/10`, the GCP metadata hostnames) is blocked in **either** mode, and loopback / private (RFC1918) ranges are blocked in `enforce` (opt out with `CLAUDESEC_ALLOW_LOCAL_FETCH=1`). The hook matches the literal host, so a public name that resolves to an internal IP (DNS rebinding) is not caught there — the server-side guard above, which DNS-resolves every host, is the backstop for the paths it controls.
+- **Owner-only database** — `spans.db` (under `~/.claudesec`) is created with `0600` permissions (owner read/write only). Its periodic binary backups in `~/.claudesec/backups/` are written `0600` too.
 - **Username scrubbing** — process command lines and OS usernames are masked (`/Users/***`, `user: ***`) before being shown or exported.
 
 ## Secret scrubbing (on by default)

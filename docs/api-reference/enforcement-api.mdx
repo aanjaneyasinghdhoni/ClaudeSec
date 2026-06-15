@@ -11,9 +11,12 @@ Claude Code tool calls before they run, evaluates them against the detection rul
 monitors silently or blocks — depending on the configured mode. These endpoints let you read the
 live event feed, query or update the active mode, and set per-rule action overrides.
 
-All enforcement log events are held in an in-memory ring buffer (never written to SQLite). A
-`Socket.io` `enforce-log` event is broadcast to the dashboard on each new event, and an
-`enforce-config` event is broadcast whenever the config is changed.
+Enforcement log events are **persisted to a capped SQLite table** (pruned to the most recent 500)
+and carry a **tamper-evident hash chain** — each row links to the one before it, so the feed
+survives a restart and any later edit to an earlier row is detectable. A `Socket.io` `enforce-log`
+event is still broadcast to the dashboard on each new event, and an `enforce-config` event is
+broadcast whenever the config is changed. Use [`GET /api/audit/verify`](/api-reference/audit-log#get-apiauditverify)
+to confirm the chain is intact.
 
 ## Endpoints
 
@@ -55,7 +58,7 @@ read.
 
 ### GET /api/enforce-log
 
-Return recent enforcement events from the ring buffer, most-recent first.
+Return recent enforcement events from the persisted feed, most-recent first.
 
 ```bash
 curl "http://localhost:3000/api/enforce-log?limit=50"
@@ -65,7 +68,7 @@ curl "http://localhost:3000/api/enforce-log?limit=50"
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `limit` | integer | `100` | Number of events to return; capped at the ring-buffer max |
+| `limit` | integer | `100` | Number of events to return; capped at the retained-event max (500) |
 
 **Response:**
 
@@ -95,7 +98,7 @@ curl "http://localhost:3000/api/enforce-log?limit=50"
 }
 ```
 
-`total` is the total number of events in the ring buffer (may be larger than the requested
+`total` is the total number of events in the persisted feed (may be larger than the requested
 `limit`). `blocked: true` means the tool call was actually denied; `blocked: false` with
 `wouldBlock: true` means the rule matched in monitor mode but the tool was allowed to run.
 
