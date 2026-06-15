@@ -1,0 +1,81 @@
+---
+title: "Repositories API"
+description: "Per-repository rollup: span and session counts, harnesses seen, threat breakdowns, and a shared health score."
+icon: "folder-tree"
+---
+
+## Overview
+
+The Repositories API returns one row per repository for the dashboard's per-repo view. Every span
+is grouped by its `repo` key — the git root resolved at ingest — and aggregated into span and
+session counts, the harnesses seen, a threat severity breakdown, and a health score computed with
+the **same** `healthFromCounts` formula used by the session list and the CLI report, so the two
+views never diverge.
+
+Rows are ordered by `threatHigh` descending, then by `lastSeen` descending, so the repositories
+with the most high-severity activity surface first.
+
+<Note>
+Historical spans whose scrubbed working directory could not be walked to a git root group under a
+single `unknown` repository. This bucket is shown honestly rather than hidden; new spans group
+correctly.
+</Note>
+
+## Endpoints
+
+### GET /api/repos
+
+Return a rollup row for every repository that has at least one span.
+
+```bash
+curl http://localhost:3000/api/repos
+```
+
+**Response:**
+
+```json
+{
+  "repos": [
+    {
+      "repo": "acme/checkout-service",
+      "spanCount": 1842,
+      "sessionCount": 9,
+      "harnesses": "claude-code,codex",
+      "threatHigh": 2,
+      "threatMedium": 7,
+      "threatLow": 19,
+      "firstSeen": "1746090720000000000",
+      "lastSeen": "1749567840000000000",
+      "healthScore": 71,
+      "grade": "C"
+    },
+    {
+      "repo": "unknown",
+      "spanCount": 134,
+      "sessionCount": 2,
+      "harnesses": "claude-code",
+      "threatHigh": 0,
+      "threatMedium": 1,
+      "threatLow": 4,
+      "firstSeen": "1745922000000000000",
+      "lastSeen": "1749480600000000000",
+      "healthScore": 96,
+      "grade": "A"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `repo` | Repository grouping key (git root resolved at ingest), or `unknown` for spans that couldn't be mapped to a git root |
+| `spanCount` | Number of distinct spans in this repository |
+| `sessionCount` | Number of distinct sessions (trace IDs) in this repository |
+| `harnesses` | Comma-separated list of harness IDs seen in this repository, or `null` |
+| `threatHigh` | Count of `high` and `critical` severity spans (critical exfil is folded into the high bucket) |
+| `threatMedium` | Count of `medium` severity spans |
+| `threatLow` | Count of `low` severity spans |
+| `firstSeen` | Earliest span start time as a Unix-epoch nanosecond string, or `null` |
+| `lastSeen` | Most recent span start time as a Unix-epoch nanosecond string, or `null` |
+| `healthScore` | Repository health on the shared `healthFromCounts` formula (`0..100`, higher is healthier) |
+| `grade` | Letter grade derived from the health score |

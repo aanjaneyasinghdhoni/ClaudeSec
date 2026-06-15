@@ -138,7 +138,8 @@
           "api-reference/honeytokens",
           "api-reference/scrub",
           "api-reference/audit-log",
-          "api-reference/harnesses-api"
+          "api-reference/harnesses-api",
+          "api-reference/repos-api"
         ]
       },
       {
