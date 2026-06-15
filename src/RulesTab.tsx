@@ -1,7 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { Shield, ShieldOff, Trash2, Plus, FlaskConical, Clock, X, Lock } from 'lucide-react';
+import { Shield, ShieldOff, Trash2, Plus, FlaskConical, Clock, X, Lock, Ban, Eye } from 'lucide-react';
 import { socket } from './socket';
 import type { Severity } from './shared/types';
+
+type EnforceAction = 'alert' | 'block';
+
+// Catastrophic-floor labels block ALWAYS and can never be demoted to monitor —
+// mirrors the server guard (server/detection.ts CATASTROPHIC_DETECTION_LABELS).
+// Kept in sync by the catastrophic-parity test gate.
+const CATASTROPHIC_LABELS: ReadonlySet<string> = new Set([
+  'Recursive root deletion',
+  'Filesystem format command',
+  'Raw disk write via dd',
+  'Remote code execution via curl',
+  'Remote code execution via wget',
+  'Bash TCP reverse shell',
+]);
+
+/** A rule's natural action from its severity: the two top tiers block in enforce. */
+function actionForSeverity(severity: string): EnforceAction {
+  return severity === 'high' || severity === 'critical' ? 'block' : 'alert';
+}
 
 interface RuleRow {
   id: string;
@@ -63,6 +82,12 @@ export function RulesTab() {
   const [snoozeMenuId, setSnoozeMenuId] = useState<string | null>(null);
   const [, setTick]  = useState(0); // force re-render for countdowns
 
+  // Per-rule enforcement action overrides (Block ⇄ Monitor). Persisted in
+  // enforce-config.json via PUT /api/enforce/config; this map is { label → action }.
+  const [overrides,     setOverrides]    = useState<Record<string, EnforceAction>>({});
+  const [enforceMode,   setEnforceMode]  = useState<string>('monitor');
+  const [savingLabel,   setSavingLabel]  = useState<string | null>(null);
+
   // Form state
   const [pattern,    setPattern]    = useState('');
   const [severity,   setSeverity]   = useState<'low' | 'medium' | 'high'>('medium');
@@ -97,15 +122,29 @@ export function RulesTab() {
       .then(({ protectedPaths: p }: { protectedPaths: ProtectedPath[] }) => setProtectedPaths(p ?? []))
       .catch(() => {});
 
+  const fetchEnforceConfig = () =>
+    fetch('/api/enforce/config')
+      .then(r => r.json())
+      .then((c: { overrides?: Record<string, EnforceAction>; effectiveMode?: string }) => {
+        setOverrides(c.overrides ?? {});
+        setEnforceMode(c.effectiveMode ?? 'monitor');
+      })
+      .catch(() => {});
+
   useEffect(() => {
     fetchRules();
     fetchSuppressions();
     fetchProtectedPaths();
+    fetchEnforceConfig();
+    const onEnforceConfig = (c: { overrides?: Record<string, EnforceAction> }) =>
+      setOverrides(c.overrides ?? {});
     socket.on('rules-update', () => { fetchRules(); fetchSuppressions(); });
     socket.on('protected-paths-update', fetchProtectedPaths);
+    socket.on('enforce-config', onEnforceConfig);
     return () => {
       socket.off('rules-update');
       socket.off('protected-paths-update', fetchProtectedPaths);
+      socket.off('enforce-config', onEnforceConfig);
     };
   }, []);
 
@@ -168,6 +207,44 @@ export function RulesTab() {
 
   const handleDelete = async (id: string) => {
     await fetch(`/api/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  };
+
+  // The effective action for a rule = an explicit override, else its natural
+  // (severity-derived) action. Mirrors server/enforcementSnapshot.actionForSeverity
+  // and enforceEval's override resolution.
+  const effectiveAction = (rule: RuleRow): EnforceAction =>
+    overrides[rule.label] ?? actionForSeverity(rule.severity);
+
+  // Flip a rule between Block and Monitor. The PUT replaces the whole overrides
+  // map, so we merge against the current one. We only write an override when it
+  // diverges from the rule's natural action — matching the default removes the
+  // key, keeping the persisted map minimal.
+  const handleToggleAction = async (rule: RuleRow) => {
+    if (CATASTROPHIC_LABELS.has(rule.label)) return; // locked — never demotable
+    const current = effectiveAction(rule);
+    const next: EnforceAction = current === 'block' ? 'alert' : 'block';
+    const natural = actionForSeverity(rule.severity);
+
+    const merged: Record<string, EnforceAction> = { ...overrides };
+    if (next === natural) delete merged[rule.label];
+    else merged[rule.label] = next;
+
+    setSavingLabel(rule.label);
+    setOverrides(merged); // optimistic
+    try {
+      const res = await fetch('/api/enforce/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ overrides: merged }),
+      });
+      if (!res.ok) { fetchEnforceConfig(); return; } // server rejected → resync truth
+      const updated = await res.json();
+      setOverrides(updated.overrides ?? merged);
+    } catch {
+      fetchEnforceConfig(); // network error → resync
+    } finally {
+      setSavingLabel(null);
+    }
   };
 
   const handleAddProtectedPath = async (e: React.FormEvent) => {
@@ -388,6 +465,22 @@ export function RulesTab() {
           )}
         </div>
 
+        {/* Action-column honesty note: overrides only bite in enforce mode. */}
+        <p className="text-[11px] leading-relaxed flex items-start gap-1.5" style={{ color: 'var(--cs-text-muted)' }}>
+          <Ban className="w-3.5 h-3.5 shrink-0 mt-px" style={{ color: 'var(--cs-danger)' }} />
+          <span>
+            The <span className="font-semibold" style={{ color: 'var(--cs-text-base)' }}>Action</span> column controls
+            whether a rule <span className="font-semibold">Blocks</span> (denies a matching tool call) or only{' '}
+            <span className="font-semibold">Monitors</span> (detects and alerts, never blocks). Block decisions take
+            effect only when enforcement mode is{' '}
+            <code className="px-1 rounded font-mono" style={{ background: 'var(--cs-bg-elevated)' }}>enforce</code>
+            {enforceMode === 'enforce'
+              ? ' (currently active).'
+              : ' — it is currently set to monitor, so nothing here blocks yet. Set it in the Enforce tab.'}{' '}
+            Detection still happens in both modes. Catastrophic-floor rules always block and cannot be changed.
+          </span>
+        </p>
+
         {/* Rules table */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
@@ -397,6 +490,7 @@ export function RulesTab() {
                 <th className="px-4 py-2.5 text-left">Label</th>
                 <th className="px-4 py-2.5 text-left">Pattern</th>
                 <th className="px-4 py-2.5 text-left">Severity</th>
+                <th className="px-4 py-2.5 text-left whitespace-nowrap">Action</th>
                 <th className="px-4 py-2.5 text-left whitespace-nowrap">Type</th>
                 <th className="px-4 py-2.5 text-left w-32">Snooze</th>
                 <th className="px-4 py-2.5 text-left w-10"></th>
@@ -405,7 +499,7 @@ export function RulesTab() {
             <tbody>
               {allRules.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-600 text-[11px]">
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-600 text-[11px]">
                     No rules loaded
                   </td>
                 </tr>
@@ -430,6 +524,41 @@ export function RulesTab() {
                       <span className={`px-1.5 py-0.5 rounded text-xs font-mono uppercase ${SEV_BADGE[rule.severity] ?? SEV_BADGE.none}`}>
                         {rule.severity}
                       </span>
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      {(() => {
+                        const locked = CATASTROPHIC_LABELS.has(rule.label);
+                        const action = locked ? 'block' : effectiveAction(rule);
+                        const isBlock = action === 'block';
+                        const saving = savingLabel === rule.label;
+                        if (locked) {
+                          return (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border"
+                              style={{ color: 'var(--cs-danger)', borderColor: 'var(--cs-border)', background: 'var(--cs-bg-elevated)' }}
+                              title="Catastrophic-floor rule — always blocks, cannot be set to monitor"
+                            >
+                              <Lock className="w-3 h-3" /> always blocks
+                            </span>
+                          );
+                        }
+                        return (
+                          <button
+                            onClick={() => handleToggleAction(rule)}
+                            disabled={saving}
+                            title={isBlock
+                              ? 'Blocks matching tool calls in enforce mode. Click to switch to Monitor (observe only).'
+                              : 'Observes only — never blocks. Click to switch to Block (deny in enforce mode).'}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors disabled:opacity-50 hover:brightness-110"
+                            style={isBlock
+                              ? { color: 'var(--cs-danger)', borderColor: 'var(--cs-border)', background: 'var(--cs-bg-elevated)' }
+                              : { color: 'var(--cs-text-muted)', borderColor: 'var(--cs-border)', background: 'var(--cs-bg-elevated)' }}
+                          >
+                            {isBlock ? <Ban className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            {isBlock ? 'Block' : 'Monitor'}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">
                       <span className={`text-xs whitespace-nowrap ${rule.type === 'built-in' ? 'text-slate-500' : ''}`} style={rule.type === 'custom' ? { color: 'var(--cs-accent)' } : undefined}>

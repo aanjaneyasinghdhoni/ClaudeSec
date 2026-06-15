@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
+import { CATASTROPHIC_DETECTION_LABELS } from '../detection.js';
 import type { RouteContext } from './context.js';
 import { resolveEffectiveMode, detectHookStatus } from '../enforceStatus.js';
 
@@ -140,6 +141,16 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
         if (typeof k !== 'string' || !k) continue;
         if (v !== 'alert' && v !== 'block') {
           return res.status(400).json({ error: `override for "${k}" must be "alert" or "block"` }) as any;
+        }
+        // SAFETY: catastrophic-floor rules can never be demoted to monitor-only.
+        // This mirrors the rule_overrides guard (which rejects disabling them) so
+        // the action-override surface can't be used to silence the catastrophic
+        // events the tool exists to block. Record the rejected attempt.
+        if (v === 'alert' && CATASTROPHIC_DETECTION_LABELS.has(k)) {
+          auditLog?.(req, 'enforce.override.rejected', k, { label: k, reason: 'catastrophic-floor rule' });
+          return res.status(400).json({
+            error: `"${k}" is a catastrophic-floor rule and cannot be set to monitor`,
+          }) as any;
         }
         clean[k.slice(0, 256)] = v;
       }
