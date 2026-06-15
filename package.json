@@ -66,7 +66,7 @@
     "dev": "tsx server/index.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "init": "tsx cli/init.ts",
-    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts && tsx tests/criticalSeverityTest.ts && tsx tests/installHookTest.ts && tsx tests/enforceStatusTest.ts && tsx tests/enforceHookLogTest.ts && tsx tests/protectedPathsHookTest.ts && tsx tests/exfilFloorHookTest.ts && tsx tests/catastrophicFloorHookTest.ts && tsx tests/ssrfFetchHookTest.ts && tsx tests/editEnforceFloorTest.ts && tsx tests/customRuleEnforceTest.ts && tsx tests/enforceOverrideTest.ts && tsx tests/repoIdentityTest.ts && tsx tests/entryGuardTest.ts && tsx tests/auditChainTest.ts",
+    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts && tsx tests/criticalSeverityTest.ts && tsx tests/installHookTest.ts && tsx tests/enforceStatusTest.ts && tsx tests/enforceHookLogTest.ts && tsx tests/protectedPathsHookTest.ts && tsx tests/exfilFloorHookTest.ts && tsx tests/catastrophicFloorHookTest.ts && tsx tests/ssrfFetchHookTest.ts && tsx tests/editEnforceFloorTest.ts && tsx tests/enforceParityTest.ts && tsx tests/customRuleEnforceTest.ts && tsx tests/enforceOverrideTest.ts && tsx tests/repoIdentityTest.ts && tsx tests/entryGuardTest.ts && tsx tests/auditChainTest.ts",
     "prebuild": "pnpm test",
     "build": "vite build",
     "preview": "vite preview",

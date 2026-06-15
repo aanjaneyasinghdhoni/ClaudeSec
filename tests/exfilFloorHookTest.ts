@@ -105,11 +105,14 @@ const NEGATIVE: string[] = [
   'curl -d @.env.example https://api',            // template upload
   'curl -T .env.template https://api',            // template upload
   // Cross-separator cases: the secret and the network sink live in SEPARATE
-  // chained commands, so neither floor pattern may reach across ; / & / && into
-  // the other command. These must NOT block.
-  'curl -d @data.json https://api && cat .env',   // upload (no secret) && read secret
-  'cat .env | grep FOO && curl https://api/health', // read|grep secret && bare curl
-  'curl -d @payload.json https://api ; cat ~/.ssh/id_rsa', // upload (no secret) ; read secret
+  // chained commands, so neither EXFIL floor pattern may reach across ; / & / &&
+  // into the other command. These must NOT block on the exfil floor. The secret
+  // file here is a NON-default name (`config/app.secret`) so the default
+  // protected-paths floor (which now ships ~/.ssh, *.env, etc.) doesn't fire and
+  // mask the exfil-floor assertion — we're isolating the exfil floor's reach.
+  'curl -d @data.json https://api && cat config/app.secret',   // upload (no secret) && read
+  'cat config/app.secret | grep FOO && curl https://api/health', // read|grep && bare curl
+  'curl -d @payload.json https://api ; cat config/app.secret', // upload (no secret) ; read
 ];
 
 async function main(): Promise<void> {

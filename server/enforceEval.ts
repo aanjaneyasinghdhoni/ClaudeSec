@@ -182,6 +182,49 @@ export interface ProtectedEntry {
   label: string;
   /** Raw + home-expanded spellings of the protected path (both matchable). */
   forms: string[];
+  /** A dotenv-secret SHAPE default (matched by secretEnvHit, not a literal form). */
+  secretEnv?: boolean;
+}
+
+// ── Default protected paths (always merged in) ───────────────────────────────
+// The user's protected-paths list is EMPTY on a fresh install, so without these
+// defaults the floor would protect nothing out of the box. We merge in a small,
+// conservative, HIGH-VALUE set of credential stores that an agent should never
+// read or overwrite. Kept minimal to avoid over-blocking ordinary work; the user
+// can still remove any of these (they are not pinned). Kept in sync with
+// defaultProtectedEntries() in cli/hooks/claudesec-enforce.cjs (parity test).
+export function defaultProtectedEntries(): ProtectedEntry[] {
+  const home = os.homedir();
+  const mk = (rel: string, label: string): ProtectedEntry => ({
+    label,
+    forms: ['~/' + rel, path.join(home, rel)],
+  });
+  return [
+    mk('.ssh', 'SSH keys (~/.ssh)'),
+    mk('.aws/credentials', 'AWS credentials (~/.aws/credentials)'),
+    mk('.config/gcloud', 'gcloud config (~/.config/gcloud)'),
+    mk('.kube/config', 'Kubernetes config (~/.kube/config)'),
+    mk('.npmrc', 'npm credentials (~/.npmrc)'),
+    // Dotenv secrets — matched by shape, not a literal path (see secretEnvHit).
+    { label: 'dotenv secret (*.env)', forms: [], secretEnv: true },
+  ];
+}
+
+/**
+ * A path "looks like" a dotenv SECRET file when its final component is exactly
+ * `.env` or starts with `.env.` BUT is not one of the well-known non-secret
+ * template variants (`.env.example`/`.sample`/`.template`/`.dist`/`.tpl`). So
+ * `.env`/`.env.local`/`.env.production` are protected; the committed templates are
+ * not. Mirrors secretEnvHit() in cli/hooks/claudesec-enforce.cjs. `targetLower`
+ * must already be lowercased.
+ */
+export function secretEnvHit(targetLower: string): boolean {
+  if (!targetLower) return false;
+  const base = targetLower.split(/[\\/]/).pop() || '';
+  if (base === '.env') return true;
+  if (!base.startsWith('.env.')) return false;
+  const suffix = base.slice('.env.'.length);
+  return !/^(?:example|sample|template|dist|tpl)$/.test(suffix);
 }
 
 /**
@@ -211,11 +254,14 @@ export function resolveProtectedPathsPath(): string {
  * Mirrors loadProtectedPaths() in cli/hooks/claudesec-enforce.cjs.
  */
 export function loadProtectedPaths(): ProtectedEntry[] {
+  // ALWAYS start with the conservative built-in defaults so a fresh install
+  // (empty/missing user list) still protects the high-value credential stores.
+  // The user's entries are merged on top; a user entry never removes a default.
+  const out: ProtectedEntry[] = defaultProtectedEntries();
   try {
     const raw = JSON.parse(fs.readFileSync(resolveProtectedPathsPath(), 'utf8')) as unknown;
-    if (!Array.isArray(raw)) return [];
+    if (!Array.isArray(raw)) return out;
     const home = os.homedir();
-    const out: ProtectedEntry[] = [];
     for (const e of raw as { path?: unknown; label?: unknown; forms?: unknown }[]) {
       if (!e || typeof e.path !== 'string' || e.path.length === 0) continue;
       const p = e.path;
@@ -236,7 +282,7 @@ export function loadProtectedPaths(): ProtectedEntry[] {
     }
     return out;
   } catch {
-    return []; // missing / unreadable / malformed → fail-open
+    return out; // missing / unreadable / malformed → still apply the defaults
   }
 }
 
@@ -313,6 +359,16 @@ export function protectedHit(
   const tReal = real ? real.toLowerCase() : '';
   const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
   for (const e of entries) {
+    // The dotenv-secret default matches by SHAPE rather than a literal form, and
+    // ONLY against the file TARGET (literal or symlink-resolved) — never the Bash
+    // command (a path-shape match on a free-form command would block a plain
+    // `cat .env` read; the always-on EXFIL catastrophic floor already covers the
+    // dangerous `.env`-read-piped-to-network case). Parity with protectedHit() in
+    // cli/hooks/claudesec-enforce.cjs.
+    if (e.secretEnv) {
+      if (secretEnvHit(tLit) || secretEnvHit(tReal)) return e;
+      continue;
+    }
     for (const form of e.forms) {
       const f = form.toLowerCase();
       if ((tLit && tLit.includes(f)) || (tReal && tReal.includes(f)) || (c && c.includes(f))) {
@@ -333,10 +389,18 @@ export function protectedHit(
 function selfProtectedPrefixes(): string[] {
   const home = os.homedir();
   const csecHome = process.env.CLAUDESEC_HOME || path.join(home, '.claudesec');
+  // Project-level Claude settings (<cwd>/.claude/settings.json and
+  // settings.local.json) are ALSO honored by Claude Code, so an agent could write
+  // those to register a competing PreToolUse hook. Guard them alongside the
+  // user-level files; cwd is resolved at call time so the floor tracks the project
+  // the agent is operating in. Parity with selfProtectedPrefixes() in the hook.
+  const cwd = process.cwd();
   return [
     path.join(csecHome, 'hooks'),
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.claude', 'settings.local.json'),
+    path.join(cwd, '.claude', 'settings.json'),
+    path.join(cwd, '.claude', 'settings.local.json'),
   ];
 }
 
@@ -354,6 +418,132 @@ export function selfProtectionHit(target: string, bashCmd: string): string | nul
     if ((t && t.includes(f)) || (c && c.includes(f))) return p;
   }
   return null;
+}
+
+// ── SSRF-on-fetch floor (WebFetch / fetch-shaped MCP tools) ──────────────────
+// A fetch aimed at a cloud-metadata endpoint (169.254.169.254) or an internal
+// RFC1918 / loopback host is the classic agent-SSRF. The hook classifies the
+// URL synchronously before the request leaves the machine; this is the BYTE-
+// IDENTICAL sibling so a cross-agent MCP `fetch`/`web_fetch` tool through the
+// proxy hits the SAME floor. Mirrors the classifier in
+// cli/hooks/claudesec-enforce.cjs (parseIPv4 / classifyFetchHost / classifyFetchUrl).
+//
+// KNOWN LIMITATION — DNS rebinding: a PUBLIC hostname that *resolves* to an
+// internal IP is NOT caught here (this layer is synchronous and must never block
+// on a DNS lookup). The server-side ASYNC assertSafeFetchUrl() in server/ssrf.ts
+// is the resolving backstop. This is the fast, literal, in-band layer.
+
+export type FetchClass = 'metadata' | 'loopback' | 'internal' | null;
+
+/** Parse a dotted-quad IPv4 literal into four octets, or null if not one. */
+function parseIPv4(host: string): number[] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const o = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  for (const x of o) if (!Number.isInteger(x) || x < 0 || x > 255) return null;
+  return o;
+}
+
+/**
+ * Classify a URL host into 'metadata' | 'loopback' | 'internal' | null. Tiers:
+ *   • 'metadata'  → ALWAYS block (mode-independent): cloud-metadata + the whole
+ *     link-local range (169.254/16, fe80::/10) + GCP metadata hostnames.
+ *   • 'loopback'  → block unless CLAUDESEC_ALLOW_LOCAL_FETCH: 127/8, 0/8, ::1, ::,
+ *     and bare 'localhost'.
+ *   • 'internal'  → block in enforce mode: RFC1918, CGNAT 100.64/10, ULA fc00::/7,
+ *     *.internal / *.local.
+ *   • null        → ALLOW (public literal, or any unresolvable hostname).
+ * `host` must already be lowercased with IPv6 brackets stripped. Byte-identical
+ * to classifyFetchHost() in cli/hooks/claudesec-enforce.cjs.
+ */
+export function classifyFetchHost(host: string): FetchClass {
+  if (!host) return null;
+
+  const v4 = parseIPv4(host);
+  if (v4) {
+    const [a, b] = v4;
+    if (a === 169 && b === 254) return 'metadata';
+    if (a === 0) return 'loopback';
+    if (a === 127) return 'loopback';
+    if (a === 10) return 'internal';
+    if (a === 172 && b >= 16 && b <= 31) return 'internal';
+    if (a === 192 && b === 168) return 'internal';
+    if (a === 100 && b >= 64 && b <= 127) return 'internal';
+    return null;
+  }
+
+  if (host.includes(':')) {
+    if (host === '::1' || /^(?:0:){1,7}1$/.test(host)) return 'loopback';
+    if (host === '::' || /^(?:0:){7}0$/.test(host)) return 'loopback';
+    const mappedQuad = /::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
+    if (mappedQuad) return classifyFetchHost(mappedQuad[1]);
+    const mappedHex = /^(?:::|(?:0:){1,4}:|(?:0:){5})ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16);
+      const lo = parseInt(mappedHex[2], 16);
+      const quad = `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+      return classifyFetchHost(quad);
+    }
+    if (/^fe[89ab][0-9a-f]?:/i.test(host)) return 'metadata';
+    if (/^f[cd][0-9a-f]{0,2}:/i.test(host)) return 'internal';
+    return null;
+  }
+
+  if (host === 'metadata' || host === 'metadata.google.internal' || host === 'metadata.goog') return 'metadata';
+  if (host === 'localhost') return 'loopback';
+  if (/\.(?:internal|local)$/.test(host)) return 'internal';
+  return null;
+}
+
+/**
+ * Extract + classify a fetch URL's host. Returns { host, klass }. Fail-OPEN on any
+ * parse error (klass null). Only http/https are classified. Byte-identical to
+ * classifyFetchUrl() in cli/hooks/claudesec-enforce.cjs.
+ */
+export function classifyFetchUrl(rawUrl: string): { host: string; klass: FetchClass } {
+  if (!rawUrl || typeof rawUrl !== 'string') return { host: '', klass: null };
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { host: '', klass: null };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { host: '', klass: null };
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return { host, klass: classifyFetchHost(host) };
+}
+
+export interface FetchVerdict {
+  /** The classified host (empty when unparseable / non-http). */
+  host: string;
+  klass: FetchClass;
+  /** true if this fetch should be blocked given the mode + allow-local opt-out. */
+  block: boolean;
+  /** true if it triggered the floor at all (block OR would-block-in-monitor). */
+  triggered: boolean;
+}
+
+/**
+ * Decide whether a fetch URL should be blocked, mirroring the hook's SSRF branch:
+ *   • 'metadata'  → ALWAYS block (mode-independent floor).
+ *   • 'loopback'  → block unless CLAUDESEC_ALLOW_LOCAL_FETCH=1; otherwise honors mode.
+ *   • 'internal'  → block in enforce mode only.
+ * `block` is the hard decision; `triggered` is true whenever the floor fired (so
+ * a monitor-mode internal/loopback is logged as a would-block but forwarded).
+ * Parity with the SSRF decision in cli/hooks/claudesec-enforce.cjs.
+ */
+export function evaluateFetch(rawUrl: string, mode: EnforceMode): FetchVerdict {
+  const { host, klass } = classifyFetchUrl(rawUrl);
+  if (!klass) return { host, klass, block: false, triggered: false };
+  const allowLocal = process.env.CLAUDESEC_ALLOW_LOCAL_FETCH === '1';
+  const loopbackAllowed = klass === 'loopback' && allowLocal;
+  const isFloor = klass === 'metadata'; // always-block, mode-independent
+  const block = !loopbackAllowed && (isFloor || mode === 'enforce');
+  // Triggered (for logging) whenever the floor fired and wasn't explicitly opted out.
+  const triggered = !loopbackAllowed;
+  return { host, klass, block, triggered };
 }
 
 /** Resolve the rules-enforcement.json snapshot path (override-aware). */

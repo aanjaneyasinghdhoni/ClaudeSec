@@ -182,10 +182,18 @@ function selfProtectedPrefixes() {
   // Honor CLAUDESEC_HOME exactly as the installer/server do, so the guard tracks
   // wherever the control plane actually lives.
   const csecHome = process.env.CLAUDESEC_HOME || path.join(home, '.claudesec');
+  // Project-level Claude settings (<cwd>/.claude/settings.json and
+  // settings.local.json) are ALSO honored by Claude Code, so an agent could write
+  // those to register a competing PreToolUse hook and unhook the enforcer. Guard
+  // them alongside the user-level files. cwd is resolved at call time so the floor
+  // tracks whichever project the agent is operating in.
+  const cwd = process.cwd();
   return [
     path.join(csecHome, 'hooks'),          // whole enforcement control-plane dir
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.claude', 'settings.local.json'),
+    path.join(cwd, '.claude', 'settings.json'),
+    path.join(cwd, '.claude', 'settings.local.json'),
   ];
 }
 
@@ -339,6 +347,55 @@ function loadBlockRules() {
   }
 }
 
+// ── Default protected paths (always merged in) ───────────────────────────────
+// The user's protected-paths list is EMPTY on a fresh install, so without these
+// defaults the floor would protect nothing out of the box. We merge in a small,
+// conservative, HIGH-VALUE set of credential stores that an agent should never
+// read or overwrite. Kept deliberately minimal to avoid over-blocking ordinary
+// work. The user can still remove any of these (they are not pinned). Kept in
+// sync with DEFAULT_PROTECTED in server/enforceEval.ts (parity test).
+//
+// Two kinds of default:
+//   • path defaults — a literal home-relative path, matched by the same
+//     case-insensitive substring + realpath logic as a user entry.
+//   • the `secretEnv` default — a SHAPE rule for dotenv secrets: any path whose
+//     final component is `.env` or `.env.<something>` EXCEPT the well-known
+//     non-secret variants (`.env.example`/`.sample`/`.template`/`.dist`/`.tpl`).
+//     This protects real secret files without walling off committed templates.
+function defaultProtectedEntries() {
+  const home = os.homedir();
+  const mk = (rel, label) => {
+    const expanded = path.join(home, rel);
+    return { label, forms: ['~/' + rel, expanded] };
+  };
+  return [
+    mk('.ssh', 'SSH keys (~/.ssh)'),
+    mk('.aws/credentials', 'AWS credentials (~/.aws/credentials)'),
+    mk('.config/gcloud', 'gcloud config (~/.config/gcloud)'),
+    mk('.kube/config', 'Kubernetes config (~/.kube/config)'),
+    mk('.npmrc', 'npm credentials (~/.npmrc)'),
+    // Dotenv secrets — matched by shape, not a literal path (see secretEnvHit).
+    { label: 'dotenv secret (*.env)', forms: [], secretEnv: true },
+  ];
+}
+
+// A path "looks like" a dotenv SECRET file when its final path component is
+// exactly `.env` or starts with `.env.` BUT is not one of the well-known
+// non-secret template variants. So `.env`, `.env.local`, `.env.production` are
+// protected; `.env.example`/`.env.sample`/`.env.template`/`.env.dist`/`.env.tpl`
+// are NOT (they are committed scaffolding that holds no real credentials).
+// Mirrors secretEnvHit() in server/enforceEval.ts.
+function secretEnvHit(targetLower) {
+  if (!targetLower) return false;
+  // Final path component (handle both / and \ separators, case already lowered).
+  const base = targetLower.split(/[\\/]/).pop() || '';
+  if (base === '.env') return true;
+  if (!base.startsWith('.env.')) return false;
+  const suffix = base.slice('.env.'.length);
+  // Non-secret template variants — never protected.
+  return !/^(?:example|sample|template|dist|tpl)$/.test(suffix);
+}
+
 /** Resolve the protected-paths.json path (server-written user block list). */
 function resolveProtectedPathsPath() {
   // 1. Explicit override (absolute or relative) — used by tests / isolated server.
@@ -353,17 +410,23 @@ function resolveProtectedPathsPath() {
 }
 
 /**
- * Load the user's protected-path entries. Fail-OPEN → [] (never throws). Shape:
- * [{ path: '<literal path>', label: '<label>' }]. Each entry is normalized so a
- * leading '~' expands to the home dir; both the raw and home-expanded forms are
- * carried so a target can match whichever spelling the agent used.
+ * Load the protected-path entries. ALWAYS includes the conservative built-in
+ * defaults (defaultProtectedEntries) so a fresh install still protects the
+ * high-value credential stores; the user's entries are merged on top. Fail-OPEN
+ * → the defaults alone (never throws). User shape: [{ path, label }]. Each entry
+ * is normalized so a leading '~' expands to the home dir; both the raw and
+ * home-expanded forms are carried so a target matches whichever spelling the
+ * agent used.
  */
 function loadProtectedPaths() {
+  // ALWAYS start with the conservative built-in defaults so a fresh install
+  // (empty/missing user list) still protects the high-value credential stores.
+  // The user's entries are appended; a user entry never removes a default here.
+  const out = defaultProtectedEntries();
   try {
     const raw = JSON.parse(fs.readFileSync(resolveProtectedPathsPath(), 'utf8'));
-    if (!Array.isArray(raw)) return [];
+    if (!Array.isArray(raw)) return out;
     const home = os.homedir();
-    const out = [];
     for (const e of raw) {
       if (!e || typeof e.path !== 'string' || e.path.length === 0) continue;
       const p = e.path;
@@ -386,7 +449,7 @@ function loadProtectedPaths() {
     }
     return out;
   } catch (_) {
-    return []; // missing / unreadable / malformed → fail-open
+    return out; // missing / unreadable / malformed → still apply the defaults
   }
 }
 
@@ -474,6 +537,17 @@ function protectedHit(entries, target, bashCmd) {
   const tReal = real ? real.toLowerCase() : '';
   const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
   for (const e of entries) {
+    // The dotenv-secret default matches by SHAPE rather than a literal form, and
+    // ONLY against the file TARGET (literal or symlink-resolved) — never the Bash
+    // command. A path-shape match on a free-form command string would block a plain
+    // `cat .env` read; the always-on EXFIL catastrophic floor already covers a
+    // `.env` read piped to the network, which is the dangerous case. Keeping this
+    // default to file targets protects Read/Edit/Write of a real `.env` secret
+    // without re-litigating the exfil floor's "secret + network sink" contract.
+    if (e.secretEnv) {
+      if (secretEnvHit(tLit) || secretEnvHit(tReal)) return e;
+      continue;
+    }
     for (const form of e.forms) {
       const f = form.toLowerCase();
       if (
