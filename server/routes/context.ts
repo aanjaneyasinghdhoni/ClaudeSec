@@ -128,6 +128,14 @@ export interface ProtectedPath {
   id: string;
   /** Literal path string the hook substring-matches against (e.g. '~/.ssh/id_rsa'). */
   path: string;
+  /**
+   * Extra match forms resolved at add time — currently the realpath of `path`
+   * when it's a symlink, so BOTH the symlink and its target are protected. The
+   * hook/server loaders fold these into the entry's matchable forms in addition
+   * to the literal/home-expanded spellings derived from `path`. Optional /
+   * absent for a non-symlinked or not-yet-existing path.
+   */
+  forms?: string[];
   /** Human-friendly label shown in the block message + feed. */
   label: string;
   createdAt: string;

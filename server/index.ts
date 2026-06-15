@@ -593,7 +593,14 @@ function writeProtectedPathsArtifact(): void {
       return;
     }
     const target = path.join(dir, 'protected-paths.json');
-    const payload = protectedPaths.map(p => ({ path: p.path, label: p.label }));
+    // Mirror the literal path + label, plus any add-time resolved symlink forms
+    // (so both the symlink and its real target are protected). `forms` is omitted
+    // when absent to keep the artifact compact and backward-compatible.
+    const payload = protectedPaths.map(p =>
+      p.forms && p.forms.length
+        ? { path: p.path, label: p.label, forms: p.forms }
+        : { path: p.path, label: p.label },
+    );
     const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
     fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 });
     fs.chmodSync(tmp, 0o600); // mode only applies on create; enforce on a pre-existing tmp too

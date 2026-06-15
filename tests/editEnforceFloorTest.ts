@@ -277,6 +277,62 @@ async function main(): Promise<void> {
         assert.strictEqual(v.triggered, true);
       });
     }
+
+    // ── (g) Symlink guard on the SERVER/proxy path (Phase 5) ────────────────────
+    //      evaluate() resolves the target's symlinks too, so reaching a protected
+    //      file via a symlink is caught on the MCP-proxy layer exactly as in the
+    //      hook. Uses REAL files under tmp so realpath has something to resolve.
+    {
+      const gReal = path.join(tmp, 'g-secret.env');
+      fs.writeFileSync(gReal, 'TOKEN=shh', 'utf8');
+      const gLink = path.join(tmp, 'g-innocent.txt');
+      const gDir = path.join(tmp, 'g-protdir');
+      fs.mkdirSync(gDir, { recursive: true });
+      const gLinkDir = path.join(tmp, 'g-linkdir');
+      let gSym = true;
+      try {
+        fs.symlinkSync(gReal, gLink);
+        fs.symlinkSync(gDir, gLinkDir);
+      } catch {
+        gSym = false; // symlinks unsupported here — skip cleanly
+      }
+
+      const gProtected = path.join(tmp, 'g-protected.json');
+      fs.writeFileSync(gProtected, JSON.stringify([
+        { path: gReal, label: 'real secret' },
+        { path: gDir, label: 'protected dir' },
+      ]), 'utf8');
+
+      const prevPP = process.env.CLAUDESEC_PROTECTED_PATHS;
+      process.env.CLAUDESEC_PROTECTED_PATHS = gProtected;
+      try {
+        if (gSym) {
+          // Edit via the symlink → triggered (realpath resolves to the protected file).
+          const vLink = evaluate(gLink, blockRules, 'b', gLink);
+          check('g server: edit via symlink into protected file → triggered', () => {
+            assert.strictEqual(vLink.triggered, true);
+            assert.ok(vLink.label && vLink.label.startsWith('Protected path:'), `label was ${vLink.label}`);
+          });
+
+          // Write a NEW file under a symlinked protected dir → triggered (ancestor walk).
+          const gNew = path.join(gLinkDir, 'brand-new.txt');
+          const vNew = evaluate(gNew, blockRules, 'hello', gNew);
+          check('g server: new file under symlinked protected dir → triggered (ancestor walk)', () =>
+            assert.strictEqual(vNew.triggered, true));
+
+          // A benign non-symlinked path with the same list loaded → NOT triggered.
+          const gBenign = path.join(tmp, 'g-fine.txt');
+          const vOk = evaluate(gBenign, blockRules, 'b', gBenign);
+          check('g server: benign non-symlinked path → not triggered (no regression)', () =>
+            assert.strictEqual(vOk.triggered, false));
+        } else {
+          check('g server: symlink guard skipped (symlinks unsupported here)', () => {});
+        }
+      } finally {
+        if (prevPP === undefined) delete process.env.CLAUDESEC_PROTECTED_PATHS;
+        else process.env.CLAUDESEC_PROTECTED_PATHS = prevPP;
+      }
+    }
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* */ }
   }

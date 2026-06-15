@@ -1,9 +1,39 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Express } from 'express';
 import type { ProtectedPath, RouteContext } from './context.js';
 
 // Bound the stored path length. Real paths are short; a giant string is almost
 // certainly a paste mistake or an attempt to bloat the mirrored artifact.
 const MAX_PATH_LEN = 4096;
+
+/**
+ * Compute the extra match forms for a protected path at ADD time. Beyond the
+ * literal string the hook/server already derive at load time (raw + home-
+ * expanded), we resolve the path's symlinks so BOTH the symlink and its real
+ * target are protected: protect `~/secret -> /vault/secret` and the floor also
+ * blocks `/vault/secret` directly. The resolved form is only added when it
+ * actually differs from the literal and exists on disk; if the path doesn't
+ * exist yet, or realpath fails, we return [] (no extra form) — the load-time
+ * realpath guard still defends the live symlink. Never throws.
+ */
+function extraMatchForms(rawPath: string): string[] {
+  const forms: string[] = [];
+  try {
+    const home = os.homedir();
+    // Mirror the loaders' home-expansion so realpath operates on the real path.
+    const expanded =
+      rawPath === '~' ? home
+      : rawPath.startsWith('~/') ? path.join(home, rawPath.slice(2))
+      : rawPath;
+    const real = fs.realpathSync(expanded);
+    if (real && real !== expanded && real !== rawPath) forms.push(real);
+  } catch {
+    // Path doesn't exist yet / realpath failed → no extra form (fail-open).
+  }
+  return forms;
+}
 
 /**
  * Routes for the user-defined "protected paths" floor — paths that the
@@ -36,11 +66,16 @@ export function registerProtectedPathRoutes(app: Express, ctx: RouteContext): vo
     const cleanLabel =
       typeof label === 'string' && label.trim().length > 0 ? label.trim() : p;
 
+    // Resolve any symlink target at add time so BOTH the symlink and its real
+    // destination are protected (see extraMatchForms). Stored alongside `path`
+    // as an extra match form; absent when the path isn't a symlink / doesn't exist.
+    const extraForms = extraMatchForms(p);
     const entry: ProtectedPath = {
       id: `protected-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       path: p,
       label: cleanLabel,
       createdAt: new Date().toISOString(),
+      ...(extraForms.length ? { forms: extraForms } : {}),
     };
     ctx.addProtectedPath?.(entry);
     auditLog?.(req, 'protected-path.create', entry.id, { path: entry.path, label: entry.label });

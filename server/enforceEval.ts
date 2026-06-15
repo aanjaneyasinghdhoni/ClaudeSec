@@ -210,7 +210,7 @@ export function loadProtectedPaths(): ProtectedEntry[] {
     if (!Array.isArray(raw)) return [];
     const home = os.homedir();
     const out: ProtectedEntry[] = [];
-    for (const e of raw as { path?: unknown; label?: unknown }[]) {
+    for (const e of raw as { path?: unknown; label?: unknown; forms?: unknown }[]) {
       if (!e || typeof e.path !== 'string' || e.path.length === 0) continue;
       const p = e.path;
       const expanded =
@@ -219,6 +219,13 @@ export function loadProtectedPaths(): ProtectedEntry[] {
         : p;
       const label = typeof e.label === 'string' && e.label.length > 0 ? e.label : p;
       const forms = expanded === p ? [p] : [p, expanded];
+      // Fold in any add-time resolved symlink forms the server stored (e.g. the
+      // realpath of a symlinked entry), so both the symlink and its target match.
+      if (Array.isArray(e.forms)) {
+        for (const f of e.forms) {
+          if (typeof f === 'string' && f.length > 0 && !forms.includes(f)) forms.push(f);
+        }
+      }
       out.push({ label, forms });
     }
     return out;
@@ -239,23 +246,72 @@ function expandHomeVar(cmd: string): string {
 }
 
 /**
+ * Resolve a path's symlinks to its real on-disk location so a symlink pointing
+ * INTO a protected tree can't launder the target string past the substring match.
+ * Returns the realpath, or '' when it can't be resolved. Parity with
+ * resolveRealpath() in cli/hooks/claudesec-enforce.cjs.
+ *
+ * fs.realpathSync THROWS when the path doesn't exist yet (e.g. a Write/Edit that
+ * CREATES a new file), so we degrade gracefully: walk up to the nearest EXISTING
+ * ancestor directory, realpath THAT, then re-append the not-yet-existing tail (so
+ * a write to `/tmp/linkdir/newfile` is still caught when `/tmp/linkdir` is a
+ * symlink into a protected tree). If even that fails we return '' (the caller
+ * still has the literal substring match). Never throws.
+ */
+export function resolveRealpath(p: string): string {
+  if (!p) return '';
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    // Path (or some ancestor) doesn't exist — resolve the nearest existing parent.
+  }
+  try {
+    let dir = path.dirname(p);
+    const tail = [path.basename(p)];
+    while (dir && dir !== path.dirname(dir)) {
+      try {
+        const realDir = fs.realpathSync(dir);
+        return path.join(realDir, ...tail.reverse());
+      } catch {
+        tail.push(path.basename(dir));
+        dir = path.dirname(dir);
+      }
+    }
+  } catch {
+    // Any unexpected failure → give up on realpath; caller keeps the literal match.
+  }
+  return '';
+}
+
+/**
  * Does a protected entry match the call's file TARGET or Bash command? Matches
  * case-INSENSITIVE substring (case-insensitive filesystems make a case-sensitive
  * compare a trivial bypass) against the target path or the (HOME-expanded) Bash
  * command — NEVER edit content. Returns the matching entry or null. Parity with
  * protectedHit() in cli/hooks/claudesec-enforce.cjs.
+ *
+ * SYMLINK GUARD: the literal substring alone is bypassable —
+ * `ln -s /protected/secret.env /tmp/innocent` then editing `/tmp/innocent` never
+ * names the protected string. So for the file TARGET we ALSO resolve the symlink
+ * chain (resolveRealpath, with an existing-ancestor fallback for not-yet-created
+ * files) and match the entry forms against the REAL path too — keeping the literal
+ * match so nothing regresses. The Bash command is matched literally only.
  */
 export function protectedHit(
   entries: ProtectedEntry[],
   target: string,
   bashCmd: string,
 ): ProtectedEntry | null {
-  const t = target ? target.toLowerCase() : '';
+  const tLit = target ? target.toLowerCase() : '';
+  const real = target ? resolveRealpath(target) : '';
+  const tReal = real ? real.toLowerCase() : '';
   const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
   for (const e of entries) {
     for (const form of e.forms) {
       const f = form.toLowerCase();
-      if ((t && t.includes(f)) || (c && c.includes(f))) return e;
+      if ((tLit && tLit.includes(f)) || (tReal && tReal.includes(f)) || (c && c.includes(f))) {
+        return e;
+      }
     }
   }
   return null;

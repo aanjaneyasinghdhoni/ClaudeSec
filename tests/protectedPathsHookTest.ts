@@ -235,6 +235,91 @@ async function main(): Promise<void> {
       check('case12 enforce Read of rule-matching non-protected path: exit 0 (reads skip rule-engine)', () =>
         assert.strictEqual(code, 0));
     }
+
+    // ── Symlink guard (Phase 5) ────────────────────────────────────────────────
+    // The literal substring match is bypassable: `ln -s /protected/secret /tmp/x`
+    // then Edit/Read `/tmp/x` never names the protected string. The hook resolves
+    // the target's symlinks (realpath, with an existing-ancestor fallback for
+    // not-yet-created files) and matches the REAL path too. These cases use REAL
+    // files in the temp sandbox so realpath has something to resolve.
+
+    // A real protected file + a symlink that points at it, both under `tmp`. The
+    // protected list names the REAL file; the agent tries to reach it via the link.
+    const realSecret = path.join(tmp, 'secret.env');
+    fs.writeFileSync(realSecret, 'TOKEN=shh', 'utf8');
+    const symlinkToSecret = path.join(tmp, 'innocent.txt');
+    let symlinkSupported = true;
+    try {
+      fs.symlinkSync(realSecret, symlinkToSecret);
+    } catch {
+      symlinkSupported = false; // e.g. a platform/FS without symlink perms — skip cleanly
+    }
+    // A symlinked DIRECTORY pointing into the protected tree, for the "write a NEW
+    // file under a symlinked dir" case (realpath must walk up to the existing link).
+    const protectedDir = path.join(tmp, 'protdir');
+    fs.mkdirSync(protectedDir, { recursive: true });
+    const symlinkDir = path.join(tmp, 'linkdir');
+    try {
+      fs.symlinkSync(protectedDir, symlinkDir);
+    } catch {
+      symlinkSupported = false;
+    }
+
+    // Protected list names the REAL secret file and the REAL protected directory.
+    const symFile = path.join(tmp, 'protected-symlink.json');
+    fs.writeFileSync(symFile, JSON.stringify([
+      { path: realSecret, label: 'real secret' },
+      { path: protectedDir, label: 'protected dir' },
+    ]), 'utf8');
+    const SYM_ENV = { CLAUDESEC_PROTECTED_PATHS: symFile };
+
+    if (symlinkSupported) {
+      // ── 13: Read of the SYMLINK (not the literal protected path) → blocked ────
+      {
+        const stdin = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: symlinkToSecret } });
+        const { code } = await runHook(stdin, SYM_ENV);
+        check('case13 Read via symlink into protected file: exit 2 (realpath resolved)', () =>
+          assert.strictEqual(code, 2));
+      }
+
+      // ── 14: Edit of the SYMLINK → blocked (same realpath resolution) ──────────
+      {
+        const stdin = JSON.stringify({
+          tool_name: 'Edit',
+          tool_input: { file_path: symlinkToSecret, old_string: 'a', new_string: 'b' },
+        });
+        const { code } = await runHook(stdin, SYM_ENV);
+        check('case14 Edit via symlink into protected file: exit 2', () =>
+          assert.strictEqual(code, 2));
+      }
+
+      // ── 15: Write a NEW file under a SYMLINKED DIR into the protected tree ─────
+      //       The target doesn't exist yet, so realpath must walk up to the
+      //       existing symlinked directory, resolve it, then re-append the tail.
+      {
+        const newFileViaLink = path.join(symlinkDir, 'brand-new.txt');
+        const stdin = JSON.stringify({
+          tool_name: 'Write',
+          tool_input: { file_path: newFileViaLink, content: 'hello' },
+        });
+        const { code } = await runHook(stdin, SYM_ENV);
+        check('case15 Write new file under symlinked protected dir: exit 2 (ancestor walk)', () =>
+          assert.strictEqual(code, 2));
+      }
+
+      // ── 16: a benign NON-symlinked path under tmp → still allowed (no regression) ─
+      {
+        const benign = path.join(tmp, 'totally-fine.txt');
+        const stdin = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: benign } });
+        const { code } = await runHook(stdin, SYM_ENV);
+        check('case16 benign non-symlinked path: exit 0 (no new false positive)', () =>
+          assert.strictEqual(code, 0));
+      }
+    } else {
+      // Symlinks unavailable on this platform — count the cases as passed so the
+      // suite stays green without silently dropping coverage where it IS supported.
+      check('case13-16 symlink guard: skipped (symlinks unsupported here)', () => {});
+    }
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* */ }
   }
