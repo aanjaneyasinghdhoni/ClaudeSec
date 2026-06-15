@@ -71,7 +71,36 @@ export interface Session {
   threatCount: number;
   maxSeverityRank: number;
   harnesses: string | null;
+  repo: string | null;
   healthScore?: number;
+}
+
+// Per-repository rollup row from GET /api/repos — one per distinct git-root
+// grouping key (see server/repoIdentity.ts). The 'unknown' bucket holds activity
+// captured before repository tracking or from agents without a working dir.
+export interface Repo {
+  repo: string;
+  spanCount: number;
+  sessionCount: number;
+  harnesses: string | null;
+  threatHigh: number;
+  threatMedium: number;
+  threatLow: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  healthScore: number;
+  grade: 'A' | 'B' | 'C' | 'D' | 'F';
+}
+
+export const UNKNOWN_REPO = 'unknown';
+
+// A short, human-readable label for a repo grouping key. Git-root keys are stored
+// as full (scrubbed) paths, so we show the basename; the 'unknown' bucket gets an
+// explicit, honest label rather than the bare word.
+export function repoLabel(repo: string): string {
+  if (!repo || repo === UNKNOWN_REPO) return 'Unknown / pre-tracking';
+  const parts = repo.replace(/[/\\]+$/, '').split(/[/\\]/);
+  return parts[parts.length - 1] || repo;
 }
 
 export const LABEL_COLORS: Record<SessionLabel, { dot: string; bg: string; text: string }> = {

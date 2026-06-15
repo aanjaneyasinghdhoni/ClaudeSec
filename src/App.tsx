@@ -11,7 +11,7 @@ import {
   CheckCircle, Search, Download, X,
   Clock, Layers, Edit2, FileText, Cpu, Zap,
   Bell, BellOff, Upload, Settings, StickyNote, Flame, Star, ShieldAlert, ShieldCheck,
-  Server, GitCompare, Monitor, Bookmark, ScanLine,
+  Server, GitCompare, Monitor, Bookmark, ScanLine, FolderGit2,
   ChevronDown, MoreHorizontal, HelpCircle, Menu,
 } from 'lucide-react';
 import { socket } from './socket';
@@ -45,8 +45,8 @@ import { toMs, formatSpanName } from './lib/format';
 import { useRouteNav } from './lib/useRouteNav';
 import { Timeline } from './Timeline';
 import {
-  type FilterMode, type Tab, type Workflow, type SessionLabel, type Session, type TickerSpan,
-  CATEGORY_TABS,
+  type FilterMode, type Tab, type Workflow, type SessionLabel, type Session, type TickerSpan, type Repo,
+  CATEGORY_TABS, UNKNOWN_REPO, repoLabel,
   LABEL_COLORS, HARNESS_COLORS, HARNESS_NAMES, SEVERITY_LABEL, SEVERITY_COLORS, SEV_RANK,
 } from './dashboardTypes';
 
@@ -117,6 +117,7 @@ export default function App() {
   // ── Data state ────────────────────────────────────────────────────────────
   const [workflows, setWorkflows]           = useState<Workflow[]>([]);
   const [sessions, setSessions]             = useState<Session[]>([]);
+  const [repos, setRepos]                   = useState<Repo[]>([]);
   const [activeSession, setActiveSession]   = useState<string | null>(null);
   // The socket effect registers its handlers once and never re-runs on session
   // switches (re-registering would risk duplicate handlers), so read the live
@@ -139,6 +140,7 @@ export default function App() {
   const [search, setSearch]                 = useState('');
   const [filterMode, setFilterMode]         = useState<FilterMode>('all');
   const [harnessFilter, setHarnessFilter]   = useState<string | null>(null);
+  const [repoFilter, setRepoFilter]         = useState<string | null>(null);
   const [timeRange, setTimeRange]           = useState<TimeRange>('all');
   const [hideNone, setHideNone]             = useState(() => localStorage.getItem('claudesec.hideNone') === 'true');
 
@@ -321,6 +323,13 @@ export default function App() {
       setLoadError('Failed to load sessions');
     });
 
+  const fetchRepos = () =>
+    fetch('/api/repos').then(r => r.json()).then(({ repos: r }) => {
+      setRepos(r ?? []);
+    }).catch((err: unknown) => {
+      console.warn('ClaudeSec: failed to load repos', err);
+    });
+
   const fetchAlertCount = () =>
     fetch('/api/alerts?limit=1')
       .then(r => r.json())
@@ -342,6 +351,7 @@ export default function App() {
   // Collapse bursts of socket events into a single trailing refetch (~400ms) so a
   // batch of broadcasts does not stampede the API with one call per event.
   const debouncedFetchSessions   = useDebouncedCallback(fetchSessions, 400);
+  const debouncedFetchRepos      = useDebouncedCallback(fetchRepos, 400);
   const debouncedFetchAlertCount = useDebouncedCallback(fetchAlertCount, 400);
 
   const requestNotifications = async () => {
@@ -403,6 +413,7 @@ export default function App() {
       });
     // Independent of the graph fetch above; fire concurrently rather than awaiting it.
     fetchSessions();
+    fetchRepos();
     fetchAlertCount();
   }, [activeSession]);
 
@@ -524,15 +535,17 @@ export default function App() {
 
     socket.on('graph-update', handleGraphUpdate);
     socket.on('sessions-update', debouncedFetchSessions);
+    socket.on('sessions-update', debouncedFetchRepos);
     socket.on('alerts-update', debouncedFetchAlertCount);
     socket.on('span-added', handleSpanAdded);
     return () => {
       socket.off('graph-update', handleGraphUpdate);
+      socket.off('sessions-update', debouncedFetchRepos);
       socket.off('sessions-update', debouncedFetchSessions);
       socket.off('alerts-update', debouncedFetchAlertCount);
       socket.off('span-added', handleSpanAdded);
     };
-  }, [setNodes, setEdges, debouncedFetchSessions, debouncedFetchAlertCount]);
+  }, [setNodes, setEdges, debouncedFetchSessions, debouncedFetchRepos, debouncedFetchAlertCount]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -614,6 +627,18 @@ export default function App() {
     [workflows],
   );
 
+  // Spans (Workflow) don't carry a repo of their own, but sessions do (one repo
+  // per trace). Build a traceId → repo lookup so the repository filter can scope
+  // the span list by the repo of each span's owning session. A session's repo
+  // column is GROUP_CONCAT'd; a trace lives in exactly one git-root in practice,
+  // but defensively we treat a multi-value string as 'unknown'-safe by matching
+  // on substring containment below.
+  const repoByTrace = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of sessions) m.set(s.traceId, s.repo ?? UNKNOWN_REPO);
+    return m;
+  }, [sessions]);
+
   const visibleWorkflows = useMemo(() => {
     return workflows.filter(wf => {
       if (activeSession && wf.traceId !== activeSession) return false;
@@ -624,6 +649,13 @@ export default function App() {
         (filterMode === 'malicious' && wf.severity !== 'none');
 
       const matchHarness = !harnessFilter || wf.harness === harnessFilter;
+
+      const matchRepo = (() => {
+        if (!repoFilter) return true;
+        const traceRepo = repoByTrace.get(wf.traceId) ?? UNKNOWN_REPO;
+        // A session's repo can be a comma-joined GROUP_CONCAT; match on membership.
+        return traceRepo === repoFilter || traceRepo.split(',').includes(repoFilter);
+      })();
 
       const matchHideNone = !hideNone || wf.severity !== 'none';
 
@@ -654,9 +686,9 @@ export default function App() {
         );
       })();
 
-      return matchSeverity && matchHarness && matchSearch && matchHideNone && matchTime;
+      return matchSeverity && matchHarness && matchRepo && matchSearch && matchHideNone && matchTime;
     });
-  }, [workflows, filterMode, harnessFilter, search, activeSession, hideNone, timeRange]);
+  }, [workflows, filterMode, harnessFilter, repoFilter, repoByTrace, search, activeSession, hideNone, timeRange]);
 
   const counts = useMemo(() => ({
     ok:       workflows.filter(w => w.severity === 'none').length,
@@ -1036,6 +1068,71 @@ export default function App() {
             </span>
           </div>
 
+          {/* Repositories rollup — group activity by git repository. Each row
+              sets the repo filter; the "unknown" bucket is labeled honestly. */}
+          {repos.length > 1 && (
+            <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
+              <div className="flex items-center justify-between mb-2">
+                <p className="sidebar-section-label">
+                  <FolderGit2 className="w-3 h-3" /> Repositories
+                </p>
+                <span className="text-[10px] text-slate-600 font-mono tabular-nums">{repos.length}</span>
+              </div>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {repos.map(r => {
+                  const isActive = repoFilter === r.repo;
+                  const isUnknown = r.repo === UNKNOWN_REPO;
+                  const last = (() => {
+                    const ns = Number(r.lastSeen ?? 0);
+                    if (!ns) return '';
+                    const diff = Date.now() - ns / 1e6;
+                    if (diff < 60_000) return 'just now';
+                    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+                    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+                    return `${Math.floor(diff / 86_400_000)}d ago`;
+                  })();
+                  return (
+                    <button
+                      key={r.repo}
+                      onClick={() => setRepoFilter(isActive ? null : r.repo)}
+                      title={isUnknown
+                        ? 'Activity captured before repository tracking, or from agents that don’t report a working directory.'
+                        : r.repo}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-xs transition-all"
+                      style={isActive
+                        ? { background: 'rgba(var(--cs-accent-rgb),0.12)', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)' }
+                        : { background: 'transparent', color: 'var(--cs-text-muted)', border: '1px solid transparent' }
+                      }
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium truncate flex items-center gap-1">
+                          {isUnknown && <HelpCircle className="w-3 h-3 shrink-0 opacity-60" />}
+                          {repoLabel(r.repo)}
+                        </span>
+                        {r.threatHigh > 0 ? (
+                          <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono" style={{ background: 'rgba(255,59,92,0.15)', color: '#ff3b5c' }}>
+                            {r.threatHigh} hi
+                          </span>
+                        ) : (
+                          <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'rgba(34,197,94,0.12)', color: '#22c55e' }}>
+                            clear
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between mt-0.5 text-[10px] font-mono" style={{ color: 'var(--cs-text-faint)' }}>
+                        <span>{r.sessionCount} session{r.sessionCount === 1 ? '' : 's'}</span>
+                        {last && <span>{last}</span>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[10px] leading-snug" style={{ color: 'var(--cs-text-faint)' }}>
+                “Unknown / pre-tracking” holds activity captured before repository tracking, or from agents that don’t report a working directory.
+              </p>
+            </div>
+          )}
+
           {/* Sessions */}
           <div className="p-2.5 shrink-0" style={{ borderBottom: '1px solid var(--cs-border)' }}>
             <div className="flex items-center justify-between mb-2">
@@ -1356,6 +1453,40 @@ export default function App() {
                   >
                     <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: HARNESS_COLORS[h] ?? '#64748b' }} />
                     {h.replace('-', '\u00a0')}
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Repository filter chips \u2014 scope the span list to one git repo.
+                Mirrors the harness-chip UX. Only shown once more than one repo
+                has been observed. */}
+            {repos.length > 1 && (
+              <div className="flex flex-wrap gap-1">
+                <button
+                  onClick={() => setRepoFilter(null)}
+                  className="px-2 py-0.5 text-[11px] rounded font-medium transition-all"
+                  style={repoFilter === null
+                    ? { background: 'var(--cs-bg-elevated)', color: 'var(--cs-text-base)', border: '1px solid var(--cs-border-soft)' }
+                    : { background: 'transparent', color: 'var(--cs-text-faint)', border: '1px solid transparent' }
+                  }
+                >
+                  All repos
+                </button>
+                {repos.map(r => (
+                  <button
+                    key={r.repo}
+                    onClick={() => setRepoFilter(repoFilter === r.repo ? null : r.repo)}
+                    title={r.repo === UNKNOWN_REPO ? 'Activity captured before repository tracking, or from agents that don\u2019t report a working directory.' : r.repo}
+                    className="px-2 py-0.5 text-[11px] rounded font-medium transition-all flex items-center gap-1"
+                    style={repoFilter === r.repo
+                      ? { background: 'var(--cs-accent-soft, rgba(var(--cs-accent-rgb),0.12))', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.25)' }
+                      : { background: 'transparent', color: 'var(--cs-text-faint)', border: '1px solid transparent' }
+                    }
+                  >
+                    {repoLabel(r.repo)}
+                    {(r.threatHigh > 0) && (
+                      <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: '#ff3b5c' }} />
+                    )}
                   </button>
                 ))}
               </div>

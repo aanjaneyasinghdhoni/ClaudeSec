@@ -28,6 +28,7 @@ import { registerFileAccessRoutes } from './routes/fileAccess.js';
 import { registerCommandAuditRoutes } from './routes/commandAudit.js';
 import { registerSearchRoutes } from './routes/search.js';
 import { registerSessionRoutes } from './routes/sessions.js';
+import { registerRepoRoutes } from './routes/repos.js';
 import { registerAlertRoutes } from './routes/alerts.js';
 import { registerRuleRoutes } from './routes/rules.js';
 import { registerProtectedPathRoutes } from './routes/protectedPaths.js';
@@ -2091,6 +2092,7 @@ async function startServer() {
 
   // ── Sessions ─────────────────────────────────────────────────────────────
   registerSessionRoutes(app, { io, healthFromCounts, computeHealthScore, appVersion: APP_VERSION });
+  registerRepoRoutes(app, { io, healthFromCounts });
 
   // ── Span search ──────────────────────────────────────────────────────────
   app.get('/api/spans', (req, res) => {
