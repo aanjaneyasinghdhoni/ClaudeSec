@@ -69,8 +69,8 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CLAUDESEC_MAX_SPANS` | `50000` | Total span capacity before count-based pruning |
-| `CLAUDESEC_RETENTION_DAYS` | `30` | Age-based pruning threshold |
+| `CLAUDESEC_MAX_SPANS` | `50000` | Soft span-count ceiling; reclaims only out-of-window spans above this |
+| `CLAUDESEC_RETENTION_DAYS` | `183` | Age-based pruning threshold (~6 months, the EU AI Act minimum) — a hard floor count-pruning never crosses |
 
 ## Performance & limits
 

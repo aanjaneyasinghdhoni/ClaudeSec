@@ -52,4 +52,4 @@ Reads of credential-adjacent paths — `.env`, `~/.ssh/`, `id_rsa`, `*.pem`, `/e
 
 ## Data retention
 
-Spans are pruned by count (`CLAUDESEC_MAX_SPANS`, default 50,000) and age (`CLAUDESEC_RETENTION_DAYS`, default 30). You can prune manually from the Cost screen's Database Health panel or `POST /api/db-stats/prune`.
+Spans are pruned by age (`CLAUDESEC_RETENTION_DAYS`, default 183 — ~6 months, the EU AI Act minimum log-retention floor) and by count (`CLAUDESEC_MAX_SPANS`, default 50,000). Count-based pruning never evicts data still inside the retention window, so the age floor always takes precedence. You can prune manually from the Cost screen's Database Health panel or `POST /api/db-stats/prune`.

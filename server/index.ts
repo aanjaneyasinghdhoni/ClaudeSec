@@ -816,7 +816,10 @@ function getRetentionDays(): number {
   const env = Number(process.env.CLAUDESEC_RETENTION_DAYS);
   if (env > 0) return env;
   const cfg = Number(getConfig.get('retention.days')?.value ?? 0);
-  return cfg > 0 ? cfg : 30;
+  // Default 183 days (~6 months) — meets the EU AI Act minimum log-retention
+  // floor for high-risk AI systems. Override down with CLAUDESEC_RETENTION_DAYS
+  // or the retention.days config if a shorter window is acceptable for you.
+  return cfg > 0 ? cfg : 183;
 }
 
 function pruneSpans(): { prunedByAge: number; prunedByCount: number } {
@@ -837,15 +840,28 @@ function pruneSpans(): { prunedByAge: number; prunedByCount: number } {
     prunedByAge += deleted;
   }
 
-  // Count-based pruning: keep only the most recent max_spans spans
+  // Count-based pruning: reclaim the oldest spans down to max_spans, but NEVER
+  // evict a span that is still inside the retention window. Retention is a hard
+  // compliance floor (EU AI Act: keep 6 months); the count cap is a soft ceiling
+  // that may only reclaim rows whose own startNano is already past the age
+  // cutoff. Consequence: when in-window data alone exceeds max_spans the DB is
+  // allowed to stay over the count cap — the age floor takes precedence. Age
+  // pruning above is what actually bounds growth in normal operation.
+  // startNano is a Unix-epoch *nanosecond* timestamp stored as text; the cutoff
+  // is the age boundary in nanoseconds and the comparison is numeric.
   const maxSpans = getMaxSpans();
+  const cutoffNano = String((Date.now() - cutoffDays * 24 * 60 * 60 * 1000) * 1e6);
   const totalSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
   if (totalSpans > maxSpans) {
     const excess = totalSpans - maxSpans;
-    // Delete oldest spans by rowid
+    // Delete the oldest spans, but only those already past the retention cutoff.
     const result = db.prepare(
-      `DELETE FROM spans WHERE rowid IN (SELECT rowid FROM spans ORDER BY startNano ASC LIMIT ?)`
-    ).run(excess);
+      `DELETE FROM spans WHERE rowid IN (
+         SELECT rowid FROM spans
+         WHERE CAST(startNano AS INTEGER) < CAST(? AS INTEGER)
+         ORDER BY startNano ASC LIMIT ?
+       )`
+    ).run(cutoffNano, excess);
     prunedByCount = result.changes;
   }
 
@@ -3414,6 +3430,23 @@ service:
   setTimeout(runBackup, 60_000);          // once shortly after boot
   setInterval(runBackup, 24 * 60 * 60_000); // and daily thereafter
 
+  // Periodic retention prune — decoupled from any ingestion path so it covers
+  // OTLP, the transcript watcher, and auto-discovery at once without a DB hit
+  // per span. Critical for the default watcher-only deployment: that path never
+  // called pruneSpans(), so spans.db grew unbounded (neither CLAUDESEC_MAX_SPANS
+  // nor CLAUDESEC_RETENTION_DAYS was ever enforced). Fail-open: a prune error is
+  // swallowed so it can never crash the server. Cleared on graceful shutdown.
+  const pruneTimer = setInterval(() => {
+    try {
+      const { prunedByAge, prunedByCount } = pruneSpans();
+      if (prunedByAge + prunedByCount > 0) {
+        console.log(`[ClaudeSec] Pruned ${prunedByAge} aged + ${prunedByCount} excess spans`);
+        io.emit('sessions-update');
+      }
+    } catch {}
+  }, 5 * 60_000);
+  pruneTimer.unref();
+
   // Graceful shutdown — on SIGINT/SIGTERM (launchd/Docker stop, Ctrl-C) stop
   // accepting connections, checkpoint the WAL back into the main DB file, close
   // the handle, then exit 0. This prevents a half-applied WAL / corruption on an
@@ -3431,6 +3464,7 @@ service:
     // Fail-open — a failure here must never block the checkpoint + exit.
     try { watcherHandle?.stop(); } catch {}
     try { if (sweepTimer) clearInterval(sweepTimer); } catch {}
+    try { clearInterval(pruneTimer); } catch {}
     httpServer.close(() => {
       checkpointAndClose();
       console.log('[ClaudeSec] database checkpointed and closed. Bye.');
