@@ -28,6 +28,7 @@
   --cs-danger:       #ff3b5c;
   --cs-warn:         #ffb224;
   --cs-info:         #3b9eff;
+  --cs-info-rgb:     59,158,255;
   /* SVG theme tokens */
   --cs-svg-grid:     #1c1e2a;
   --cs-svg-axis:     #2a2d3e;
@@ -59,6 +60,7 @@ html.light {
   --cs-danger:       #dc2640;
   --cs-warn:         #d49400;
   --cs-info:         #2563eb;
+  --cs-info-rgb:     37,99,235;
   --cs-svg-grid:     #d8dbe4;
   --cs-svg-axis:     #c4c8d4;
   --cs-svg-text:     #5a5e70;

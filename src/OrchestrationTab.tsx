@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check, ExternalLink } from 'lucide-react';
+import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check, ExternalLink, Info } from 'lucide-react';
 import { socket } from './socket';
 import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
@@ -135,7 +135,7 @@ function SpawnTreeItem({
           ...(synthetic ? { borderLeft: '2px dashed #475569' } : {}),
         }}
         onClick={() => hasChildren && setExpanded(e => !e)}
-        title={synthetic ? 'Inferred grouping — no observed cross-trace spawn edge' : undefined}
+        title={synthetic ? 'Estimated grouping — a best guess, not an observed cross-trace spawn edge' : undefined}
       >
         {/* Expand/collapse icon */}
         <span className="w-4 h-4 shrink-0 text-slate-600">
@@ -162,13 +162,19 @@ function SpawnTreeItem({
           {node.sessionName}
         </span>
 
-        {/* Inferred marker */}
+        {/* Estimated marker — neutral, never a warning colour, so it reads as
+            "a best guess" rather than "a problem". */}
         {synthetic && (
           <span
-            className="text-[10px] uppercase tracking-wide font-mono text-slate-500 bg-slate-800/60 border border-dashed border-slate-600 px-1.5 py-0.5 rounded shrink-0 cursor-help"
-            title="Inferred = guessed, not observed. No agent reported spawning this session; it was grouped here because it runs the same agent. Dashed styling marks the guess."
+            className="inline-flex items-center gap-1 text-[10px] tracking-wide px-1.5 py-0.5 rounded shrink-0 cursor-help"
+            style={{
+              color: 'var(--cs-info)',
+              background: 'rgba(var(--cs-info-rgb),0.10)',
+              border: '1px dashed rgba(var(--cs-info-rgb),0.40)',
+            }}
+            title="Estimated, not observed. No agent reported spawning this session; it was grouped here because it runs the same agent. This is a best-effort guess, not an error."
           >
-            inferred
+            <Info style={{ width: 10, height: 10 }} /> estimated
           </span>
         )}
 
@@ -355,7 +361,10 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
           <Cpu className="w-3 h-3" /> Agent Orchestration Graph
           <span className="ml-1">
-            <ExperimentalBadge title="Cross-agent edges only appear when multiple agents share a trace" />
+            <ExperimentalBadge
+              label="Estimated"
+              title="ClaudeSec infers agent relationships from timing and naming — a best-effort estimate, not an error. Cross-agent edges only appear when multiple agents share a trace."
+            />
           </span>
         </p>
 
@@ -446,11 +455,16 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
           <GitBranch className="w-3 h-3" /> Sub-Agent Spawn Tree
           <span className="ml-1">
-            <ExperimentalBadge title="Heuristic — agents don't emit cross-trace spawn parentage yet" />
+            <ExperimentalBadge
+              label="Estimated hierarchy"
+              title="ClaudeSec infers the agent hierarchy from timing and naming — it's a best-effort estimate, not an error. Agents don't emit cross-trace spawn parentage yet."
+            />
           </span>
-          <span className="ml-auto text-[11px] text-slate-600 normal-case font-normal tracking-normal">
-            Heuristic grouping of related sessions — experimental
-          </span>
+        </p>
+        {/* Always-visible, neutral caption so the "estimate, not a problem"
+            framing is clear without relying on a hover or a particular theme. */}
+        <p className="text-[11px] -mt-1.5 mb-3 normal-case font-normal tracking-normal" style={{ color: 'var(--cs-text-muted)' }}>
+          Estimated grouping of related sessions, inferred from timing and naming — a best guess, not an error.
         </p>
 
         {spawnTree.length === 0 ? (
@@ -464,12 +478,19 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
         ) : (
           <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
             {spawnTree.some(r => r.synthetic) && (
-              <div className="flex items-start gap-2 px-3 py-2 text-[11px] text-amber-300/90 bg-amber-950/20 border-b border-dashed border-amber-800/40">
-                <span className="font-mono uppercase tracking-wide shrink-0">inferred</span>
-                <span>
-                  "Inferred" means guessed, not observed: no agent here reported spawning
-                  another, so ClaudeSec grouped sessions from the same agent together as a
-                  best guess. Dashed/greyed rows are that guess — not a real spawn link.
+              <div
+                className="flex items-start gap-2 px-3 py-2 text-[11px] border-b border-dashed"
+                style={{
+                  color: 'var(--cs-info)',
+                  background: 'rgba(var(--cs-info-rgb),0.08)',
+                  borderColor: 'rgba(var(--cs-info-rgb),0.30)',
+                }}
+              >
+                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span style={{ color: 'var(--cs-text-muted)' }}>
+                  <span style={{ color: 'var(--cs-info)' }} className="font-medium">Estimated:</span> no agent here
+                  reported spawning another, so ClaudeSec grouped sessions from the same agent together as a best
+                  guess. Dashed/greyed rows are that estimate — not a confirmed spawn link, and not an error.
                 </span>
               </div>
             )}

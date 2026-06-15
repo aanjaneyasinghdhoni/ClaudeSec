@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Settings, Database, Globe, Monitor, ChevronDown, ChevronUp, Check, BellRing,
   History, Copy, Terminal, ShieldCheck, AlertTriangle, CircleSlash, CheckCircle2, Activity, Trash2,
+  Lock, Pencil,
 } from 'lucide-react';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
 import { WebhookDeliverySection } from './WebhookDeliverySection';
@@ -59,9 +60,11 @@ interface SectionProps {
   title: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  /** Optional tag shown next to the title (e.g. "Editable here"). */
+  badge?: React.ReactNode;
 }
 
-export function Section({ icon, title, children, defaultOpen = true }: SectionProps) {
+export function Section({ icon, title, children, defaultOpen = true, badge }: SectionProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -72,7 +75,9 @@ export function Section({ icon, title, children, defaultOpen = true }: SectionPr
         className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/40 transition-colors"
       >
         <span style={{ color: 'var(--cs-accent)' }}>{icon}</span>
-        <span className="text-sm font-semibold text-slate-200 flex-1">{title}</span>
+        <span className="text-sm font-semibold text-slate-200">{title}</span>
+        {badge}
+        <span className="flex-1" />
         {open
           ? <ChevronUp className="w-4 h-4 text-slate-500" />
           : <ChevronDown className="w-4 h-4 text-slate-500" />}
@@ -94,6 +99,40 @@ export function Section({ icon, title, children, defaultOpen = true }: SectionPr
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Read-only vs editable tags
+//
+// Settings come in two flavours and used to look identical: status cards that
+// only *display* an env-driven value, and controls you can actually change in
+// the dashboard. These small tags make the difference obvious at a glance.
+// ---------------------------------------------------------------------------
+
+/** Marks a whole section's controls as changeable here in the dashboard. */
+function EditableTag() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide shrink-0"
+      style={{ background: 'rgba(0,212,170,0.12)', color: 'var(--cs-accent)', border: '1px solid var(--cs-accent-dim)' }}
+      title="You can change this here in the dashboard."
+    >
+      <Pencil className="w-2.5 h-2.5" /> Editable here
+    </span>
+  );
+}
+
+/** Marks a value as read-only — it is set via an environment variable. */
+function ReadOnlyTag() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide shrink-0"
+      style={{ background: 'rgba(var(--cs-info-rgb),0.10)', color: 'var(--cs-info)', border: '1px solid rgba(var(--cs-info-rgb),0.30)' }}
+      title="This value is set via an environment variable and can't be changed here."
+    >
+      <Lock className="w-2.5 h-2.5" /> Set via env — read-only
+    </span>
   );
 }
 
@@ -274,6 +313,7 @@ export function WebhookSection() {
   const [urlPreview,  setUrlPreview]  = useState<string | null>(null);
   const [threshold,   setThreshold]   = useState<'low' | 'medium' | 'high' | 'critical'>('high');
   const [configured,  setConfigured]  = useState(false);
+  const [envOverride, setEnvOverride] = useState(false);
   const [testMsg,     setTestMsg]     = useState('');
   const [testOk,      setTestOk]      = useState<boolean | null>(null);
   const [error,       setError]       = useState('');
@@ -284,6 +324,7 @@ export function WebhookSection() {
       .then((d: Partial<WebhookConfig>) => {
         if (d.configured) { setConfigured(true); setUrlPreview(d.urlPreview ?? null); }
         if (d.threshold) setThreshold(d.threshold);
+        setEnvOverride(!!d.envOverride);
       })
       .catch(() => {});
   }, []);
@@ -342,6 +383,18 @@ export function WebhookSection() {
 
   return (
     <div className="space-y-4 mt-3">
+      {envOverride && (
+        <div
+          className="flex items-start gap-2 px-3 py-2 rounded-lg text-[11px] leading-relaxed"
+          style={{ background: 'rgba(var(--cs-info-rgb),0.08)', border: '1px solid rgba(var(--cs-info-rgb),0.25)', color: 'var(--cs-text-muted)' }}
+        >
+          <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: 'var(--cs-info)' }} />
+          <span>
+            The webhook is currently pinned by the <code className="font-mono" style={{ color: 'var(--cs-info)' }}>CLAUDESEC_WEBHOOK_URL</code>{' '}
+            environment variable — edits here are disabled until you unset it.
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="sm:col-span-2">
           <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Webhook URL</label>
@@ -567,11 +620,17 @@ function ConfigStatusSection() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <code className="text-[11px] font-mono text-slate-200 break-all">{s.key}</code>
                     <StatusBadge state={s.state} />
+                    <ReadOnlyTag />
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{s.description}</p>
                   {s.detail && (
                     <p className="text-[10px] text-slate-600 mt-0.5 italic">{s.detail}</p>
                   )}
+                  {/* The setting key IS the env var name — tell the user exactly
+                      how to change a read-only value. */}
+                  <p className="text-[10px] mt-1 font-mono" style={{ color: 'var(--cs-text-faint)' }}>
+                    Change with the <code className="font-mono" style={{ color: 'var(--cs-info)' }}>{s.key}</code> environment variable.
+                  </p>
                 </div>
                 <div className="shrink-0 sm:text-right sm:max-w-[42%] sm:pl-2">
                   <p className="text-[9px] uppercase tracking-wider text-slate-600 mb-0.5">Effective</p>
@@ -788,6 +847,19 @@ export function SettingsTab(): React.ReactElement {
         </div>
 
         <Section icon={<ShieldCheck className="w-4 h-4" />} title="Configuration Status">
+          <div
+            className="flex items-start gap-2 px-3 py-2 mb-3 rounded-lg text-[11px] leading-relaxed"
+            style={{ background: 'rgba(var(--cs-info-rgb),0.08)', border: '1px solid rgba(var(--cs-info-rgb),0.25)', color: 'var(--cs-text-muted)' }}
+          >
+            <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: 'var(--cs-info)' }} />
+            <span>
+              These are <span style={{ color: 'var(--cs-info)' }} className="font-medium">read-only</span> — every value
+              here is set through an environment variable, shown so you can confirm what's live. To change one, set its
+              env var (named on each row) and restart. The sections below with an
+              <span style={{ color: 'var(--cs-accent)' }} className="font-medium"> Editable here</span> tag are the ones
+              you can change from this dashboard.
+            </span>
+          </div>
           <p className="text-xs text-slate-500 mb-1 leading-relaxed">
             Live runtime state of each setting — whether the feature is actually
             <span className="text-slate-300"> active</span>, at its
@@ -798,11 +870,11 @@ export function SettingsTab(): React.ReactElement {
           <ConfigStatusSection />
         </Section>
 
-        <Section icon={<Database className="w-4 h-4" />} title="Retention">
+        <Section icon={<Database className="w-4 h-4" />} title="Retention" badge={<EditableTag />}>
           <RetentionSection />
         </Section>
 
-        <Section icon={<Trash2 className="w-4 h-4" />} title="Data">
+        <Section icon={<Trash2 className="w-4 h-4" />} title="Data" badge={<EditableTag />}>
           <DataManagementSection />
         </Section>
 
@@ -814,19 +886,19 @@ export function SettingsTab(): React.ReactElement {
           <EnvReferenceSection />
         </Section>
 
-        <Section icon={<Monitor className="w-4 h-4" />} title="Rate Limiting">
+        <Section icon={<Monitor className="w-4 h-4" />} title="Rate Limiting" badge={<ReadOnlyTag />}>
           <RateLimitSection />
         </Section>
 
-        <Section icon={<Globe className="w-4 h-4" />} title="Webhook">
+        <Section icon={<Globe className="w-4 h-4" />} title="Webhook" badge={<EditableTag />}>
           <WebhookSection />
         </Section>
 
-        <Section icon={<Monitor className="w-4 h-4" />} title="Display">
+        <Section icon={<Monitor className="w-4 h-4" />} title="Display" badge={<EditableTag />}>
           <DisplaySection />
         </Section>
 
-        <Section icon={<BellRing className="w-4 h-4" />} title="Threshold Rules" defaultOpen={false}>
+        <Section icon={<BellRing className="w-4 h-4" />} title="Threshold Rules" defaultOpen={false} badge={<EditableTag />}>
           <p className="text-xs text-slate-500 mb-1 leading-relaxed">
             Trigger alerts when a session metric exceeds a threshold within a time window.
             Fired alerts appear in the Alerts tab.

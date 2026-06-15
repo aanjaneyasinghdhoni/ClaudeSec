@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers, Sparkles, Loader2, Undo2 } from 'lucide-react';
 import { socket } from './socket';
 import type { Severity } from './shared/types';
+import { AlertDetailDrawer, type AlertDetail } from './AlertDetailDrawer';
 
 // How long a just-triaged row lingers (greyed, with an Undo affordance) before
 // it drops out of the list. Long enough to read "Dismissed — Undo" and react.
@@ -117,6 +118,10 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
   // alert id so each row tracks its own on-demand verdict.
   const [judgeEnabled,    setJudgeEnabled]    = useState(false);
   const [judgeStates,     setJudgeStates]     = useState<Record<number, JudgeState>>({});
+  // The alert whose detail drawer is open. Clicking a row populates this in
+  // place (honouring the "Select an alert to see details" hint) rather than
+  // navigating straight to the timeline.
+  const [selected,        setSelected]        = useState<AlertDetail | null>(null);
 
   const fetchAlerts = (
     sev: SeverityFilter = severityFilter,
@@ -356,22 +361,22 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
                 const isTriaging  = triaging.has(alert.id);
                 const hitCount    = alert.count ?? 1;
                 const judgeState  = judgeStates[alert.id];
-                // A row is investigable when we know its span/trace and a handler
-                // is wired. Clicking jumps to that session's timeline with the span
-                // pre-selected — the triage cell stops propagation so its buttons
-                // don't trigger navigation.
-                const canInvestigate = !!onInvestigate && !!alert.spanId && !!alert.traceId;
+                // Clicking a row opens the detail drawer in place — matching the
+                // panel's promise — instead of jumping away to the timeline. The
+                // drawer offers an explicit "Open in Timeline →" action. The triage
+                // cell stops propagation so its buttons don't open the drawer.
+                const openDetail = () => setSelected(alert);
                 return (
                   <React.Fragment key={alert.id}>
                   <tr
-                    onClick={canInvestigate ? () => onInvestigate!(alert.traceId, alert.spanId) : undefined}
-                    role={canInvestigate ? 'button' : undefined}
-                    tabIndex={canInvestigate ? 0 : undefined}
-                    onKeyDown={canInvestigate ? (e) => {
-                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onInvestigate!(alert.traceId, alert.spanId); }
-                    } : undefined}
-                    title={canInvestigate ? 'Investigate — jump to this span in the session timeline' : undefined}
-                    className={`transition-colors ${canInvestigate ? 'cursor-pointer' : ''} ${
+                    onClick={openDetail}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(); }
+                    }}
+                    title="View alert details"
+                    className={`transition-colors cursor-pointer ${
                       pend || isDismissed
                         ? 'opacity-40 bg-slate-900/30'
                         : 'hover:bg-slate-800/30'
@@ -542,6 +547,17 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
           </div>
         )}
       </div>
+
+      {/* In-place alert detail — opened by clicking a row. "Open in Timeline →"
+          inside the drawer is the explicit, secondary path to the timeline. */}
+      <AlertDetailDrawer
+        alert={selected}
+        onClose={() => setSelected(null)}
+        onInvestigate={onInvestigate ? (traceId, spanId) => {
+          setSelected(null);
+          onInvestigate(traceId, spanId);
+        } : undefined}
+      />
     </div>
   );
 }
