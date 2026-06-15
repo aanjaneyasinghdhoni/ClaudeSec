@@ -133,6 +133,9 @@ Full docs build into the dashboard's **Docs** tab (including the changelog). The
 under [`docs/`](docs/):
 
 - [Quickstart](docs/quickstart.mdx) — install and see live activity in under a minute.
+- [Launch the full platform](docs/how-to/launch.mdx) — run via npx, a pnpm clone, or Docker, across
+  macOS / Linux / Windows, and connect your first agent.
+- [Tour of the dashboard](docs/explanation/dashboard-tour.mdx) — what each screen is for.
 - [Configuration reference](docs/reference/config.mdx) — every environment variable and its default.
 - [Capture remote & CI agents (OTLP)](docs/how-to/remote-agents.mdx) — stream telemetry from
   machines ClaudeSec can't read from disk.

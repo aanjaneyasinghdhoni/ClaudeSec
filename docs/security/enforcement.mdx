@@ -59,6 +59,8 @@ Uninstall removes **only** ClaudeSec's own four PreToolUse entries — everythin
 
 ## Modes
 
+Enforcement mode is a **single, machine-wide global setting** — not per-project and not per-agent. Change it with the **toggle on the Enforce tab**; don't hand-edit the config file. The dashboard writes the one canonical control-plane file the hook (and the MCP proxy) reads, and it resolves the mode the **same way** the hook does, so the **effective mode** shown on the Enforce tab is the source of truth for what will actually block. The always-on floors (the catastrophic floor, cloud-metadata SSRF, self-protection, the live-secret check, and default protected paths) block regardless of mode, and enforcement is always **fail-open**.
+
 The hook runs in one of two modes, and **`monitor` is the default**:
 
 | Mode | What it does |

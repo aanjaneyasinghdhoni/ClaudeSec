@@ -1,0 +1,175 @@
+---
+title: "Launch the full platform"
+description: "Run ClaudeSec three ways — npx, a pnpm clone, or Docker — and connect your first agent. Defaults to a loopback dashboard on port 3000, with all data stored locally."
+---
+
+ClaudeSec runs as a single local service: an Express backend that ingests agent activity, evaluates threat rules, and serves the dashboard. There are three ways to launch it. Pick the one that matches how you work.
+
+| Path | Best for | Agent capture |
+|---|---|---|
+| **npx** | A quick, zero-clone trial | Local transcript watcher + OTLP |
+| **pnpm** (clone) | Local development and self-hosting | Local transcript watcher + OTLP |
+| **Docker** | Servers, CI, and Windows | **OTLP only** (no host transcript watching) |
+
+All three serve the dashboard at **http://localhost:3000** and bind to loopback (`127.0.0.1`) by default. Your data lives in a local SQLite file — see [Where your data lives](#where-your-data-lives).
+
+## Prerequisites
+
+- **Node.js 22.13+** (Node 22 LTS recommended) — required for the npx and pnpm paths. The Docker path needs only Docker.
+- **pnpm** via corepack (`corepack enable`) — required for the clone path.
+- At least one supported agent: [Claude Code](/harnesses/claude-code), [GitHub Copilot CLI](/harnesses/copilot), or [Codex](/harnesses/codex).
+
+<Note>
+  `better-sqlite3` compiles a native module on install. If install fails, add the Xcode Command Line Tools (macOS) or `build-essential` (Linux) and retry. Docker sidesteps this entirely.
+</Note>
+
+---
+
+## Option A — npx (zero-clone quick run)
+
+The fastest way to try ClaudeSec without cloning anything:
+
+```bash
+npx claudesec
+```
+
+This installs the user-level background service (launchd on macOS, a systemd user service on Linux, a Scheduled Task on Windows), starts it, and opens the dashboard at [http://localhost:3000](http://localhost:3000). The local watcher begins tailing every agent session on your machine immediately.
+
+Manage the service the same way:
+
+```bash
+npx claudesec status     # health, span/session/alert counts, uptime
+npx claudesec stop       # stop and remove the service
+npx claudesec reset      # wipe stored data in ~/.claudesec/spans.db
+```
+
+---
+
+## Option B — pnpm (clone, build, run)
+
+For local development or self-hosting from source. The one-command starter installs, builds, serves the production app in the foreground, and reports which agents it can see:
+
+```bash
+git clone https://github.com/aanjaneyasinghdhoni/ClaudeSec.git
+cd ClaudeSec
+./start.sh
+```
+
+Prefer to run each step yourself:
+
+```bash
+corepack enable
+pnpm install
+pnpm build      # runs the test gate, then builds the dashboard into dist/
+pnpm start      # serve the production build at http://localhost:3000
+```
+
+`pnpm start` runs the backend in production mode and serves the built dashboard. For active development with hot reload, use `pnpm dev` instead of `pnpm build && pnpm start`.
+
+To keep ClaudeSec running across reboots, install the background service from your clone:
+
+```bash
+pnpm build
+node cli/init.mjs            # install + start the service, open the dashboard
+node cli/init.mjs stop       # stop and remove the service
+```
+
+See the [CLI reference](/reference/cli) for every command.
+
+---
+
+## Option C — Docker (OTLP only)
+
+Docker is the right path for a server, a shared host, or Windows. The Compose file publishes the dashboard on loopback and persists the database in a named volume:
+
+```bash
+docker compose up
+```
+
+This builds the image, runs the backend on **http://localhost:3000** (published to `127.0.0.1` only), and stores data in the `claudesec-data` volume. The container sets `CLAUDESEC_TRUST_LOCAL=1`, which is safe **only** because the port is published on loopback — never expose the container port on a public interface without an auth token (see [Privacy & Security](/security/privacy)).
+
+<Warning>
+  **Docker ingests via OTLP only.** A container cannot read the transcript files on your host, so the zero-config local watcher does **not** run in Docker. Point your agents at the OTLP endpoint (below) to capture them. Everything else — detection, the dashboard, retention, enforcement config — works identically.
+</Warning>
+
+Want a synthetic dataset to explore without touching real telemetry? Bring up the demo container alongside it:
+
+```bash
+docker compose --profile demo up
+```
+
+The demo runs on its own port and a separate, physically isolated volume seeded with synthetic sessions. See the [Quickstart](/quickstart#try-it-with-synthetic-data-demo-container) for details.
+
+---
+
+## Platform notes
+
+| Platform | Recommended path | Notes |
+|---|---|---|
+| **macOS** | npx or pnpm | Background service via launchd is **verified**. Native local watcher. |
+| **Linux** | npx or pnpm | Background service via systemd user service (experimental). Native local watcher. |
+| **Windows** | **Docker** | The local transcript watcher and the Scheduled Task service are experimental on Windows; the supported path is Docker with OTLP capture. |
+
+The watcher and dashboard run anywhere Node 22.13+ runs; only the auto-start *service* layer is platform-specific. On any platform you can always run the foreground server.
+
+---
+
+## Connect an agent
+
+ClaudeSec has two intakes, and both land in the same dashboard.
+
+### Local agents — zero config (npx / pnpm paths)
+
+If the agent runs on the **same machine** as ClaudeSec, you do nothing. The watcher tails the transcript directories your agents already write to:
+
+- `~/.claude/projects` — Claude Code
+- `~/.codex/sessions` — Codex
+- `~/.copilot/session-state` — GitHub Copilot CLI
+
+No environment variables, no shell-profile edits, no agent restart. Activity — including sessions that were already running — appears within seconds. See the [transcript watcher](/explanation/watcher) for how it reads and scrubs.
+
+### Remote, CI, or Docker — OTLP
+
+For agents on another host, in a container, or in CI — and for **any** ClaudeSec running under Docker — use the OpenTelemetry endpoint. ClaudeSec accepts standard OTLP/HTTP JSON at `POST /v1/traces`. Set two variables on the agent:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://<claudesec-host>:3000/v1/traces
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+For Claude Code's native telemetry specifically (e.g. CI, where there's no transcript on the ClaudeSec host), also enable it agent-side:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1   # model name + token counts
+export OTEL_LOG_TOOL_DETAILS=1                  # tool names + input args
+```
+
+Full details, including reaching the server from another machine, are in [Capture remote & CI agents](/how-to/remote-agents).
+
+---
+
+## Where your data lives
+
+ClaudeSec stores everything in one local SQLite database — by default `~/.claudesec/spans.db`, created with `0600` (owner-only) permissions. Override the path with `CLAUDESEC_DB`. Under Docker it lives in the `claudesec-data` volume.
+
+Nothing is sent anywhere by default. The dashboard binds to loopback, the database stays on your disk, and outbound sinks (webhooks, OTLP forwarding) are off unless you explicitly set them. See [Privacy & Security](/security/privacy) for the full data-handling model.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Dashboard tour" icon="gauge" href="/explanation/dashboard-tour">
+    What every screen is for, in plain language.
+  </Card>
+  <Card title="Enforcement" icon="shield" href="/security/enforcement">
+    Block dangerous tool calls before they run.
+  </Card>
+  <Card title="Remote & CI agents" icon="cloud" href="/how-to/remote-agents">
+    Capture agents ClaudeSec can't read from disk.
+  </Card>
+  <Card title="Privacy & Security" icon="lock" href="/security/privacy">
+    Loopback binding, the 0600 database, secret scrubbing.
+  </Card>
+</CardGroup>
