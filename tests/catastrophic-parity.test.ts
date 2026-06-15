@@ -43,13 +43,28 @@ const REPO_ROOT = path.resolve(__dirname, '..');
  *     `/` before that position — this handles escaped slashes inside the pattern.
  *   - Flags (if any) sit between the closing `/` and `, why:`.
  *
+ * `marker` scopes the scan to one `{ re, why }` table (e.g. 'CATASTROPHIC' or
+ * 'LIVE_SECRET'): slice from the first `<marker>` occurrence to the next line that
+ * closes an array literal (`];`). Files without the marker fall back to scanning
+ * the whole file (the local-only block-catastrophic.cjs uses a `RULES` array).
+ *
  * Asserts count > 0; caller asserts count === expectedCount.
  */
-function extractPatterns(filePath: string): string[] {
+function extractPatterns(filePath: string, marker = 'CATASTROPHIC'): string[] {
   const text = fs.readFileSync(filePath, 'utf8');
   const results: string[] = [];
 
-  for (const line of text.split('\n')) {
+  // Scope the scan to the marked array so we don't pick up other `{ re, why }`
+  // tables in the same file (CATASTROPHIC vs the live-secret DLP floor LIVE_SECRET).
+  let region = text;
+  const startIdx = text.indexOf(marker);
+  if (startIdx !== -1) {
+    const tail = text.slice(startIdx);
+    const closeMatch = tail.search(/\n\s*\];/);
+    region = closeMatch !== -1 ? tail.slice(0, closeMatch) : tail;
+  }
+
+  for (const line of region.split('\n')) {
     const reIdx = line.indexOf('re:');
     if (reIdx === -1) continue;
 
@@ -207,5 +222,70 @@ console.log(`  sources checked:`);
 for (const { name, patterns } of extracted) {
   console.log(`    ${name}: ${patterns.length} patterns`);
 }
+
+// ---------------------------------------------------------------------------
+// LIVE_SECRET parity — the minimal live-secret (DLP) floor must also stay
+// byte-identical across the two TRACKED sources, so the secret lists can't
+// silently drift. Same region-slicing technique, scoped to the LIVE_SECRET
+// table. Only the two REQUIRED sources carry LIVE_SECRET (the local-only
+// block-catastrophic.cjs has no such table).
+// ---------------------------------------------------------------------------
+
+const LIVE_SECRET_EXPECTED_COUNT = 9;
+let secretPassed = true;
+const secretExtracted: { name: string; patterns: string[] }[] = [];
+
+for (const src of REQUIRED_SOURCES) {
+  if (!fs.existsSync(src.file)) {
+    // Already reported as a hard fail above; nothing to add here.
+    secretPassed = false;
+    continue;
+  }
+  const patterns = extractPatterns(src.file, 'LIVE_SECRET');
+  secretExtracted.push({ name: src.name, patterns });
+  if (patterns.length !== LIVE_SECRET_EXPECTED_COUNT) {
+    console.error(
+      `FAIL  ${src.name} (LIVE_SECRET): expected ${LIVE_SECRET_EXPECTED_COUNT} patterns, ` +
+      `extracted ${patterns.length}`
+    );
+    secretPassed = false;
+  }
+}
+
+if (secretPassed && secretExtracted.length >= 2) {
+  const sortedSecret = secretExtracted.map(({ name, patterns }) => ({
+    name,
+    sorted: [...patterns].sort(),
+  }));
+  const ref = sortedSecret[0];
+  for (let i = 1; i < sortedSecret.length; i++) {
+    const { name, sorted: s } = sortedSecret[i];
+    if (s.length !== ref.sorted.length) {
+      console.error(
+        `\nFAIL  ${name} (LIVE_SECRET): ${s.length} patterns vs reference ${ref.sorted.length}`
+      );
+      secretPassed = false;
+      continue;
+    }
+    for (let j = 0; j < ref.sorted.length; j++) {
+      if (s[j] !== ref.sorted[j]) {
+        console.error(`\nFAIL  ${name} (LIVE_SECRET) differs from ${ref.name}:`);
+        console.error(`  reference[${j}]: ${ref.sorted[j]}`);
+        console.error(`  ${name}[${j}]:   ${s[j]}`);
+        secretPassed = false;
+      }
+    }
+  }
+}
+
+if (!secretPassed) {
+  console.error('\nlive-secret parity: FAIL');
+  process.exit(1);
+}
+
+console.log(
+  `live-secret parity: ${LIVE_SECRET_EXPECTED_COUNT}/${LIVE_SECRET_EXPECTED_COUNT} identical ` +
+  `across ${secretExtracted.length} tracked source(s) checked`
+);
 
 process.exit(0);

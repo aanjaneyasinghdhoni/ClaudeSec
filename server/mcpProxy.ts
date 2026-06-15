@@ -61,15 +61,72 @@ interface JsonRpcMessage {
   params?: { name?: unknown; arguments?: unknown } & Record<string, unknown>;
 }
 
-/** Build the matchable text for a tools/call, identical to the hook's scheme. */
-function buildMatchText(name: string, args: unknown): string {
+// Edit-shaped tool names and the arg keys that carry file content vs the target
+// path. Mirrors the hook's EDIT_TOOLS split: for an edit call we gate on PATH +
+// ACTION (never the static content of the code being written), and check the
+// content ONLY against the minimal live-secret floor. Names are matched
+// case-insensitively so a downstream MCP server's `edit_file`/`write_file`/etc.
+// is treated the same as Claude Code's Edit/Write.
+const EDIT_TOOL_NAMES = /(?:^|[._-])(?:edit|write|multiedit|notebook_?edit|str_replace|create_file|write_file|edit_file|apply_patch)(?:$|[._-])/i;
+const EDIT_CONTENT_KEYS = ['content', 'new_string', 'new_str', 'new_source', 'text', 'body', 'patch'];
+const EDIT_PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filename', 'file'];
+
+/**
+ * Build the matchable text + edit content + target path for a tools/call,
+ * mirroring the hook.
+ *   • matchText   → name + (for an edit-shaped call) the PATH only; otherwise the
+ *     full serialized args (the execution boundary for a command-shaped tool).
+ *   • editContent → the file body an edit would write, gated ONLY by the
+ *     live-secret floor — never fed to the rule engine.
+ *   • targetPath  → ONLY the file an edit targets (path keys), so evaluate()'s
+ *     self-protection + protected-paths floors get the path even when matchText
+ *     also carries the tool name. Empty for command-shaped calls (their args go
+ *     through matchText as the Bash command form).
+ * A call is "edit-shaped" when its name matches EDIT_TOOL_NAMES; for those we pull
+ * the path + content out by key so an edit whose body merely resembles a threat
+ * rule is not blocked, exactly as the hook does.
+ */
+function buildMatchText(
+  name: string,
+  args: unknown,
+): { matchText: string; editContent: string; targetPath: string } {
+  const obj = args && typeof args === 'object' ? (args as Record<string, unknown>) : null;
+
+  if (obj && EDIT_TOOL_NAMES.test(name)) {
+    const pathParts: string[] = [];
+    for (const k of EDIT_PATH_KEYS) {
+      if (typeof obj[k] === 'string') pathParts.push(obj[k] as string);
+    }
+    const contentParts: string[] = [];
+    for (const k of EDIT_CONTENT_KEYS) {
+      if (typeof obj[k] === 'string') contentParts.push(obj[k] as string);
+    }
+    // MultiEdit-style nested edits: collect each edit's new content.
+    if (Array.isArray(obj.edits)) {
+      for (const e of obj.edits) {
+        if (e && typeof e === 'object') {
+          const ev = (e as Record<string, unknown>).new_string ?? (e as Record<string, unknown>).new_str;
+          if (typeof ev === 'string') contentParts.push(ev);
+        }
+      }
+    }
+    const targetPath = pathParts.join(' ');
+    return {
+      matchText: `${name} ${targetPath}`.trim(),
+      editContent: contentParts.join('\n'),
+      targetPath,
+    };
+  }
+
+  // Command-shaped (or unknown) call: serialize all args as before. No edit
+  // target path — the floors treat matchText as the Bash command form.
   let argStr: string;
   try {
     argStr = JSON.stringify(args ?? {});
   } catch {
     argStr = String(args ?? '');
   }
-  return `${name} ${argStr}`;
+  return { matchText: `${name} ${argStr}`, editContent: '', targetPath: '' };
 }
 
 /** A blocked tools/call result (isError:true + content). id echoed verbatim. */
@@ -198,10 +255,10 @@ export function startProxy(opts: ProxyOptions): ProxyHandle {
     try {
       const name = typeof msg.params?.name === 'string' ? msg.params.name : '';
       const args = msg.params?.arguments;
-      const matchText = buildMatchText(name, args);
+      const { matchText, editContent, targetPath } = buildMatchText(name, args);
 
       const mode = resolveMode(); // re-resolved per call → live dashboard toggles
-      const verdict = evaluate(matchText, blockRules);
+      const verdict = evaluate(matchText, blockRules, editContent, targetPath);
 
       if (!verdict.triggered) return toChild(line); // clean → forward
 

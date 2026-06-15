@@ -52,6 +52,94 @@ const CATASTROPHIC = [
 // file is not executing it). Bash `cat`/edits are handled by their own branches.
 const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 
+// Edit-family tools write file CONTENT. We gate them on PATH + ACTION, never on
+// the static content of the code being written — scanning edit bodies against the
+// ~630 threat rules false-positives on benign work (editing security code, docs
+// that name attack patterns, fixtures holding secret-shaped strings). The block
+// decision for these tools is: protected-path floor OR live-secret floor below.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+// ── Minimal live-secret (DLP) floor for edit content ─────────────────────────
+// The ONLY content-based block on an edit: refuse to write an UNAMBIGUOUS live
+// credential to disk. Intentionally tiny + verified-shape (very low false
+// positive) — NOT the ~630 threat rules. Phase 7 will replace this with a real
+// secret detector; until then keep this set small and high-confidence. Kept in
+// sync with server/enforceEval.ts (LIVE_SECRET).
+const LIVE_SECRET = [
+  { re: /\bAKIA[0-9A-Z]{16}\b/, why: 'AWS access key id' },
+  { re: /\bASIA[0-9A-Z]{16}\b/, why: 'AWS temporary access key id' },
+  { re: /\bghp_[0-9A-Za-z]{36}\b/, why: 'GitHub personal access token' },
+  { re: /\bgh[oprs]_[0-9A-Za-z]{36}\b/, why: 'GitHub OAuth/server/refresh token' },
+  { re: /\bgithub_pat_[0-9A-Za-z_]{22,}\b/, why: 'GitHub fine-grained token' },
+  { re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/, why: 'Slack token' },
+  { re: /\bsk_live_[0-9A-Za-z]{20,}\b/, why: 'Stripe live secret key' },
+  { re: /\bAIza[0-9A-Za-z_\-]{35}\b/, why: 'Google API key' },
+  { re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/, why: 'private key block' },
+];
+
+// Known documentation/placeholder credentials that are NOT live secrets. AWS
+// ships `AKIAIOSFODNN7EXAMPLE` in its canonical docs; blocking it would refuse a
+// benign edit to AWS docs/examples. Allowlisted by exact (case-sensitive) value
+// before the live-secret floor fires. Kept in sync with server/enforceEval.ts.
+const SECRET_PLACEHOLDERS = new Set([
+  'AKIAIOSFODNN7EXAMPLE',
+]);
+
+/**
+ * Does the edit CONTENT carry an unambiguous live credential? Returns the matching
+ * entry ({ re, why }) or null. This is the minimal DLP floor — the only reason an
+ * edit's content (not its path) can be blocked. A match whose entire value is a
+ * known placeholder (SECRET_PLACEHOLDERS) is ignored. See LIVE_SECRET above.
+ */
+function liveSecretHit(content) {
+  if (!content) return null;
+  for (const r of LIVE_SECRET) {
+    const m = content.match(r.re);
+    if (m && !SECRET_PLACEHOLDERS.has(m[0])) return r;
+  }
+  return null;
+}
+
+// ── Self-protection floor (control plane) ────────────────────────────────────
+// ALWAYS blocks, regardless of CLAUDESEC_MODE — an agent must never be able to
+// edit (or shell-redirect into) the enforcement control plane and unhook the
+// enforcer. Guards the whole ~/.claudesec/hooks/ dir (enforce-config.json, the
+// hook itself, the enforcement snapshot, protected-paths.json, rules.json) plus
+// the Claude settings files that register the PreToolUse hook. This guards AGENT
+// tool calls only; the ClaudeSec SERVER process legitimately writes these files
+// on boot — a different process, not subject to this hook. Kept in sync with
+// server/enforceEval.ts (selfProtectionHit).
+function selfProtectedPrefixes() {
+  const home = os.homedir();
+  // Honor CLAUDESEC_HOME exactly as the installer/server do, so the guard tracks
+  // wherever the control plane actually lives.
+  const csecHome = process.env.CLAUDESEC_HOME || path.join(home, '.claudesec');
+  return [
+    path.join(csecHome, 'hooks'),          // whole enforcement control-plane dir
+    path.join(home, '.claude', 'settings.json'),
+    path.join(home, '.claude', 'settings.local.json'),
+  ];
+}
+
+/**
+ * Does the call's file TARGET or Bash command touch the enforcement control
+ * plane? Matches case-insensitively on the normalized path (case-insensitive
+ * filesystems make a case-sensitive compare a trivial bypass). Returns the
+ * matching prefix or null. Never matches edit CONTENT — only the target path or
+ * the (HOME-expanded) Bash command, so editing a file that merely *mentions* the
+ * control plane is not blocked.
+ */
+function selfProtectionHit(target, bashCmd) {
+  const prefixes = selfProtectedPrefixes();
+  const t = target ? target.toLowerCase() : '';
+  const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
+  for (const p of prefixes) {
+    const f = p.toLowerCase();
+    if ((t && t.includes(f)) || (c && c.includes(f))) return p;
+  }
+  return null;
+}
+
 /**
  * Block the tool call: show `reason` to Claude, flush a log event to the
  * dashboard, then exit 2 (deny). Logging is best-effort and must NEVER turn a
@@ -331,37 +419,39 @@ function run(input) {
   const ti = (data && data.tool_input) || {};
 
   // 2. Build the matchable text.
-  //   • matchText  → fed to the rule regexes (includes edit CONTENT).
-  //   • fileTarget → ONLY the file the call targets (path, never content); used
+  //   • matchText   → fed to the rule regexes. For Bash this is the full command
+  //     (the execution boundary). For EDIT tools it is the PATH ONLY — never the
+  //     content (see EDIT_TOOLS): the block decision for an edit gates on
+  //     path/action + the minimal live-secret floor, NOT the ~630 threat rules.
+  //   • editContent → the new content an edit would write, checked ONLY by the
+  //     live-secret (DLP) floor below. Never fed to the rule engine.
+  //   • fileTarget  → ONLY the file the call targets (path, never content); used
   //     by the protected-paths floor so editing a file that merely *mentions* a
   //     protected path is not blocked.
   let bashCmd = '';
   let matchText = '';
+  let editContent = '';
   const fileTarget = String(ti.file_path || ti.path || ti.notebook_path || '');
   if (toolName === 'Bash') {
     bashCmd = String(ti.command || '');
     matchText = bashCmd;
-  } else if (
-    toolName === 'Edit' ||
-    toolName === 'Write' ||
-    toolName === 'MultiEdit' ||
-    toolName === 'NotebookEdit'
-  ) {
-    const parts = [];
-    if (ti.file_path) parts.push(String(ti.file_path));
-    if (ti.path) parts.push(String(ti.path));
-    if (ti.content) parts.push(String(ti.content));
-    if (ti.new_string) parts.push(String(ti.new_string));
-    // NotebookEdit names its target/content differently from the text editors:
-    // the new cell source is `new_source` and the file is `notebook_path`.
-    if (ti.notebook_path) parts.push(String(ti.notebook_path));
-    if (ti.new_source) parts.push(String(ti.new_source));
+  } else if (EDIT_TOOLS.has(toolName)) {
+    // Path/action only into the rule engine — editing a file whose body happens
+    // to match a threat rule (security code, attack-pattern docs, secret-shaped
+    // fixtures) must NOT be blocked. The content is gated solely by the
+    // live-secret floor (collected into editContent).
+    matchText = fileTarget;
+    const body = [];
+    if (ti.content) body.push(String(ti.content));
+    if (ti.new_string) body.push(String(ti.new_string));
+    // NotebookEdit names its content differently: the new cell source is `new_source`.
+    if (ti.new_source) body.push(String(ti.new_source));
     if (Array.isArray(ti.edits)) {
       for (const e of ti.edits) {
-        if (e && e.new_string) parts.push(String(e.new_string));
+        if (e && e.new_string) body.push(String(e.new_string));
       }
     }
-    matchText = parts.join('\n');
+    editContent = body.join('\n');
   } else if (READ_TOOLS.has(toolName)) {
     // Read-only: fileTarget (set above) is all that matters. Leave matchText
     // empty so the command rule-engine never fires on a mere read — only the
@@ -375,8 +465,9 @@ function run(input) {
 
   // Nothing to evaluate at all (no command/content AND no file target) → allow.
   // A read tool reaches here with an empty matchText but a real fileTarget, so it
-  // still flows into the protected-paths floor.
-  if (!matchText && !fileTarget) return process.exit(0);
+  // still flows into the protected-paths floor; an edit with only content (no
+  // path) still flows into the live-secret floor via editContent.
+  if (!matchText && !fileTarget && !editContent) return process.exit(0);
 
   // 3. Catastrophic floor — Bash command only, ALWAYS blocks.
   if (bashCmd) {
@@ -398,6 +489,30 @@ function run(input) {
           },
         );
       }
+    }
+  }
+
+  // 3a2. Self-protection floor — ALWAYS blocks regardless of mode. An agent must
+  // not be able to edit the enforcement control plane (~/.claudesec/hooks/) or the
+  // Claude settings that register this hook, which would let it disable the
+  // enforcer. Matches the file TARGET or the Bash command only, never edit
+  // content. (The ClaudeSec server writes these files from a different process,
+  // which is not subject to this hook.)
+  {
+    const hitSelf = selfProtectionHit(fileTarget, bashCmd);
+    if (hitSelf) {
+      return blockAndLog(
+        `⛔ ClaudeSec: '${hitSelf}' is part of the enforcement control plane and ` +
+        `cannot be modified by an agent. Blocked.`,
+        {
+          mode: resolveMode(),
+          label: 'Self-protection: ' + hitSelf,
+          severity: 'high',
+          command: redact(bashCmd || fileTarget),
+          blocked: true,
+          wouldBlock: true,
+        },
+      );
     }
   }
 
@@ -425,10 +540,35 @@ function run(input) {
     }
   }
 
+  // 3c. Live-secret (DLP) floor — edit content only, ALWAYS blocks regardless of
+  // mode. The ONLY reason an edit's CONTENT (not its path) is blocked: it would
+  // write an unambiguous live credential to disk. Tiny, high-confidence set (see
+  // liveSecretHit) — NOT the ~630 threat rules; a benign edit whose body merely
+  // resembles a threat pattern is never blocked here.
+  if (editContent) {
+    const hitS = liveSecretHit(editContent);
+    if (hitS) {
+      return blockAndLog(
+        `⛔ ClaudeSec: this edit would write a live ${hitS.why} to disk. Blocked. ` +
+        `Bypass: CLAUDESEC_HOOKS_BYPASS=1`,
+        {
+          mode: resolveMode(),
+          label: 'Live secret in edit: ' + hitS.why,
+          severity: 'high',
+          command: redact(fileTarget || '(edit)'),
+          blocked: true,
+          wouldBlock: true,
+        },
+      );
+    }
+  }
+
   // 4. Command rule-engine — only when there is command/content to inspect. A
   // read tool reaches here with an empty matchText (handled solely by the floor
-  // above), so it never trips a command rule. Load rules from the snapshot
-  // (fail-open if missing) and evaluate against the matchable text.
+  // above), so it never trips a command rule. For an EDIT tool matchText is the
+  // PATH only (content is excluded — see step 2), so an edit never trips a
+  // command rule on its body; only its path can match. Load rules from the
+  // snapshot (fail-open if missing) and evaluate against the matchable text.
   const blockRules = matchText ? loadBlockRules() : [];
 
   // Bound the text we run user-supplied regexes over. Custom rules are validated

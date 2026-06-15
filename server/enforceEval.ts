@@ -25,6 +25,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -63,6 +64,179 @@ export const CATASTROPHIC: { re: RegExp; why: string }[] = [
   { re: /(?:cat|base64|tac|xxd|od|head|tail|gpg)\b[^\n|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))[^\n|]*\|[^\n;&]*\b(?:curl|wget|nc|ncat|telnet)\b/i, why: 'reading a secret and piping it into a network tool' },
   { re: /\b(?:curl|wget)\b[^\n;&|]*(?:-d|--data|--data-binary|--data-raw|-F|--form|-T|--upload-file)[ =]@?[^\n;&|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))/i, why: 'uploading a secret file over the network (curl/wget)' },
 ];
+
+// ── Minimal live-secret (DLP) floor for edit content ─────────────────────────
+// Mirrors LIVE_SECRET in cli/hooks/claudesec-enforce.cjs. The ONLY content-based
+// block on an edit-shaped tool call: refuse to write an UNAMBIGUOUS live credential.
+// Intentionally tiny + verified-shape (very low false positive) — NOT the ~630
+// threat rules. The static body of code being written is gated on PATH + ACTION,
+// never scanned against the rule set (editing security code / attack-pattern docs
+// / secret-shaped fixtures must not be blocked). Phase 7 replaces this with a real
+// secret detector; keep this set small and high-confidence until then.
+export const LIVE_SECRET: { re: RegExp; why: string }[] = [
+  { re: /\bAKIA[0-9A-Z]{16}\b/, why: 'AWS access key id' },
+  { re: /\bASIA[0-9A-Z]{16}\b/, why: 'AWS temporary access key id' },
+  { re: /\bghp_[0-9A-Za-z]{36}\b/, why: 'GitHub personal access token' },
+  { re: /\bgh[oprs]_[0-9A-Za-z]{36}\b/, why: 'GitHub OAuth/server/refresh token' },
+  { re: /\bgithub_pat_[0-9A-Za-z_]{22,}\b/, why: 'GitHub fine-grained token' },
+  { re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/, why: 'Slack token' },
+  { re: /\bsk_live_[0-9A-Za-z]{20,}\b/, why: 'Stripe live secret key' },
+  { re: /\bAIza[0-9A-Za-z_\-]{35}\b/, why: 'Google API key' },
+  { re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/, why: 'private key block' },
+];
+
+// Known documentation/placeholder credentials that are NOT live secrets. AWS
+// ships `AKIAIOSFODNN7EXAMPLE` in its canonical docs; blocking it would refuse a
+// benign edit to AWS docs/examples. Allowlisted by exact (case-sensitive) value
+// before the live-secret floor fires. Mirrors SECRET_PLACEHOLDERS in
+// cli/hooks/claudesec-enforce.cjs.
+export const SECRET_PLACEHOLDERS = new Set<string>([
+  'AKIAIOSFODNN7EXAMPLE',
+]);
+
+/**
+ * Does the edit CONTENT carry an unambiguous live credential? Returns the matching
+ * entry or null. This is the minimal DLP floor — the only reason an edit's content
+ * (not its path) can be blocked. A match whose entire value is a known placeholder
+ * (SECRET_PLACEHOLDERS) is ignored. See LIVE_SECRET.
+ */
+export function liveSecretHit(content: string): { re: RegExp; why: string } | null {
+  if (!content) return null;
+  for (const r of LIVE_SECRET) {
+    const m = content.match(r.re);
+    if (m && !SECRET_PLACEHOLDERS.has(m[0])) return r;
+  }
+  return null;
+}
+
+// ── Protected-paths floor (user-defined, always-on) ──────────────────────────
+// A per-user mirror of the catastrophic floor: any tool call that targets a
+// user-protected path is blocked in EVERY mode. The hook reads
+// protected-paths.json from beside itself (~/.claudesec/hooks/); the proxy reads
+// the SAME mirrored artifact so both enforcement layers share one source of
+// truth. Fail-OPEN everywhere (a missing/unreadable list never blocks).
+
+export interface ProtectedEntry {
+  label: string;
+  /** Raw + home-expanded spellings of the protected path (both matchable). */
+  forms: string[];
+}
+
+/**
+ * Resolve ~/.claudesec/hooks — where the installed hook + its protected-paths
+ * mirror live. Mirrors server/index.ts hookArtifactsDir() and the installer:
+ * honors CLAUDESEC_HOME, else ~/.claudesec. Kept by hand (the server must not
+ * import from cli/); keep in sync if the layout changes.
+ */
+function hookArtifactsDir(): string {
+  const homeDir = process.env.CLAUDESEC_HOME ?? path.join(os.homedir(), '.claudesec');
+  return path.join(homeDir, 'hooks');
+}
+
+/** Resolve the protected-paths.json mirror path (override-aware, parity with the hook). */
+export function resolveProtectedPathsPath(): string {
+  if (process.env.CLAUDESEC_PROTECTED_PATHS) {
+    return path.resolve(process.env.CLAUDESEC_PROTECTED_PATHS);
+  }
+  return path.join(hookArtifactsDir(), 'protected-paths.json');
+}
+
+/**
+ * Load the user's protected-path entries from the mirrored artifact the hook
+ * reads. Fail-OPEN → [] (never throws). Shape: [{ path, label }]. Each entry is
+ * normalized so a leading '~' expands to the home dir; both the raw and expanded
+ * forms are carried so a target matches whichever spelling the agent used.
+ * Mirrors loadProtectedPaths() in cli/hooks/claudesec-enforce.cjs.
+ */
+export function loadProtectedPaths(): ProtectedEntry[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(resolveProtectedPathsPath(), 'utf8')) as unknown;
+    if (!Array.isArray(raw)) return [];
+    const home = os.homedir();
+    const out: ProtectedEntry[] = [];
+    for (const e of raw as { path?: unknown; label?: unknown }[]) {
+      if (!e || typeof e.path !== 'string' || e.path.length === 0) continue;
+      const p = e.path;
+      const expanded =
+        p === '~' ? home
+        : p.startsWith('~/') ? path.join(home, p.slice(2))
+        : p;
+      const label = typeof e.label === 'string' && e.label.length > 0 ? e.label : p;
+      const forms = expanded === p ? [p] : [p, expanded];
+      out.push({ label, forms });
+    }
+    return out;
+  } catch {
+    return []; // missing / unreadable / malformed → fail-open
+  }
+}
+
+/**
+ * Expand a standalone `$HOME` / `${HOME}` token to the home dir (parity with the
+ * hook's expandHomeVar). Only HOME is expanded — arbitrary shell variable / glob
+ * / command substitution is an inherent limitation of static enforcement.
+ */
+function expandHomeVar(cmd: string): string {
+  if (!cmd) return cmd;
+  const home = os.homedir();
+  return cmd.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, home);
+}
+
+/**
+ * Does a protected entry match the call's file TARGET or Bash command? Matches
+ * case-INSENSITIVE substring (case-insensitive filesystems make a case-sensitive
+ * compare a trivial bypass) against the target path or the (HOME-expanded) Bash
+ * command — NEVER edit content. Returns the matching entry or null. Parity with
+ * protectedHit() in cli/hooks/claudesec-enforce.cjs.
+ */
+export function protectedHit(
+  entries: ProtectedEntry[],
+  target: string,
+  bashCmd: string,
+): ProtectedEntry | null {
+  const t = target ? target.toLowerCase() : '';
+  const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
+  for (const e of entries) {
+    for (const form of e.forms) {
+      const f = form.toLowerCase();
+      if ((t && t.includes(f)) || (c && c.includes(f))) return e;
+    }
+  }
+  return null;
+}
+
+// ── Self-protection floor (control plane, always-on) ─────────────────────────
+// An agent must never be able to edit (or shell-redirect into) the enforcement
+// control plane and unhook the enforcer. ALWAYS blocks, regardless of mode.
+// Guards the whole ~/.claudesec/hooks/ dir plus the Claude settings files that
+// register the PreToolUse hook. Guards AGENT tool calls only; the ClaudeSec
+// SERVER writes these from a different process, not subject to this check.
+// Mirrors selfProtectionHit() in cli/hooks/claudesec-enforce.cjs.
+function selfProtectedPrefixes(): string[] {
+  const home = os.homedir();
+  const csecHome = process.env.CLAUDESEC_HOME || path.join(home, '.claudesec');
+  return [
+    path.join(csecHome, 'hooks'),
+    path.join(home, '.claude', 'settings.json'),
+    path.join(home, '.claude', 'settings.local.json'),
+  ];
+}
+
+/**
+ * Does the call's file TARGET or Bash command touch the enforcement control
+ * plane? Case-insensitive substring on the target path or (HOME-expanded) Bash
+ * command — never edit content. Returns the matching prefix or null.
+ */
+export function selfProtectionHit(target: string, bashCmd: string): string | null {
+  const prefixes = selfProtectedPrefixes();
+  const t = target ? target.toLowerCase() : '';
+  const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
+  for (const p of prefixes) {
+    const f = p.toLowerCase();
+    if ((t && t.includes(f)) || (c && c.includes(f))) return p;
+  }
+  return null;
+}
 
 /** Resolve the rules-enforcement.json snapshot path (override-aware). */
 export function resolveSnapshotPath(): string {
@@ -169,17 +343,51 @@ export function loadBlockRules(): CompiledRule[] {
 }
 
 /**
- * Evaluate matchable text against the catastrophic floor + a precompiled
- * block-rule set. Mode-INDEPENDENT: returns whether the text "triggered". The
- * caller gates block-vs-log on the resolved mode.
+ * Evaluate a tool call against the enforcement floors. Mode-INDEPENDENT: returns
+ * whether the call "triggered"; the caller gates block-vs-log on the resolved mode.
  *
- * Order mirrors the hook: catastrophic floor first, then block rules.
+ * `matchText` is the PATH + ACTION text for the call (the Bash command, or an edit
+ * tool's target path) — NEVER the static content of code being written. `editContent`
+ * (optional) is the new body an edit would write; it is checked ONLY by the minimal
+ * live-secret (DLP) floor, never against the ~630 threat rules. `targetPath`
+ * (optional) is the file the call targets (an edit tool's path); the self-protection
+ * and protected-paths floors match it (or the Bash command) against the control
+ * plane / the user's protected list, exactly as the hook does — so an MCP caller
+ * (Codex/Copilot/Claude Desktop via the proxy) hits the SAME floors as the hook.
+ *
+ * Order mirrors the hook: catastrophic floor, self-protection floor, protected-paths
+ * floor, live-secret floor, then block rules.
  */
-export function evaluate(matchText: string, blockRules: CompiledRule[]): EvalResult {
+export function evaluate(
+  matchText: string,
+  blockRules: CompiledRule[],
+  editContent = '',
+  targetPath = '',
+): EvalResult {
+  // For Bash, matchText IS the command; for an edit tool it is the path. The
+  // floors below want the Bash command and the file target separately — derive
+  // the command form (matchText only carries a command when there is no edit target).
+  const bashCmd = targetPath ? '' : matchText;
+
   for (const r of CATASTROPHIC) {
     if (r.re.test(matchText)) {
       return { triggered: true, label: r.why, severity: 'high', kind: 'catastrophic' };
     }
+  }
+  // Self-protection floor — agent must not edit the enforcement control plane.
+  const self = selfProtectionHit(targetPath, bashCmd);
+  if (self) {
+    return { triggered: true, label: 'Self-protection: ' + self, severity: 'high', kind: 'catastrophic' };
+  }
+  // Protected-paths floor — user-defined, mirrored from the hook's artifact.
+  const prot = protectedHit(loadProtectedPaths(), targetPath, bashCmd);
+  if (prot) {
+    return { triggered: true, label: 'Protected path: ' + prot.label, severity: 'high', kind: 'catastrophic' };
+  }
+  // Minimal live-secret (DLP) floor — edit content only. The sole content-based block.
+  const secret = liveSecretHit(editContent);
+  if (secret) {
+    return { triggered: true, label: 'Live secret in edit: ' + secret.why, severity: 'high', kind: 'catastrophic' };
   }
   for (const r of blockRules) {
     if (r.re.test(matchText)) {
