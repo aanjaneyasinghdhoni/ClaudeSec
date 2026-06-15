@@ -108,6 +108,12 @@ const CATASTROPHIC = [
 // file is not executing it). Bash `cat`/edits are handled by their own branches.
 const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 
+// Fetch tools carry a URL (WebFetch) — or, for WebSearch, no URL at all. We match
+// them so the SSRF floor can deny a WebFetch to a cloud-metadata / internal host
+// before the request leaves the machine. WebSearch is included for matcher
+// symmetry with the installer; it has no URL so it never trips the floor.
+const FETCH_TOOLS = new Set(['WebFetch', 'WebSearch']);
+
 // Edit-family tools write file CONTENT. We gate them on PATH + ACTION, never on
 // the static content of the code being written — scanning edit bodies against the
 // ~630 threat rules false-positives on benign work (editing security code, docs
@@ -413,6 +419,159 @@ function protectedHit(entries, target, bashCmd) {
   return null;
 }
 
+// ── SSRF-on-fetch floor (WebFetch) ───────────────────────────────────────────
+// A WebFetch aimed at a cloud-metadata endpoint (169.254.169.254) or an internal
+// RFC1918 / loopback host is the classic agent-SSRF: the model is talked into
+// fetching http://169.254.169.254/latest/meta-data/iam/... and exfiltrating the
+// instance credentials, or probing internal services. The PreToolUse hook is the
+// pre-execution chokepoint, so we classify the URL's host HERE, synchronously,
+// before the fetch leaves the machine.
+//
+// This MIRRORS server/ssrf.ts isPublicAddress() — but it cannot import it (the
+// hook is dependency-free, Node built-ins only, and never reaches into server/).
+// We therefore inline a small literal-IP classifier. It is deliberately
+// CONSERVATIVE: it only acts on what it can see synchronously.
+//
+// KNOWN LIMITATION — DNS rebinding: a PUBLIC hostname that *resolves* to an
+// internal IP (e.g. an attacker-controlled name pointing at 169.254.169.254) is
+// NOT caught here, because this hook is synchronous and must never block to do a
+// DNS lookup (a hung resolver would stall every tool call). Such a hostname is
+// ALLOWED through by this floor. The deeper guard is the server-side ASYNC
+// assertSafeFetchUrl() in server/ssrf.ts, which DNS-resolves every host at fetch
+// time and rejects anything that points inward. This floor is the fast, literal,
+// in-band layer; the server guard is the resolving backstop. We surface the gap
+// honestly rather than pretend a synchronous hook can resolve names.
+
+/** Parse a dotted-quad IPv4 literal into four octets, or null if not one. */
+function parseIPv4(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const o = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  for (const x of o) if (!Number.isInteger(x) || x < 0 || x > 255) return null;
+  return o;
+}
+
+/**
+ * Classify a URL host into one of:
+ *   'metadata'   → ALWAYS block (mode-independent floor): cloud-metadata and the
+ *                  whole link-local range — 169.254.0.0/16 (v4) and fe80::/10
+ *                  (v6), plus the GCP metadata hostnames. These are unambiguous
+ *                  SSRF targets with no legitimate WebFetch use.
+ *   'loopback'   → block in enforce (or always unless CLAUDESEC_ALLOW_LOCAL_FETCH):
+ *                  127.0.0.0/8, 0.0.0.0/8 (the "this host" range — 0.0.0.0 routes
+ *                  to localhost on Linux), ::1, :: (unspecified), and the bare name
+ *                  'localhost'.
+ *   'internal'   → block in enforce mode (like a normal rule): RFC1918
+ *                  (10/8, 172.16/12, 192.168/16), CGNAT 100.64/10, ULA fc00::/7,
+ *                  and *.internal / *.local hostnames.
+ *   null         → ALLOW (public IP literal, or any other hostname — we cannot
+ *                  resolve it synchronously; see the DNS-rebinding note above).
+ *
+ * `host` must already be lowercased and have IPv6 brackets stripped.
+ */
+function classifyFetchHost(host) {
+  if (!host) return null;
+
+  // ── IPv4 literal ──
+  const v4 = parseIPv4(host);
+  if (v4) {
+    const [a, b] = v4;
+    // 169.254.0.0/16 — link-local, includes the 169.254.169.254 metadata IP.
+    if (a === 169 && b === 254) return 'metadata';
+    // 0.0.0.0/8 — the "this host" range. `0.0.0.0` (and bare `http://0/`, which
+    // Node normalizes to `0.0.0.0`) routes to localhost on Linux, so treat the
+    // whole /8 as loopback rather than letting it through as a "public" literal.
+    if (a === 0) return 'loopback';
+    // 127.0.0.0/8 — loopback.
+    if (a === 127) return 'loopback';
+    // 10.0.0.0/8 — private.
+    if (a === 10) return 'internal';
+    // 172.16.0.0/12 — private.
+    if (a === 172 && b >= 16 && b <= 31) return 'internal';
+    // 192.168.0.0/16 — private.
+    if (a === 192 && b === 168) return 'internal';
+    // 100.64.0.0/10 — CGNAT (carrier-grade NAT shared address space).
+    if (a === 100 && b >= 64 && b <= 127) return 'internal';
+    // Any other IPv4 literal is treated as public → allow.
+    return null;
+  }
+
+  // ── IPv6 literal ── (heuristic on the textual form; the hook has no ipaddr.js)
+  if (host.includes(':')) {
+    // ::1 — IPv6 loopback (also the compressed 0:0:...:1 spelling).
+    if (host === '::1' || /^(?:0:){1,7}1$/.test(host)) return 'loopback';
+    // :: — IPv6 unspecified (and the fully-expanded 0:0:0:0:0:0:0:0). Binding /
+    // routing to it lands on localhost, so classify it like loopback.
+    if (host === '::' || /^(?:0:){7}0$/.test(host)) return 'loopback';
+    // IPv4-mapped — TWO textual forms reach us, both must unwrap to the embedded
+    // IPv4 so a wrapped internal/metadata address is still caught:
+    //   1. Dotted-quad tail: ::ffff:127.0.0.1 (rare from the WHATWG parser, but a
+    //      hand-written URL can carry it).
+    //   2. Hex-hextet tail: ::ffff:7f00:1 / ::ffff:a9fe:a9fe — the form Node's URL
+    //      parser actually PRODUCES (it compresses the embedded v4 to two hextets).
+    //      Without this branch, http://[::ffff:169.254.169.254]/ and
+    //      http://[::ffff:127.0.0.1]/ sailed through as "public".
+    // Each hextet is two octets; reassemble (hi>>8, hi&0xff, lo>>8, lo&0xff) and
+    // re-run the IPv4 classifier on the dotted quad.
+    const mappedQuad = /::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
+    if (mappedQuad) return classifyFetchHost(mappedQuad[1]);
+    // Hex form: the compressed ::ffff:H:H spelling (what the parser emits), the
+    // partially-compressed 0:0::ffff:H:H, and the long 0:0:0:0:0:ffff:H:H. Linear
+    // (bounded {1,4}/{5} counts, no nested quantifier).
+    const mappedHex = /^(?:::|(?:0:){1,4}:|(?:0:){5})ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16);
+      const lo = parseInt(mappedHex[2], 16);
+      const quad = `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+      return classifyFetchHost(quad);
+    }
+    // fe80::/10 — link-local (fe80–febf at the start of the first hextet).
+    if (/^fe[89ab][0-9a-f]?:/i.test(host)) return 'metadata';
+    // fc00::/7 — unique-local (ULA): first byte fc or fd.
+    if (/^f[cd][0-9a-f]{0,2}:/i.test(host)) return 'internal';
+    // Any other IPv6 literal → treat as public → allow.
+    return null;
+  }
+
+  // ── Hostname (not a literal IP) ──
+  // Cloud-metadata hostnames are unambiguous SSRF targets → always-block floor.
+  // `metadata` (bare) is GCP's short form — http://metadata/computeMetadata/v1/
+  // resolves to the same 169.254.169.254 endpoint inside a GCE instance.
+  if (host === 'metadata' || host === 'metadata.google.internal' || host === 'metadata.goog') return 'metadata';
+  // The bare loopback name.
+  if (host === 'localhost') return 'loopback';
+  // Internal naming conventions — *.internal / *.local resolve to internal infra.
+  // (metadata.google.internal is handled above before this broader check.)
+  if (/\.(?:internal|local)$/.test(host)) return 'internal';
+  // Any other hostname: we cannot resolve it synchronously → ALLOW here. The
+  // server-side resolving guard (assertSafeFetchUrl) is the DNS-rebinding backstop.
+  return null;
+}
+
+/**
+ * Extract + classify a WebFetch URL's host. Returns { host, klass } where klass is
+ * one of 'metadata' | 'loopback' | 'internal' | null. Fail-OPEN on any parse
+ * error (klass null) — a garbage URL must never crash or block the pipeline. Only
+ * http/https URLs are classified; any other scheme is left to the agent (a
+ * non-http fetch is not an HTTP SSRF and is out of scope for this floor).
+ */
+function classifyFetchUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return { host: '', klass: null };
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (_) {
+    return { host: '', klass: null }; // unparseable → fail-open
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { host: '', klass: null };
+  }
+  // new URL() keeps the brackets on IPv6 hosts ("[::1]"); strip them before
+  // classifying, and lowercase so the literal/name comparisons are stable.
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return { host, klass: classifyFetchHost(host) };
+}
+
 /**
  * Best-effort POST to the dashboard. Calls `done` exactly once — on response
  * end / error / timeout — so the caller can exit AFTER the request has had a
@@ -487,6 +646,7 @@ function run(input) {
   let bashCmd = '';
   let matchText = '';
   let editContent = '';
+  let fetchUrl = '';
   const fileTarget = String(ti.file_path || ti.path || ti.notebook_path || '');
   if (toolName === 'Bash') {
     bashCmd = String(ti.command || '');
@@ -513,17 +673,81 @@ function run(input) {
     // empty so the command rule-engine never fires on a mere read — only the
     // always-on protected-paths floor below can deny it.
     matchText = '';
+  } else if (FETCH_TOOLS.has(toolName)) {
+    // WebFetch carries the target URL in `url`; WebSearch has no URL (and so never
+    // trips the SSRF floor). Leave matchText empty so the command rule-engine never
+    // fires on a fetch — only the SSRF floor below inspects the URL.
+    fetchUrl = String(ti.url || '');
+    matchText = '';
   } else {
     // Unknown tool / nothing to match.
     matchText = String(ti.command || ti.file_path || ti.path || '');
     bashCmd = String(ti.command || '');
   }
 
-  // Nothing to evaluate at all (no command/content AND no file target) → allow.
-  // A read tool reaches here with an empty matchText but a real fileTarget, so it
-  // still flows into the protected-paths floor; an edit with only content (no
-  // path) still flows into the live-secret floor via editContent.
-  if (!matchText && !fileTarget && !editContent) return process.exit(0);
+  // Nothing to evaluate at all (no command/content, no file target, no fetch URL)
+  // → allow. A read tool reaches here with an empty matchText but a real
+  // fileTarget, so it still flows into the protected-paths floor; an edit with only
+  // content (no path) still flows into the live-secret floor via editContent; a
+  // WebFetch reaches here with a fetchUrl and flows into the SSRF floor below.
+  if (!matchText && !fileTarget && !editContent && !fetchUrl) return process.exit(0);
+
+  // 2a. SSRF-on-fetch floor — WebFetch URL only. Classify the host synchronously
+  // (no DNS — see classifyFetchHost). Decision:
+  //   • 'metadata'  → ALWAYS block (mode-independent floor): cloud-metadata and the
+  //     whole link-local range. No legitimate WebFetch use; blocked even in monitor.
+  //   • 'loopback'  → block, UNLESS CLAUDESEC_ALLOW_LOCAL_FETCH=1 (a user pointing the
+  //     agent at a local Ollama / dev server). Otherwise mode-respecting (enforce).
+  //   • 'internal'  → block IN ENFORCE MODE only (RFC1918 / CGNAT / ULA / *.internal).
+  // A public IP literal or any unresolvable hostname classifies null → allow here
+  // (the server-side async assertSafeFetchUrl is the DNS-rebinding backstop).
+  if (fetchUrl) {
+    const { host, klass } = classifyFetchUrl(fetchUrl);
+    if (klass) {
+      const allowLocal = process.env.CLAUDESEC_ALLOW_LOCAL_FETCH === '1';
+      const mode = resolveMode();
+      // Loopback may be opted out for local-model dev; metadata/link-local never is.
+      const loopbackAllowed = klass === 'loopback' && allowLocal;
+      const isFloor = klass === 'metadata'; // always-block, mode-independent
+      const shouldBlock =
+        !loopbackAllowed && (isFloor || mode === 'enforce');
+      if (shouldBlock) {
+        return blockAndLog(
+          `⛔ Blocked SSRF: WebFetch to internal/metadata address ${host}. ` +
+          (klass === 'loopback'
+            ? `If this is a local dev server you trust, set CLAUDESEC_ALLOW_LOCAL_FETCH=1. `
+            : '') +
+          `Bypass: CLAUDESEC_HOOKS_BYPASS=1`,
+          {
+            mode,
+            label: 'SSRF: WebFetch to ' + klass + ' address ' + host,
+            severity: 'high',
+            command: redact(fetchUrl),
+            blocked: true,
+            wouldBlock: true,
+          },
+        );
+      }
+      // Not blocked in this mode (e.g. 'internal' in monitor): log a would-block so
+      // the dashboard still surfaces the attempt, then ALLOW. Skip when the user
+      // explicitly opted local fetches in (no would-block noise for a trusted host).
+      if (!loopbackAllowed) {
+        return postMonitorLog(
+          {
+            mode,
+            label: 'SSRF: WebFetch to ' + klass + ' address ' + host,
+            severity: 'high',
+            command: redact(fetchUrl),
+            blocked: false,
+            wouldBlock: true,
+          },
+          () => process.exit(0),
+        );
+      }
+    }
+    // No classification (public / unresolvable host) or opted-out loopback → allow.
+    return process.exit(0);
+  }
 
   // 3. Catastrophic floor — Bash command only, ALWAYS blocks.
   if (bashCmd) {

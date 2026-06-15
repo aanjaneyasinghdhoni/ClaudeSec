@@ -4,7 +4,7 @@
  * Gate for `claudesec install-hook` / `uninstall-hook`. Proves the installer is
  * safe and well-behaved without ever touching the real home:
  *
- *   1. Fresh install creates the two PreToolUse entries and backs up nothing
+ *   1. Fresh install creates the four PreToolUse entries and backs up nothing
  *      (no prior file) — and a re-run DOES back up.
  *   2. Idempotent re-run does not duplicate our entries.
  *   3. Merge preserves an existing, unrelated PreToolUse hook and any other keys.
@@ -115,12 +115,12 @@ function listBackups(settingsFile: string): string[] {
     check('fresh install: exits 0', () => assert.strictEqual(r.status, 0, r.stderr || r.stdout));
 
     const settings = readJson(s.settings);
-    check('fresh install: adds exactly three of our entries', () => {
-      assert.strictEqual(ourEntries(settings).length, 3);
+    check('fresh install: adds exactly four of our entries', () => {
+      assert.strictEqual(ourEntries(settings).length, 4);
     });
-    check('fresh install: matchers are Bash, the editing tools, and Read', () => {
+    check('fresh install: matchers are Bash, the editing tools, Read, and the fetch tools', () => {
       const matchers = ourEntries(settings).map((e: any) => e.matcher).sort();
-      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit', 'Read']);
+      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit', 'Read', 'WebFetch|WebSearch']);
     });
     check('fresh install: command runs the installed hook via node, path quoted', () => {
       const cmd = ourEntries(settings)[0].hooks[0].command;
@@ -155,9 +155,9 @@ function listBackups(settingsFile: string): string[] {
     check('re-run: exits 0', () => assert.strictEqual(r2.status, 0, r2.stderr));
 
     const settings = readJson(s.settings);
-    check('re-run: still exactly three of our entries (no duplicates)', () => {
-      assert.strictEqual(ourEntries(settings).length, 3);
-      assert.strictEqual(preToolUse(settings).length, 3);
+    check('re-run: still exactly four of our entries (no duplicates)', () => {
+      assert.strictEqual(ourEntries(settings).length, 4);
+      assert.strictEqual(preToolUse(settings).length, 4);
     });
     check('re-run: a settings backup was taken on the second run', () => {
       assert.ok(listBackups(s.settings).length >= 1, 'expected at least one .bak- file');
@@ -171,7 +171,7 @@ function listBackups(settingsFile: string): string[] {
   try {
     // Seed a settings.json carrying our hook under a PREVIOUS matcher string
     // (the editing matcher before NotebookEdit was added). The install must strip
-    // it — matching on the command, not the matcher — and leave exactly two.
+    // it — matching on the command, not the matcher — and leave exactly our set.
     fs.mkdirSync(path.dirname(s.settings), { recursive: true });
     const staleHook = path.join(s.home, 'hooks', 'claudesec-enforce.cjs');
     fs.writeFileSync(s.settings, JSON.stringify({
@@ -186,13 +186,13 @@ function listBackups(settingsFile: string): string[] {
     check('stale-matcher: exits 0', () => assert.strictEqual(r.status, 0, r.stderr));
 
     const settings = readJson(s.settings);
-    check('stale-matcher: exactly three of our entries remain (no orphaned extra)', () => {
-      assert.strictEqual(ourEntries(settings).length, 3);
-      assert.strictEqual(preToolUse(settings).length, 3);
+    check('stale-matcher: exactly four of our entries remain (no orphaned extra)', () => {
+      assert.strictEqual(ourEntries(settings).length, 4);
+      assert.strictEqual(preToolUse(settings).length, 4);
     });
     check('stale-matcher: the old Edit|Write|MultiEdit entry is gone', () => {
       const matchers = ourEntries(settings).map((e: any) => e.matcher).sort();
-      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit', 'Read']);
+      assert.deepStrictEqual(matchers, ['Bash', 'Edit|Write|MultiEdit|NotebookEdit', 'Read', 'WebFetch|WebSearch']);
     });
   } finally { cleanup(s); }
 }
@@ -233,9 +233,9 @@ function listBackups(settingsFile: string): string[] {
       assert.strictEqual(settings.hooks.PostToolUse.length, 1);
       assert.strictEqual(settings.hooks.PostToolUse[0].hooks[0].command, 'echo after');
     });
-    check('merge: adds our three entries alongside (4 PreToolUse total)', () => {
-      assert.strictEqual(ourEntries(settings).length, 3);
-      assert.strictEqual(preToolUse(settings).length, 4);
+    check('merge: adds our four entries alongside (5 PreToolUse total)', () => {
+      assert.strictEqual(ourEntries(settings).length, 4);
+      assert.strictEqual(preToolUse(settings).length, 5);
     });
     check('merge: backs up the prior settings file', () => {
       assert.ok(listBackups(s.settings).length >= 1);

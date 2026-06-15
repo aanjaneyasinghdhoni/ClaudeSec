@@ -4,9 +4,11 @@
  * `claudesec install-hook` / `claudesec uninstall-hook`.
  *
  * Registers the PreToolUse enforcement hook (cli/hooks/claudesec-enforce.cjs)
- * with Claude Code by merging three entries into the user's settings.json — one
- * matching Bash, one matching the file-editing tools, and one matching Read (so a
- * read of a protected secret can be denied before it happens). The hook can BLOCK
+ * with Claude Code by merging four entries into the user's settings.json — one
+ * matching Bash, one matching the file-editing tools, one matching Read (so a
+ * read of a protected secret can be denied before it happens), and one matching
+ * the fetch tools (so an SSRF to cloud-metadata / internal hosts is denied before
+ * the request leaves the machine). The hook can BLOCK
  * dangerous tool calls before they run, but only when enforce mode is also on;
  * by default it monitors (logs would-block, allows). It is fail-open by design:
  * any error inside the hook allows the call through.
@@ -44,14 +46,19 @@ const REPO_ROOT = path.resolve(here, '..');
 // graph clean (server/ never imports from cli/).
 export const HOOK_FILENAME = 'claudesec-enforce.cjs';
 
-// The three PreToolUse matchers we register. Bash is split out from the editing
-// tools because the catastrophic floor only inspects Bash commands; the editing
-// matcher lets rule-based blocking see file contents too. Read is matched so the
+// The PreToolUse matchers we register. Bash is split out from the editing tools
+// because the catastrophic floor only inspects Bash commands; the editing matcher
+// lets rule-based blocking see file contents too. Read is matched so the
 // protected-paths floor can deny a *read* of a protected secret before it happens
-// — reads only run the protected-paths floor, never the command rule-engine.
+// — reads only run the protected-paths floor, never the command rule-engine. The
+// fetch matcher lets the SSRF floor block a WebFetch aimed at cloud-metadata or an
+// internal/RFC1918 host before the request leaves the machine. WebSearch carries
+// no URL, but we register it alongside WebFetch for completeness and so a future
+// URL-bearing variant is covered the moment it ships.
 const BASH_MATCHER = 'Bash';
 const EDIT_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit';
 const READ_MATCHER = 'Read';
+const FETCH_MATCHER = 'WebFetch|WebSearch';
 
 export interface InstallPaths {
   /** ~/.claudesec — where we copy the hook + snapshot and append the log. */
@@ -95,7 +102,7 @@ function hookEntries(installedHook: string) {
     matcher,
     hooks: [{ type: 'command', command }],
   });
-  return [make(BASH_MATCHER), make(EDIT_MATCHER), make(READ_MATCHER)];
+  return [make(BASH_MATCHER), make(EDIT_MATCHER), make(READ_MATCHER), make(FETCH_MATCHER)];
 }
 
 /** Append a single install/uninstall record to install.log. Best-effort. */
@@ -264,7 +271,7 @@ export async function installHook(args: string[]): Promise<void> {
 
   // 2. Show the user EXACTLY what we will write, then require consent.
   const entries = hookEntries(p.installedHook);
-  console.log(`${C.dim}This adds three PreToolUse hooks to your Claude Code settings:${C.reset}`);
+  console.log(`${C.dim}This adds four PreToolUse hooks to your Claude Code settings:${C.reset}`);
   console.log(`  ${C.bold}File:${C.reset} ${p.settingsFile}\n`);
   console.log(JSON.stringify({ hooks: { PreToolUse: entries } }, null, 2));
   console.log(
