@@ -22,6 +22,11 @@ export const db = new Database(DB_PATH);
 
 // SECURITY: WAL mode allows concurrent reads during writes — prevents blocking under load
 db.pragma('journal_mode = WAL');
+// Under WAL a second writer can still collide with an in-flight write. busy_timeout
+// makes the loser WAIT (up to 5s) for the lock to clear instead of throwing
+// SQLITE_BUSY immediately — the transcript watcher, OTLP ingest, and retention
+// sweep all write, so a momentary contention should retry, not surface an error.
+db.pragma('busy_timeout = 5000');
 
 for (const dbFile of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
   try { fs.chmodSync(dbFile, 0o600); } catch {}
@@ -289,3 +294,63 @@ db.exec(`
     updatedTs INTEGER NOT NULL
   );
 `);
+
+// ---------------------------------------------------------------------------
+// Online binary backups
+// ---------------------------------------------------------------------------
+// A real, consistent copy of the live database — better-sqlite3's online backup
+// API snapshots the file safely while it is open and being written, which a
+// plain file copy cannot guarantee under WAL. This is DISTINCT from the hourly
+// JSON auto-export (a human-readable logical dump in server/index.ts): this is a
+// byte-for-byte .db a user can drop straight back in to restore.
+//
+// Backups land in <DB dir>/backups/ (i.e. ~/.claudesec/backups), 0600, and are
+// pruned to the most recent N. Fail-open by contract — a backup must never crash
+// or stall the server, so every caller wraps this and ignores a rejection.
+
+const BACKUP_DIR = path.join(path.dirname(DB_PATH), 'backups');
+const BACKUP_RETAIN = 7;
+
+/**
+ * Write a timestamped online backup of the live DB into ~/.claudesec/backups and
+ * prune to the last BACKUP_RETAIN copies. Resolves to the backup path on success.
+ * Never throws synchronously; rejects on failure so the (fail-open) caller can
+ * log and move on.
+ */
+export async function backupDatabase(): Promise<string> {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const target = path.join(BACKUP_DIR, `spans-${stamp}.db`);
+
+  // better-sqlite3's backup() returns a promise and copies the DB safely while
+  // it is live (handles WAL + concurrent writes, unlike a raw file copy).
+  await db.backup(target);
+
+  // Owner-only — a backup must never be more readable than its source DB (0600).
+  try { fs.chmodSync(target, 0o600); } catch {}
+
+  // Retain only the most recent BACKUP_RETAIN backups; drop the rest.
+  try {
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('spans-') && f.endsWith('.db'))
+      .sort()       // ISO timestamps sort lexically == chronologically
+      .reverse();
+    for (const old of files.slice(BACKUP_RETAIN)) {
+      try { fs.rmSync(path.join(BACKUP_DIR, old), { force: true }); } catch {}
+    }
+  } catch {
+    // Pruning is best-effort; a full backups dir is preferable to a thrown error.
+  }
+  return target;
+}
+
+/**
+ * Flush the WAL back into the main DB file and close the handle cleanly. Called
+ * from the graceful-shutdown path so launchd/Docker stopping the process can't
+ * leave a half-applied WAL behind. Idempotent and fail-open — a checkpoint or
+ * close error on the way down must not stop the process from exiting.
+ */
+export function checkpointAndClose(): void {
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch {}
+  try { db.close(); } catch {}
+}

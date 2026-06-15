@@ -13,9 +13,9 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { db, DB_PATH } from './db.js';
+import { db, DB_PATH, backupDatabase, checkpointAndClose } from './db.js';
 import { scanAgentProcesses, type AgentProcess } from './processScan.js';
 import { registerProcessRoutes } from './routes/processes.js';
 import { registerBookmarkRoutes } from './routes/bookmarks.js';
@@ -65,6 +65,30 @@ import type { Severity } from '../src/shared/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ───────────────────────────────────────────────────────────────────────────
+// Entry-point guard
+// ───────────────────────────────────────────────────────────────────────────
+// Importing this module (a test, a build tool, the CLI) must be side-effect
+// free: NO HTTP listener, NO config-file mirror writes. Only when this file is
+// the process entry point (the live service runs `tsx server/index.ts`, so
+// argv[1] resolves to THIS file) do we autostart the server and write the boot-
+// time config mirrors. CLAUDESEC_NO_AUTOSTART=1 is an explicit escape hatch a
+// test can set to force import-only behaviour regardless of how it was invoked.
+//
+// Why the URL compare: under tsx/ESM there is no `require.main`. Comparing
+// import.meta.url to the resolved argv[1] is the portable ESM equivalent — true
+// for `tsx server/index.ts` (launchd, `pnpm dev`, `pnpm start`), false on import.
+const IS_ENTRY_POINT = (() => {
+  if (process.env.CLAUDESEC_NO_AUTOSTART === '1') return false;
+  try {
+    const argvEntry = process.argv[1];
+    if (!argvEntry) return false;
+    return import.meta.url === pathToFileURL(argvEntry).href;
+  } catch {
+    return false;
+  }
+})();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Loopback-exempt auth helpers
@@ -573,9 +597,9 @@ function writeProtectedPathsArtifact(): void {
 }
 
 loadProtectedPaths();
-// Mirror once at startup so the hook is in sync even if the list changed while
-// the server was down (or the artifact was deleted).
-writeProtectedPathsArtifact();
+// The startup mirror write now lives in the guarded boot sequence
+// (mirrorConfigOnBoot, called only when this file is the entry point) so that
+// merely importing the module never touches the user's installed hook config.
 
 // ---------------------------------------------------------------------------
 // Enforcement snapshot (built-in rules + user custom rules)
@@ -644,9 +668,8 @@ function writeEnforcementSnapshot(): void {
   }
 }
 
-// Mirror once at startup so a custom rule added while the server was down (or an
-// artifact deleted / a fresh install that only has built-ins) is reflected.
-writeEnforcementSnapshot();
+// The startup mirror write is deferred to the guarded boot sequence
+// (mirrorConfigOnBoot) so importing this module is side-effect free.
 
 // ---------------------------------------------------------------------------
 // Enforcement config (server-controlled mode + per-rule action overrides)
@@ -737,9 +760,8 @@ function writeEnforceConfigFile(): void {
   }
 }
 
-// Derive the file from the DB once at startup so the hook is in sync even if the
-// mode was changed in a previous run (or the file was deleted).
-writeEnforceConfigFile();
+// The startup derive/mirror is deferred to the guarded boot sequence
+// (mirrorConfigOnBoot) so a module import never rewrites the hook's config.
 
 // ---------------------------------------------------------------------------
 // Retention policy + DB health
@@ -968,10 +990,14 @@ function autoExport() {
   }
 }
 
-// Run auto-export every hour
-setInterval(autoExport, 60 * 60 * 1000);
-// Initial export after 30s (let server initialize)
-setTimeout(autoExport, 30_000);
+// Schedule auto-export only when running as the entry point — an import (test /
+// build tool) must not leave a live timer running or write export files.
+if (IS_ENTRY_POINT) {
+  // Run auto-export every hour
+  setInterval(autoExport, 60 * 60 * 1000);
+  // Initial export after 30s (let server initialize)
+  setTimeout(autoExport, 30_000);
+}
 
 function getWebhookUrl(): string {
   // Env var takes precedence over DB config
@@ -3321,6 +3347,55 @@ service:
     }
   }
 
+  // Boot-time config mirror — derive the hook artifacts (protected paths, rules
+  // snapshot, enforce mode) from the live DB once, now that we're booting as the
+  // entry point. Deferred here from module load so a plain import never rewrites
+  // the user's installed hook config. Each function is individually fail-open.
+  writeProtectedPathsArtifact();
+  writeEnforcementSnapshot();
+  writeEnforceConfigFile();
+
+  // Boot-loud DB path — log the resolved absolute database file once, so a
+  // misconfigured CLAUDESEC_DB (or an unexpected default) is obvious in
+  // service.log instead of silently writing to the wrong place.
+  console.log(`[ClaudeSec] database: ${path.resolve(DB_PATH)}`);
+
+  // Real online binary backups — a consistent .db snapshot under
+  // ~/.claudesec/backups, distinct from the hourly JSON export. Fail-open: a
+  // backup error logs and is swallowed so it can never crash the server.
+  const runBackup = () => {
+    backupDatabase()
+      .then(p => console.log(`[ClaudeSec] backup → ${p}`))
+      .catch(err => console.error('[ClaudeSec] backup failed:', (err as Error).message));
+  };
+  setTimeout(runBackup, 60_000);          // once shortly after boot
+  setInterval(runBackup, 24 * 60 * 60_000); // and daily thereafter
+
+  // Graceful shutdown — on SIGINT/SIGTERM (launchd/Docker stop, Ctrl-C) stop
+  // accepting connections, checkpoint the WAL back into the main DB file, close
+  // the handle, then exit 0. This prevents a half-applied WAL / corruption on an
+  // abrupt stop. Idempotent: a second signal while we're already shutting down
+  // is ignored so we can't double-close or double-exit.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[ClaudeSec] ${signal} received — shutting down…`);
+    httpServer.close(() => {
+      checkpointAndClose();
+      console.log('[ClaudeSec] database checkpointed and closed. Bye.');
+      process.exit(0);
+    });
+    // Safety net: if connections never drain, force the checkpoint + exit so a
+    // hung socket can't block a clean DB close indefinitely.
+    setTimeout(() => {
+      checkpointAndClose();
+      process.exit(0);
+    }, 5_000).unref();
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
   httpServer.listen(PORT, HOST, () => {
     console.log(`\n  ClaudeSec  http://localhost:${PORT}`);
     console.log(`  OTLP       http://localhost:${PORT}/v1/traces`);
@@ -3331,4 +3406,9 @@ service:
   });
 }
 
-startServer();
+// Autostart ONLY when this file is the process entry point (the live service
+// runs `tsx server/index.ts`). Importing the module — a test, a build tool, the
+// CLI — leaves it inert: no listener, no timers, no config-mirror writes.
+if (IS_ENTRY_POINT) {
+  startServer();
+}
