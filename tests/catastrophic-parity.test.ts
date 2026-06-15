@@ -121,7 +121,7 @@ const OPTIONAL_SOURCES: { name: string; file: string }[] = [
   },
 ];
 
-const EXPECTED_COUNT = 8;
+const EXPECTED_COUNT = 19;
 
 // ---------------------------------------------------------------------------
 // Compare

@@ -35,8 +35,19 @@ const http = require('node:http');
 // these against Edit/Write content would block editing any file that merely
 // *contains* these strings (e.g. server detection sources hold them as regex
 // source). Kept byte-identical with server/enforceEval.ts (catastrophic parity).
+// KNOWN LIMITATIONS (accepted residual evasions, documented not silently missed):
+//   • Double-slash targets (`rm -rf //etc`, redirect `>//dev/sda`) — the `/`-anchored
+//     patterns expect a single leading slash; a doubled slash is a rare hand-typed form.
+//   • `rm -- /etc` — the POSIX end-of-options `--` separator before the path.
+//   • Long-flag spellings (`rm --recursive --force /etc`) — only the short `-rf`/`-fr`
+//     bundle is matched; the verbose flags are uncommon in practice.
+//   • Brace/var expansion in the target (`rm -rf ${SYSROOT}`, `$DIR`) — only a literal
+//     `~`/`$HOME` is expanded; arbitrary shell variables are out of scope for a static
+//     pre-exec floor (the server-side detection layer is the backstop for those).
+// The `-[a-zA-Z]*(?:r…f|f…r)…` flag fragment below is order-independent (catches both
+// `-rf` and `-fr`, plus combined long-ish bundles like `-rvf`/`-fvr`).
 const CATASTROPHIC = [
-  { re: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(?:--no-preserve-root\s+)?\/\s*(?:$|\*|[;&|>])/m, why: 'rm -rf on the filesystem root (/)' },
+  { re: /\brm\s+-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*\s+(?:--no-preserve-root\s+)?\/\s*(?:$|\*|[;&|>])/m, why: 'rm -rf on the filesystem root (/)' },
   { re: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:?\s*&\s*\}\s*;\s*:/, why: 'fork bomb' },
   { re: /\b(?:curl|wget)\b[^|>\n]*\|\s*(?:sudo\s+)?(?:ba)?sh\b/i, why: 'piping a remote download straight into a shell' },
   { re: /\b(?:ba)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/tcp\//i, why: 'reverse shell via /dev/tcp' },
@@ -44,6 +55,51 @@ const CATASTROPHIC = [
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|disk|hd|mmcblk)/i, why: 'overwriting a raw disk device (dd of=/dev/...)' },
   { re: /(?:cat|base64|tac|xxd|od|head|tail|gpg)\b[^\n|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))[^\n|]*\|[^\n;&]*\b(?:curl|wget|nc|ncat|telnet)\b/i, why: 'reading a secret and piping it into a network tool' },
   { re: /\b(?:curl|wget)\b[^\n;&|]*(?:-d|--data|--data-binary|--data-raw|-F|--form|-T|--upload-file)[ =]@?[^\n;&|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))/i, why: 'uploading a secret file over the network (curl/wget)' },
+  // `rm --no-preserve-root` is the single flag that tells GNU rm to delete the
+  // filesystem root anyway — match it wherever it sits in an `rm` command line.
+  { re: /(?:^|[\n;&|`(]|&&|\bsudo\s+)\s*rm\b[^\n]*\s--no-preserve-root\b/, why: 'rm --no-preserve-root (defeats the filesystem-root guard)' },
+  // Recursive delete of a critical system tree or the whole home. We block the
+  // unambiguously catastrophic targets only and CARVE OUT user/temp territory so a
+  // routine cleanup is never walled off:
+  //   • /etc /boot /System /Library  — whole tree.
+  //   • /usr — bare, or /usr/{bin,lib,libexec,sbin,share,include}, but NOT /usr/local
+  //     (Homebrew / npm-global live there and get wiped constantly).
+  //   • /var — bare, or /var/{lib,log,db,spool,run,cache,mail,backups}, but NOT
+  //     /var/folders or /var/tmp (the macOS $TMPDIR — build/test tools wipe these all
+  //     day). /private/var/… is likewise left alone.
+  //   • ~ / $HOME — the whole home, not a sub-path.
+  // Each target ends at a path separator / whitespace / shell separator so /var.bak,
+  // /etcd, /usrlocal (user paths) and ~/project, $HOME/dist stay allowed. The flag
+  // fragment is order-independent (-rf and -fr both match).
+  { re: /\brm\s+-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*\s+(?:--no-preserve-root\s+)?(?:\/(?:etc|boot|System|Library)(?:\/|\s|$|[;&|])|\/usr(?:\/(?:bin|lib|lib64|libexec|sbin|share|include)(?:\/|\s|$|[;&|])|\s|$|[;&|])|\/var(?:\/(?:lib|log|db|spool|run|cache|mail|backups)(?:\/|\s|$|[;&|])|\s|$|[;&|])|~(?:\/?\s|\/?$)|\$HOME(?:\/?\s|\/?$))/m, why: 'recursive delete of a critical system directory or the whole home' },
+  // netcat reverse shell: -e / -c hands the connecting peer a program (a shell). The
+  // dangerous flag is matched as a standalone token ANYWHERE after the nc command
+  // (before or after the host), via a single linear pass — no overlapping `(A|B)*`
+  // quantifier, so a long flag list can never trigger catastrophic backtracking.
+  { re: /\b(?:nc|ncat|netcat)\b[^\n]*?\s-[a-zA-Z]*[ec][a-zA-Z]*(?:\s|$)/i, why: 'reverse shell via netcat (nc -e / -c)' },
+  // Reverse shell over /dev/udp (the UDP twin of the /dev/tcp pattern above).
+  { re: /\b(?:ba)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/udp\//i, why: 'reverse shell via /dev/udp' },
+  // Windows whole-disk / boot destroyers at command position. `format` is required to
+  // carry a drive-letter argument (`format c:`, `format /q d:`) so the bare Unix word
+  // — `make format`, `npm run format`, a `format` alias, `--format=` — is never walled
+  // off. diskpart/bcdedit are destructive by name; the boundary keeps `bcdedit_log`,
+  // `formatter`, `diskpartition` from matching.
+  { re: /(?:^|[\n;&|`(]|&&)\s*(?:format\s+(?:\/[a-z:]+\s+)*[a-z]:|diskpart|bcdedit)(?:\s|$|[\\/:])/i, why: 'Windows destructive command (format <drive:>/diskpart/bcdedit)' },
+  // Windows forced/recursive delete: del/erase with a /f, /q or /s switch.
+  { re: /(?:^|[\n;&|`(]|&&)\s*(?:del|erase)\s+(?:\/[a-z]\s+)*\/[qsf]\b/i, why: 'Windows forced/recursive delete (del /f /q /s)' },
+  // Windows recursive directory removal: rd /s or rmdir /s.
+  { re: /(?:^|[\n;&|`(]|&&)\s*(?:rd|rmdir)\s+(?:\/[a-z]\s+)*\/s\b/i, why: 'Windows recursive directory removal (rd /s)' },
+  // Deleting volume shadow copies — the anti-recovery step in ransomware playbooks.
+  { re: /\bvssadmin\s+delete\s+shadows\b/i, why: 'deleting volume shadow copies (vssadmin delete shadows)' },
+  // Secure-wiping free disk space (cipher /w) — destroys recoverable data.
+  { re: /\bcipher\s+\/w\b/i, why: 'secure-wiping free disk space (cipher /w)' },
+  // Wiping the Windows event log (wevtutil cl) — destroys the audit trail.
+  { re: /\bwevtutil\s+(?:cl|clear-log)\b/i, why: 'wiping the Windows event log (wevtutil cl)' },
+  // Redirecting output straight onto a raw disk device clobbers the partition table.
+  // An optional partition / NVMe-namespace suffix is matched too, so a redirect onto
+  // a single partition (/dev/sda1, /dev/nvme0n1, /dev/nvme0n1p2, /dev/mmcblk0p1) is
+  // caught alongside the whole-device form.
+  { re: />\s*\/dev\/(?:sd[a-z]\d*|disk\d+|nvme\d+(?:n\d+(?:p\d+)?)?|hd[a-z]\d*|mmcblk\d+(?:p\d+)?|vd[a-z]\d*)\b/i, why: 'redirecting output onto a raw disk device' },
 ];
 
 // Read-only tools carry a file target but no command or content. We match them

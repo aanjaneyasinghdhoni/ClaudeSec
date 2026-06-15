@@ -35,6 +35,12 @@ process.on('exit', removeTestHome);
 
 import { EXTRA_SEVERITY_RULES } from '../server/severityRulesExtra.js';
 import { CORE_SEVERITY_RULES, SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from '../server/detection.js';
+// The always-on enforcement floor. These patterns run SYNCHRONOUSLY on the RAW,
+// UNCAPPED bash command in both the PreToolUse hook and the MCP-proxy evaluator,
+// with no per-action escape — so a non-linear floor pattern is a worse ReDoS than
+// any user rule. Import the live arrays (not a text copy) and run them through the
+// same execution gate, so a future floor edit that backtracks fails CI here.
+import { CATASTROPHIC, LIVE_SECRET } from '../server/enforceEval.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -152,16 +158,18 @@ const WORKER_SRC = `
 `;
 
 /**
- * Execute one pattern against the pump battery inside a killable worker.
- * Returns null if it completed within the budget, or a description string if it
- * timed out (catastrophic backtracking) or threw.
+ * Execute one pattern against a pump battery inside a killable worker. Defaults to
+ * the generic PUMP_STRINGS; callers can pass a tailored battery (e.g. the floor
+ * pumps) to detonate shape-specific backtracking. Returns null if it completed
+ * within the budget, or a description string if it timed out (catastrophic
+ * backtracking) or threw.
  */
-function executePatternSafely(re: RegExp): Promise<string | null> {
+function executePatternSafely(re: RegExp, inputs: string[] = PUMP_STRINGS): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     let settled = false;
     const worker = new Worker(WORKER_SRC, {
       eval: true,
-      workerData: { source: re.source, flags: re.flags, inputs: PUMP_STRINGS },
+      workerData: { source: re.source, flags: re.flags, inputs },
     });
 
     const timer = setTimeout(() => {
@@ -525,6 +533,59 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`Catastrophic-floor parity: all ${CATASTROPHIC_DETECTION_LABELS.size} protected label(s) map to a real rule.`);
+  console.log();
+
+  // ── Enforcement-floor ReDoS gate (authoritative) ──────────────────────────
+  // Run EVERY CATASTROPHIC and LIVE_SECRET floor pattern through the same
+  // killable-worker execution gate the user rules face, PLUS floor-shaped pump
+  // strings (a flood of flag tokens, a deep path, a long device tail) that target
+  // the specific shapes these patterns parse. The floor fires on the raw, uncapped
+  // bash command with no per-action escape, so any pattern that backtracks here is
+  // a launch-blocking ReDoS — fail CI rather than ship it.
+  const FLOOR_PUMPS: string[] = [
+    'rm ' + '-x '.repeat(80) + '/etc',          // flag-order / system-dir flood
+    'rm ' + '-'.repeat(400) + ' /',             // long single-flag run
+    'nc ' + '-x '.repeat(120),                  // netcat flag flood (the P0 shape)
+    'nc ' + 'xexcxe'.repeat(2000),              // dense e/c tokens, no boundary
+    'netcat ' + 'a'.repeat(8000) + ' -e ',      // long host then dangerous flag
+    'rm -rf /var/' + 'a/'.repeat(4000),         // deep system-dir path
+    'echo x > /dev/nvme' + '0'.repeat(8000),    // long device tail
+    'format ' + '/q '.repeat(2000) + 'c:',      // many switches before drive
+    'curl ' + 'a'.repeat(8000) + ' | sh',       // long curl-pipe-sh body
+    'a'.repeat(20000),                          // long benign line (must not stall)
+  ];
+  const floorSets: { name: string; rules: { re: RegExp; why: string }[] }[] = [
+    { name: 'CATASTROPHIC', rules: CATASTROPHIC },
+    { name: 'LIVE_SECRET', rules: LIVE_SECRET },
+  ];
+  const floorFailures: string[] = [];
+  let floorChecked = 0;
+  for (const set of floorSets) {
+    for (const rule of set.rules) {
+      floorChecked++;
+      // The EXECUTION gate is AUTHORITATIVE here — it actually detonates each pattern
+      // against the generic pump battery AND the floor-specific pumps under a hard
+      // worker timeout. (The source-shape heuristic used for user rules is too coarse
+      // for the floor: it flags linear forms like `(?:\/[a-z]\s+)*` whose every
+      // iteration consumes a mandatory separator, so it can't decide a shipped floor
+      // pattern. Execution proves linearity directly.)
+      const generic = await executePatternSafely(rule.re);
+      const floorHit = generic === null ? await executePatternSafely(rule.re, FLOOR_PUMPS) : null;
+      const verdict = generic ?? floorHit;
+      if (verdict !== null) {
+        floorFailures.push(`${set.name} /${rule.re.source}/ — ${verdict}`);
+      }
+    }
+  }
+  if (floorFailures.length > 0) {
+    console.error(`FAIL  enforcement floor has ${floorFailures.length} non-linear pattern(s):`);
+    for (const f of floorFailures) console.error(`         ${f}`);
+    console.error('      A catastrophic/live-secret floor pattern backtracks on adversarial input.');
+    console.error('      The floor runs on the RAW bash command with no escape — rewrite it linear.');
+    console.error('Exit: 1 (fail)');
+    process.exit(1);
+  }
+  console.log(`Enforcement-floor ReDoS gate: ${floorChecked} floor pattern(s) are linear / RE2-safe.`);
   console.log();
 
   const rules = EXTRA_SEVERITY_RULES as unknown[];
