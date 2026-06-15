@@ -57,7 +57,7 @@ import type { CustomRule, ProtectedPath, HealthBreakdown } from './routes/contex
 import { detectHarness, HARNESSES } from '../src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
 import { resolveRepo, backfillRepos } from './repoIdentity.js';
-import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
+import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type WatcherHandle, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 import { SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from './detection.js';
 import { buildEnforcementSnapshot } from './enforcementSnapshot.js';
 import {
@@ -87,12 +87,29 @@ const __dirname = path.dirname(__filename);
 // Why the URL compare: under tsx/ESM there is no `require.main`. Comparing
 // import.meta.url to the resolved argv[1] is the portable ESM equivalent — true
 // for `tsx server/index.ts` (launchd, `pnpm dev`, `pnpm start`), false on import.
+//
+// Symlink robustness: under tsx, import.meta.url is already realpath-resolved but
+// argv[1] is NOT. So if this repo is reached through any symlink (a ~/ClaudeSec
+// symlink, a symlinked deploy prefix, macOS /tmp → /private/tmp), the two URLs
+// diverge → IS_ENTRY_POINT would be false → launchd loads the module but never
+// calls listen() → a silent dead service under KeepAlive. We canonicalise BOTH
+// sides with fs.realpathSync before comparing, each in its own try/catch that
+// falls back to the raw value so a missing/unreadable path can't throw.
 const IS_ENTRY_POINT = (() => {
   if (process.env.CLAUDESEC_NO_AUTOSTART === '1') return false;
   try {
     const argvEntry = process.argv[1];
     if (!argvEntry) return false;
-    return import.meta.url === pathToFileURL(argvEntry).href;
+    // realpath each side independently; fall back to the raw value on error.
+    const realFromUrl = (url: string): string => {
+      try { return pathToFileURL(fs.realpathSync(fileURLToPath(url))).href; }
+      catch { return url; }
+    };
+    const realFromPath = (p: string): string => {
+      try { return pathToFileURL(fs.realpathSync(p)).href; }
+      catch { return pathToFileURL(p).href; }
+    };
+    return realFromUrl(import.meta.url) === realFromPath(argvEntry);
   } catch {
     return false;
   }
@@ -747,7 +764,11 @@ function writeEnforceConfigFile(): void {
   //    enforce-config.json is gitignored, and the in-repo hook is not the one a
   //    real session runs.
   try {
-    fs.writeFileSync(ENFORCE_CONFIG_FILE, payload, 'utf8');
+    // 0600 — this is an enforcement control-plane file (it carries the active
+    // mode + overrides). Match the DB's owner-only posture; `mode` only applies
+    // on create, so chmod defensively for a pre-existing file too (fail-open).
+    fs.writeFileSync(ENFORCE_CONFIG_FILE, payload, { encoding: 'utf8', mode: 0o600 });
+    try { fs.chmodSync(ENFORCE_CONFIG_FILE, 0o600); } catch {}
   } catch (err) {
     console.warn('[enforce] could not write enforce-config.json:', (err as Error)?.message);
   }
@@ -761,7 +782,9 @@ function writeEnforceConfigFile(): void {
   try {
     const dir = hookArtifactsDir();
     if (fs.existsSync(dir)) {
-      fs.writeFileSync(path.join(dir, 'enforce-config.json'), payload, 'utf8');
+      const mirror = path.join(dir, 'enforce-config.json');
+      fs.writeFileSync(mirror, payload, { encoding: 'utf8', mode: 0o600 });
+      try { fs.chmodSync(mirror, 0o600); } catch {}
     } else if (getEnforceMode() === 'enforce') {
       // Enforce is ON but the hook isn't installed → it cannot block. Warn loudly
       // rather than let the gap stay silent (mirrors the protected-paths warning).
@@ -3269,6 +3292,11 @@ service:
 
   const watchEnabled = process.env.CLAUDESEC_WATCH !== '0';
   const watchRoots = defaultRoots();
+  // Captured at function scope so the graceful-shutdown handler can stop the
+  // watcher and clear the sweep before checkpoint+close — otherwise a sweep or
+  // watcher tick firing db.prepare() on the closed handle would throw.
+  let watcherHandle: WatcherHandle | undefined;
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
   if (watchEnabled) {
     const dirtyTraces = new Set<string>();
     const sweep = setInterval(() => {
@@ -3283,8 +3311,9 @@ service:
       io.emit('sessions-update');
     }, 2500);
     if (typeof sweep.unref === 'function') sweep.unref();
+    sweepTimer = sweep;
 
-    startTranscriptWatcher({
+    watcherHandle = startTranscriptWatcher({
       roots: watchRoots,
       backfill: process.env.CLAUDESEC_BACKFILL === '1',
       offsets: offsetStore,
@@ -3395,6 +3424,13 @@ service:
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\n[ClaudeSec] ${signal} received — shutting down…`);
+    // FIRST: silence everything that touches the DB handle. The transcript
+    // watcher and the retention/anomaly sweep both run db.prepare()/.run() on a
+    // timer; if one fires after checkpointAndClose() it would throw on a closed
+    // handle. Stop them up-front so the close below is the last DB access.
+    // Fail-open — a failure here must never block the checkpoint + exit.
+    try { watcherHandle?.stop(); } catch {}
+    try { if (sweepTimer) clearInterval(sweepTimer); } catch {}
     httpServer.close(() => {
       checkpointAndClose();
       console.log('[ClaudeSec] database checkpointed and closed. Bye.');

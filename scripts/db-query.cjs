@@ -32,6 +32,9 @@ function resolveDbPath() {
 }
 const dbPath = resolveDbPath();
 const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+// Match the main DB's posture: under WAL a read can still briefly collide with an
+// in-flight writer, so wait up to 5s rather than failing fast with SQLITE_BUSY.
+db.pragma('busy_timeout = 5000');
 try {
   const rows = db.prepare(stripped).all();
   console.log(JSON.stringify(rows, null, 2));

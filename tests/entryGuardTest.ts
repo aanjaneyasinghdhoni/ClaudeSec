@@ -36,8 +36,8 @@ import assert from 'node:assert';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -128,6 +128,78 @@ function main(): void {
     check('import did NOT write protected-paths.json into the hooks dir', () => {
       assert.ok(!fs.existsSync(path.join(HOOKS_DIR, 'protected-paths.json')),
         'protected-paths.json was mirrored into the hooks dir on import — guard failed');
+    });
+
+    // ── Positive: autostart STILL fires when reached through a SYMLINK ────────
+    // Under tsx, import.meta.url is realpath-resolved but argv[1] is not. If the
+    // repo is reached via a symlink (a ~/ClaudeSec symlink, a symlinked deploy
+    // prefix, macOS /tmp → /private/tmp), a naive URL compare diverges and
+    // IS_ENTRY_POINT goes false → launchd loads the module but never listens →
+    // silent dead service. The guard realpaths BOTH sides, so the compare must
+    // still hold. We launch the real server through a SYMLINKED entry path and
+    // assert it autostarts (binds + prints its listen banner) — under the old
+    // naive compare the symlinked argv[1] would diverge from the realpathed
+    // import.meta.url and the listener would never fire.
+    const SYMLINK = path.join(HOME_DIR, 'index-symlink.ts');
+    const realIndex = path.join(REPO_ROOT, 'server', 'index.ts');
+    let symlinkCreated = false;
+    try { fs.symlinkSync(realIndex, SYMLINK); symlinkCreated = true; } catch {}
+
+    check('autostart fires through a SYMLINKED entry path (realpath both sides)', () => {
+      assert.ok(symlinkCreated, 'could not create a symlink to exercise the compare');
+      // Sanity: a naive compare WOULD diverge here (the symlink path !== the
+      // realpathed module URL), so the test genuinely exercises the symlink case.
+      const naiveWouldDiverge =
+        pathToFileURL(SYMLINK).href !== pathToFileURL(fs.realpathSync(SYMLINK)).href;
+      assert.ok(naiveWouldDiverge,
+        'symlink did not create a path divergence — test no longer exercises the symlink case');
+
+      // Boot the server via the SYMLINK on a throwaway port + sandboxed home/DB.
+      // The child's stdout/stderr are redirected to a log file so we can poll it
+      // from this synchronous test without async event-loop plumbing — the listen
+      // banner ("ClaudeSec  http://…") is printed only from inside the
+      // httpServer.listen() callback, i.e. only if autostart actually fired.
+      const SYM_DB = path.join(os.tmpdir(), `csec-entryguard-sym-${process.pid}-${Date.now()}.db`);
+      const LOG = path.join(HOME_DIR, 'sym-boot.log');
+      const logFd = fs.openSync(LOG, 'w');
+      const child = spawn(TSX_BIN, [SYMLINK], {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          CLAUDESEC_DB: SYM_DB,
+          CLAUDESEC_HOME: HOME_DIR,
+          CLAUDESEC_ENFORCE_CONFIG: path.join(HOME_DIR, 'sym-enforce-config.json'),
+          CLAUDESEC_WATCH: '0',
+          CLAUDESEC_PORT: '0', // bind an ephemeral port — never collides with the live service
+          PORT: '0',
+          NODE_ENV: 'production',
+        },
+        stdio: ['ignore', logFd, logFd],
+      });
+      fs.closeSync(logFd);
+
+      // Synchronous sleep — block via Atomics.wait. Safe here because we poll the
+      // child's output through the log FILE (written by the child process), not
+      // via our own event loop, which Atomics.wait would otherwise starve.
+      const sleep = (ms: number) =>
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      const readLog = () => { try { return fs.readFileSync(LOG, 'utf8'); } catch { return ''; } };
+
+      const deadline = Date.now() + 30_000;
+      try {
+        while (Date.now() < deadline && !/ClaudeSec\s+http:\/\//.test(readLog())) sleep(250);
+        const out = readLog();
+        assert.ok(/ClaudeSec\s+http:\/\//.test(out),
+          `server did NOT autostart through the symlinked entry path — IS_ENTRY_POINT was false ` +
+          `(silent dead service).\n--- output ---\n${out.slice(-2000)}`);
+      } finally {
+        try { child.kill('SIGTERM'); } catch {}
+        sleep(1_500); // let the graceful shutdown run, then hard-kill if still alive
+        try { child.kill('SIGKILL'); } catch {}
+        for (const f of [SYM_DB, `${SYM_DB}-wal`, `${SYM_DB}-shm`]) {
+          try { fs.rmSync(f, { force: true }); } catch {}
+        }
+      }
     });
   } finally {
     cleanup();
