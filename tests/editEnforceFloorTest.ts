@@ -59,6 +59,24 @@ const MARKER = 'DANGERPATTERN';
 const LIVE_SECRET_BODY = 'const k = "AKIA1234567890ABCDEF"; const s = "wJalrXUtnFEMI";';
 const PLACEHOLDER_BODY = 'const example = "AKIAIOSFODNN7EXAMPLE"; // AWS docs placeholder';
 
+// Phase 7a — expanded verified-prefix providers. Each fixture is SYNTHETIC: the
+// right SHAPE for its provider, never a real credential. The prefix is split from
+// the body so this test file never carries a contiguous live-shape literal that
+// the always-on live-secret floor would block when THIS file is itself edited.
+// Positive fixtures (must BLOCK):
+const OPENAI_PROJ_SECRET   = 'const k = "' + 'sk-proj-' + 'AbCdEf0123456789AbCdEfGhIj";';
+const ANTHROPIC_SECRET     = 'const k = "' + 'sk-ant-'  + 'api03AbCdEf0123456789xyz";';
+const GITLAB_SECRET        = 'const k = "' + 'glpat-'   + 'AbCdEf0123456789AbCdEf";';
+const SENDGRID_SECRET      = 'const k = "' + 'SG.'      + 'AbCdEfGhIjKlMnOpQrStUv' + '.' + 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE";';
+const TWILIO_SECRET        = 'const k = "' + 'SK'       + '0123456789abcdef0123456789abcdef";'; // SK + 32 hex
+const NPM_SECRET           = 'const k = "' + 'npm_'     + 'abcdefghij0123456789ABCDEFGHIJ012345";'; // npm_ + 36
+// Negative fixtures (must NOT block — common prose/code that brushes a prefix):
+const NEG_MD_LINK          = 'See the [sk](https://example.com/sk) reference for details.';
+const NEG_SK_SENTENCE      = 'The sk- prefix is short for "secret key" in our naming convention.';
+const NEG_HEX_NOT_TWILIO   = 'const sha = "0123456789abcdef0123456789abcdef0123";'; // 36 hex, no SK prefix
+const NEG_SG_SENTENCE      = 'Ship the build to SG. Then notify the on-call engineer.';
+const NEG_GLPAT_WORD       = 'The glpat- shorthand appears in our GitLab onboarding doc.';
+
 let passed = 0;
 const failures: string[] = [];
 function check(name: string, fn: () => void): void {
@@ -215,6 +233,58 @@ async function main(): Promise<void> {
       const v = evaluate('/x/aws-docs.md', blockRules, PLACEHOLDER_BODY);
       check('c3 server: AWS doc placeholder → not triggered (allowlisted)', () =>
         assert.strictEqual(v.triggered, false));
+    }
+
+    // ── (c4) Phase 7a verified-prefix providers → each live shape BLOCKS ────────
+    //        Every entry is a synthetic, right-shape, non-placeholder credential.
+    //        Asserted on BOTH layers (hook exit 2, server triggered).
+    {
+      const providers: { name: string; body: string }[] = [
+        { name: 'OpenAI project key (sk-proj-)', body: OPENAI_PROJ_SECRET },
+        { name: 'Anthropic key (sk-ant-)',       body: ANTHROPIC_SECRET },
+        { name: 'GitLab PAT (glpat-)',           body: GITLAB_SECRET },
+        { name: 'SendGrid key (SG.)',            body: SENDGRID_SECRET },
+        { name: 'Twilio API key SID (SK+hex)',   body: TWILIO_SECRET },
+        { name: 'npm token (npm_)',              body: NPM_SECRET },
+      ];
+      for (const p of providers) {
+        const stdin = JSON.stringify({
+          tool_name: 'Write',
+          tool_input: { file_path: '/x/app.ts', content: p.body },
+        });
+        const { code } = await runHook(stdin, ENFORCE);
+        check(`c4 hook: write ${p.name} → exit 2 (blocked, DLP floor)`, () =>
+          assert.strictEqual(code, 2));
+        const v = evaluate('/x/app.ts', blockRules, p.body);
+        check(`c4 server: ${p.name} in edit content → triggered`, () =>
+          assert.strictEqual(v.triggered, true));
+      }
+    }
+
+    // ── (c5) Phase 7a negatives → common prose/code must NOT block ──────────────
+    //        Proves the verified-prefix patterns don't fire on a markdown [sk](…)
+    //        link, a sentence mentioning "sk-", a 36-char hex string that isn't a
+    //        Twilio SID, "SG." in a sentence, or "glpat-" as prose.
+    {
+      const negatives: { name: string; body: string }[] = [
+        { name: 'markdown [sk](…) link',            body: NEG_MD_LINK },
+        { name: 'sentence containing "sk-"',        body: NEG_SK_SENTENCE },
+        { name: 'hex string (not a Twilio SID)',    body: NEG_HEX_NOT_TWILIO },
+        { name: '"SG." in a sentence',              body: NEG_SG_SENTENCE },
+        { name: '"glpat-" as prose',                body: NEG_GLPAT_WORD },
+      ];
+      for (const n of negatives) {
+        const stdin = JSON.stringify({
+          tool_name: 'Write',
+          tool_input: { file_path: '/x/app.ts', content: n.body },
+        });
+        const { code } = await runHook(stdin, ENFORCE);
+        check(`c5 hook: ${n.name} → exit 0 (allowed, no false positive)`, () =>
+          assert.strictEqual(code, 0));
+        const v = evaluate('/x/app.ts', blockRules, n.body);
+        check(`c5 server: ${n.name} → not triggered`, () =>
+          assert.strictEqual(v.triggered, false));
+      }
     }
 
     // ── (f) Self-protection: agent cannot edit the enforcement control plane ────

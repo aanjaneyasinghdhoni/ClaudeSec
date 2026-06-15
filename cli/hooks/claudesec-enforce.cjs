@@ -136,6 +136,12 @@ const LIVE_SECRET = [
   { re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/, why: 'Slack token' },
   { re: /\bsk_live_[0-9A-Za-z]{20,}\b/, why: 'Stripe live secret key' },
   { re: /\bAIza[0-9A-Za-z_\-]{35}\b/, why: 'Google API key' },
+  { re: /\bsk-proj-[A-Za-z0-9_\-]{20,}\b/, why: 'OpenAI project API key' },
+  { re: /\bsk-ant-[A-Za-z0-9_\-]{20,}\b/, why: 'Anthropic API key' },
+  { re: /\bglpat-[A-Za-z0-9_\-]{20,}\b/, why: 'GitLab personal access token' },
+  { re: /\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b/, why: 'SendGrid API key' },
+  { re: /\bSK[0-9a-fA-F]{32}\b/, why: 'Twilio API key SID' },
+  { re: /\bnpm_[A-Za-z0-9]{36}\b/, why: 'npm access token' },
   { re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/, why: 'private key block' },
 ];
 

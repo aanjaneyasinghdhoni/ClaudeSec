@@ -231,7 +231,7 @@ for (const { name, patterns } of extracted) {
 // block-catastrophic.cjs has no such table).
 // ---------------------------------------------------------------------------
 
-const LIVE_SECRET_EXPECTED_COUNT = 9;
+const LIVE_SECRET_EXPECTED_COUNT = 15;
 let secretPassed = true;
 const secretExtracted: { name: string; patterns: string[] }[] = [];
 
