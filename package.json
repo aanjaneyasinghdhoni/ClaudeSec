@@ -93,7 +93,7 @@
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.1.0",
     "ipaddr.js": "^2.4.0",
-    "lucide-react": "^1.17.0",
+    "lucide-react": "^1.21.0",
     "mermaid": "^11.15.0",
     "motion": "^12.23.24",
     "re2": "^1.24.1",

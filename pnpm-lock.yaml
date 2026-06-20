@@ -60,8 +60,8 @@ importers:
         specifier: ^2.4.0
         version: 2.4.0
       lucide-react:
-        specifier: ^1.17.0
-        version: 1.17.0(react@19.2.7)
+        specifier: ^1.21.0
+        version: 1.21.0(react@19.2.7)
       mermaid:
         specifier: ^11.15.0
         version: 11.15.0
@@ -1707,8 +1707,8 @@ packages:
   longest-streak@3.1.0:
     resolution: {integrity: sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g==}
 
-  lucide-react@1.17.0:
-    resolution: {integrity: sha512-9FA9evdox/JQL5PT57fdA1x/yg8T7knJ98+zjTL3UfKza6pflQUUh3XtaQIHKvnsJw1lmsEyHVlt5jchYxOQ5w==}
+  lucide-react@1.21.0:
+    resolution: {integrity: sha512-reEZMXq8Qdd5jg5XYkQ5TR1fB/GiQ7ih4vcrthYDtgjSDwh0i6/YLiGjsWsIwgN49gpAnd4J2elSNzncMEEUUQ==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -4017,7 +4017,7 @@ snapshots:
 
   longest-streak@3.1.0: {}
 
-  lucide-react@1.17.0(react@19.2.7):
+  lucide-react@1.21.0(react@19.2.7):
     dependencies:
       react: 19.2.7
 
