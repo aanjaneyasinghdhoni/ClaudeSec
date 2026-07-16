@@ -7,7 +7,13 @@ allowBuilds:
   re2: true
 
 # Force-patch transitive deps to clear known advisories (pnpm reads overrides here
-# in 11.x, not from package.json). esbuild <0.28.1 (GHSA-gv7w-rqvm-qjhr) reaches us
-# only through vite/tsx/tailwind; 0.28.1 is a drop-in patch.
+# in 11.x, not from package.json). Each patched release stays within the same major,
+# so every override is semver-compatible for the packages that depend on it.
+# Remove an entry once the upstream dependency resolves the fixed range itself.
 overrides:
+  # GHSA-gv7w-rqvm-qjhr — reaches us only through vite/tsx/tailwind; 0.28.1 is a drop-in patch.
   esbuild: ">=0.28.1"
+  # GHSA-96hv-2xvq-fx4p — memory-exhaustion DoS, reached via socket.io.
+  ws@>=8.0.0 <8.21.0: ^8.21.0
+  # GHSA-vxpw-j846-p89q — WebSocket-client DoS, reached via re2 > node-gyp.
+  undici@<6.27.0: ^6.27.0
