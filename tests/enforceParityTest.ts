@@ -60,7 +60,20 @@ import { startProxy } from '../server/mcpProxy.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
-const HOOK = path.join(REPO_ROOT, 'cli', 'hooks', 'claudesec-enforce.cjs');
+
+/**
+ * The hook binary under test (layer A). Defaults to the tracked hook that ships
+ * to every clone, which is what CI and `pnpm test` exercise.
+ *
+ * CLAUDESEC_TEST_HOOK points it at a staged replacement instead. That exists
+ * because of the floor this file gates: the live enforcer refuses to let an agent
+ * write anything named `claudesec-enforce.cjs`, so a fix TO the hook must be
+ * proven from a staged copy before an operator installs it. Pointing this gate at
+ * the candidate is how "both layers agree" gets demonstrated rather than asserted.
+ */
+const HOOK = process.env.CLAUDESEC_TEST_HOOK
+  ? path.resolve(process.env.CLAUDESEC_TEST_HOOK)
+  : path.join(REPO_ROOT, 'cli', 'hooks', 'claudesec-enforce.cjs');
 
 let passed = 0;
 const failures: string[] = [];
@@ -610,6 +623,154 @@ async function main(): Promise<void> {
       mcpName: 'write', mcpArgs: { file_path: path.join(TMP, 'stash', 'enforce-config.json.bak'), content: '{}' },
       cfg: ENFORCE_CONFIG, expectBlock: false,
     },
+
+    // ── Self-protection floor: SHELL WRAPPERS ───────────────────────────────────
+    //    A shell handed an inline script performs the write; an argument scanner
+    //    that stops at the shell sees one opaque token and lets it through. Every
+    //    direct spelling above was already refused on both layers, so a wrapper
+    //    that leaks on EITHER layer is the whole floor gone. The payload is held
+    //    identical across these so a failure names the wrapper, not the write.
+    {
+      name: 'self-protect: sh -c redirect into ~/.claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `sh -c "printf '{}' > ${HOME_SETTINGS}"` },
+      mcpName: 'bash', mcpArgs: { command: `sh -c "printf '{}' > ${HOME_SETTINGS}"` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: bash -c rm the enforce config',
+      hookTool: 'Bash', hookInput: { command: `bash -c "rm -f ${path.join(CSEC_HOOKS, 'enforce-config.json')}"` },
+      mcpName: 'bash', mcpArgs: { command: `bash -c "rm -f ${path.join(CSEC_HOOKS, 'enforce-config.json')}"` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: env sh -c (wrapper in front of the shell)',
+      hookTool: 'Bash', hookInput: { command: `env sh -c 'rm -f ${HOME_SETTINGS}'` },
+      mcpName: 'bash', mcpArgs: { command: `env sh -c 'rm -f ${HOME_SETTINGS}'` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: timeout 5 sh -c (wrapper with its own argument)',
+      hookTool: 'Bash', hookInput: { command: `timeout 5 sh -c 'rm -f ${HOME_SETTINGS}'` },
+      mcpName: 'bash', mcpArgs: { command: `timeout 5 sh -c 'rm -f ${HOME_SETTINGS}'` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: payload piped into a shell on stdin',
+      hookTool: 'Bash', hookInput: { command: `printf 'rm -f ${HOME_SETTINGS}' | sh` },
+      mcpName: 'bash', mcpArgs: { command: `printf 'rm -f ${HOME_SETTINGS}' | sh` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'benign: sh -c running an ordinary command → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `sh -c 'npm test'` },
+      mcpName: 'bash', mcpArgs: { command: `sh -c 'npm test'` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: bash -c reading the control plane → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `bash -c "cat ${HOME_SETTINGS}"` },
+      mcpName: 'bash', mcpArgs: { command: `bash -c "cat ${HOME_SETTINGS}"` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+
+    // ── Self-protection floor: ANCESTORS ────────────────────────────────────────
+    //    A recursive delete of a PARENT destroys the protected child. The old
+    //    substring compare was true only at or BELOW a prefix, so the shorter,
+    //    strictly worse command was the one that got through.
+    {
+      name: 'self-protect: rm -rf the parent of the control-plane hooks dir',
+      hookTool: 'Bash', hookInput: { command: `rm -rf ${CSEC_HOME}` },
+      mcpName: 'bash', mcpArgs: { command: `rm -rf ${CSEC_HOME}` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: rm -rf ~/.claude (holds settings.json and hooks/)',
+      hookTool: 'Bash', hookInput: { command: `rm -rf ${path.join(HOME, '.claude')}` },
+      mcpName: 'bash', mcpArgs: { command: `rm -rf ${path.join(HOME, '.claude')}` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: rm -rf the whole project directory (cwd)',
+      hookTool: 'Bash', hookInput: { command: 'rm -rf .' },
+      mcpName: 'bash', mcpArgs: { command: 'rm -rf .' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: mv the control-plane home away',
+      hookTool: 'Bash', hookInput: { command: `mv ${CSEC_HOME} /tmp/gone` },
+      mcpName: 'bash', mcpArgs: { command: `mv ${CSEC_HOME} /tmp/gone` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: ancestor delete behind a shell wrapper',
+      hookTool: 'Bash', hookInput: { command: `sh -c 'rm -rf ${CSEC_HOME}'` },
+      mcpName: 'bash', mcpArgs: { command: `sh -c 'rm -rf ${CSEC_HOME}'` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    // Only verbs that DESTROY or DISPLACE a tree read an ancestor as a hit;
+    // writing INTO a directory harms nothing beneath it.
+    {
+      name: 'benign: cp -r into the project root → ALLOW',
+      hookTool: 'Bash', hookInput: { command: 'cp -r ../assets .' },
+      mcpName: 'bash', mcpArgs: { command: 'cp -r ../assets .' },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: rm -rf an ordinary build directory → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `rm -rf ${path.join(TMP, 'build')}` },
+      mcpName: 'bash', mcpArgs: { command: `rm -rf ${path.join(TMP, 'build')}` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: rm a file whose name merely starts the same → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `rm -f ${CSEC_HOME}-notes.txt` },
+      mcpName: 'bash', mcpArgs: { command: `rm -f ${CSEC_HOME}-notes.txt` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+
+    // ── Self-protection floor: THE RECORD, ITS ANCHOR AND ITS KEY ───────────────
+    //    Unhooking the enforcer and deleting what it already wrote down are the
+    //    same attack finished at different ends. Only the first end was guarded.
+    {
+      name: 'self-protect: rm the spans database',
+      hookTool: 'Bash', hookInput: { command: `rm -f ${path.join(CSEC_HOME, 'spans.db')}` },
+      mcpName: 'bash', mcpArgs: { command: `rm -f ${path.join(CSEC_HOME, 'spans.db')}` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: rm the WAL sidecar (the newest spans)',
+      hookTool: 'Bash', hookInput: { command: `rm -f ${path.join(CSEC_HOME, 'spans.db')}-wal` },
+      mcpName: 'bash', mcpArgs: { command: `rm -f ${path.join(CSEC_HOME, 'spans.db')}-wal` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: sqlite3 UPDATE rewriting the record in place',
+      hookTool: 'Bash', hookInput: { command: `sqlite3 ${path.join(CSEC_HOME, 'spans.db')} 'UPDATE spans SET severity=0'` },
+      mcpName: 'bash', mcpArgs: { command: `sqlite3 ${path.join(CSEC_HOME, 'spans.db')} 'UPDATE spans SET severity=0'` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: rm -rf the backups directory',
+      hookTool: 'Bash', hookInput: { command: `rm -rf ${path.join(CSEC_HOME, 'backups')}` },
+      mcpName: 'bash', mcpArgs: { command: `rm -rf ${path.join(CSEC_HOME, 'backups')}` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: write the Ed25519 signing key wherever it sits',
+      hookTool: 'Write', hookInput: { file_path: path.join(TMP, 'audit-key.ed25519.pem'), content: 'x' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(TMP, 'audit-key.ed25519.pem'), content: 'x' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'benign: sqlite3 SELECT only reads the record → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `sqlite3 ${path.join(CSEC_HOME, 'spans.db')} 'SELECT count(*) FROM spans'` },
+      mcpName: 'bash', mcpArgs: { command: `sqlite3 ${path.join(CSEC_HOME, 'spans.db')} 'SELECT count(*) FROM spans'` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    // The floor is mode-INDEPENDENT: a monitor-mode agent must not be able to
+    // delete the record either. (The proxy treats the floor as a mode-gated
+    // trigger by design, so this pair is compared in enforce; the monitor-mode
+    // hook behaviour is asserted in tests/selfProtectionFloorTest.ts.)
 
     // ── Block rule parity: a command matching the snapshot rule. ────────────────
     {

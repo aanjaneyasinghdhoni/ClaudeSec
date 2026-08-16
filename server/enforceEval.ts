@@ -441,11 +441,18 @@ export function protectedHit(
 // Two things separate a real floor from theatre, and both are mirrored here:
 //   • It is anchored on the WRITE, never on the filename. Reading, grepping or
 //     naming `settings.json` in a commit message is ordinary developer work every
-//     hour of the day; only an action that could CHANGE the file is denied. None
-//     of these files hold a secret, so denying a look at them bought nothing.
+//     hour of the day; only an action that could CHANGE the file is denied.
+//     Be precise about what that costs: one entry here IS secret material — the
+//     Ed25519 audit signing key — so "reads are exempt" must not be read as
+//     "nothing here is worth reading". This floor exists to stop the supervisor
+//     being switched off, not to stop exfiltration; the config and settings files
+//     it covers leak nothing, and an operator who also wants the signing key
+//     unreadable adds it to protected-paths.json, which does gate reads.
 //   • Every candidate path is normalized before it is compared: `~` and `$HOME`
-//     expanded, relative and `../` spellings resolved, and the symlink chain
-//     followed. A floor a `../` walks around protects nothing.
+//     expanded, relative and `../` spellings resolved, the symlink chain followed,
+//     and the comparison itself made on path COMPONENTS rather than raw substrings
+//     (see pathRelated). A floor a `../` walks around protects nothing, and one
+//     that misses the PARENT of what it guards protects nothing either.
 //
 // Guards AGENT tool calls only; the ClaudeSec SERVER writes these files from its
 // own process, which never passes through this evaluator.
@@ -471,6 +478,19 @@ const SELF_BASENAMES = new Set<string>([
 ]);
 
 /**
+ * The audit chain's signing material, matched by BASENAME SHAPE rather than by
+ * location. The key ships under four names — `audit-key` (the legacy HMAC file),
+ * `audit-key.ed25519.pem`, `audit-key.pub.pem` and `audit-key.store.json` — and
+ * `claudesec audit-key to-file` will put it back wherever CLAUDESEC_HOME points,
+ * so enumerating paths would always trail the product. Losing the private half
+ * means the audit chain can no longer be signed; losing the public half means it
+ * can no longer be verified. Both ends of "the record is trustworthy" are the
+ * supervisor's own integrity, so both belong on this floor.
+ * Mirrors AUDIT_KEY_BASENAME in cli/hooks/claudesec-enforce.cjs.
+ */
+const AUDIT_KEY_BASENAME = /^audit-key(?:\.[a-z0-9]{1,16}){0,3}$/;
+
+/**
  * Shell commands that WRITE. Anything in this set mutates whatever path it is
  * handed, so naming a control-plane file anywhere in its arguments is a block.
  * Mirrors MUTATING_COMMANDS in cli/hooks/claudesec-enforce.cjs.
@@ -483,10 +503,89 @@ const MUTATING_COMMANDS = new Set<string>([
 ]);
 
 /**
+ * Verbs that destroy or displace a whole TREE rather than the single file they
+ * name. These are the only ones for which an ANCESTOR of a protected path counts
+ * as a hit: `rm -rf ~/.claudesec` deletes the protected hooks directory
+ * underneath it, `mv` carries it away, and `chmod 000` / `chown someone-else`
+ * deny it just as finally. Writing INTO a directory — `cp`, `tee`, `mkdir`, a
+ * redirect — harms nothing beneath it, so every other verb keeps the
+ * descendant-only reading and `cp -r ../assets .` stays ordinary work.
+ * Mirrors DESTRUCTIVE_COMMANDS in cli/hooks/claudesec-enforce.cjs.
+ */
+const DESTRUCTIVE_COMMANDS = new Set<string>([
+  'rm', 'unlink', 'shred', 'srm', 'mv', 'rmdir',
+  'chmod', 'chown', 'chgrp', 'chattr', 'chflags',
+]);
+
+/**
  * Words that sit in front of the real verb and must be skipped when working out
  * what a command actually runs (`sudo tee …`, `FOO=1 rm …`, `xargs rm …`).
  */
 const COMMAND_PREFIXES = /^(?:sudo|doas|env|nohup|command|exec|time|nice|xargs|then|do|else)$/;
+
+// ── Shell wrappers ───────────────────────────────────────────────────────────
+// A shell handed a script is not a leaf command. `sh -c "printf '{}' > …"` runs
+// the redirect just as surely as typing it, but to an argument scanner the whole
+// script is one opaque string, so the floor saw a `sh` it did not recognise and
+// allowed everything. The payload is therefore RE-ANALYSED as a command.
+//
+// WHERE THIS STOPS, stated plainly rather than implied: a regex cannot parse a
+// shell, and pretending otherwise is how a floor gets trusted past its evidence.
+// Followed (up to MAX_SHELL_DEPTH levels of nesting):
+//   • an inline script in an argument — `sh -c`, `bash -c`, `zsh -c`, `-lc`,
+//     `--command=`, and the same for `script`/`flock`, under ANY wrapper
+//     (`env`, `sudo`, `nohup`, `timeout 5`, `xargs`, `nice -n 5`, an absolute
+//     path to the shell), because the host is looked for at any token position
+//     instead of enumerating wrappers and their argument grammars;
+//   • a pipeline that ENDS in a bare shell — `printf '…' | sh` (see
+//     PIPE_INTO_SHELL); and
+//   • backticks and `$( )`, which the segment splitter already treats as fresh
+//     commands.
+// NOT followed, and no attempt is made to pretend otherwise:
+//   • a script FILE — `sh ./setup.sh` — whose contents this layer cannot read;
+//   • a heredoc fed to a shell (`sh <<'EOF' … EOF`) or `sh < script`;
+//   • anything decoded at runtime — `eval "$(base64 -d …)"`, a payload assembled
+//     from string fragments, a variable inherited from the parent shell;
+//   • a command sent to ANOTHER machine — `ssh host '…'` — which this floor has
+//     no business adjudicating.
+// For all of those the server-side detection layer and the post-hoc
+// self-protection rules in server/severityRulesExtra.ts remain the backstop,
+// exactly as the catastrophic floor's own limitations section documents.
+
+/**
+ * Shells (plus the two wrappers that take an inline command string) whose `-c`
+ * payload is re-analysed. `ssh` is deliberately absent — it is not a local shell.
+ * Mirrors INLINE_SCRIPT_HOSTS in cli/hooks/claudesec-enforce.cjs.
+ */
+const INLINE_SCRIPT_HOSTS = /^(?:(?:ba|z|k|da|a|fi|tc|c)?sh|busybox|script|flock)$/;
+
+/** Flags that introduce an inline script: `-c`, `-lc`, `-ic`, `--command`. */
+const INLINE_SCRIPT_FLAG = /^(?:-[a-zA-Z]*c|--command)$/;
+
+/**
+ * A pipeline whose LAST stage is a bare shell (`printf '…' | sh`, `… | sudo bash`).
+ * The script arrives on stdin, where no argument scan can reach it, so when this
+ * matches, the quoted strings feeding the pipeline are re-analysed as scripts.
+ * One optional wrapper and one optional flag group, no nested quantifier — the
+ * pattern stays linear.
+ * Mirrors PIPE_INTO_SHELL in cli/hooks/claudesec-enforce.cjs.
+ */
+const PIPE_INTO_SHELL =
+  /\|\s*(?:(?:sudo|doas|env|command|exec|nohup|xargs)\s+)?(?:[^\s|;&<>]*\/)?(?:ba|z|k|da|a|fi|tc|c)?sh\b\s*(?:-[a-zA-Z]+\s*)?(?:$|[;&|\n])/i;
+
+/** How many levels of `sh -c "sh -c …"` nesting are followed before giving up. */
+const MAX_SHELL_DEPTH = 3;
+
+/**
+ * SQL that REWRITES the database, as opposed to a query that reads it. `sqlite3`
+ * is a writer only when its arguments carry one of these, so
+ * `sqlite3 spans.db "SELECT count(*) FROM spans"` stays allowed while
+ * `sqlite3 spans.db "UPDATE spans SET severity=0"` — a silent edit of the record
+ * the supervisor keeps — does not.
+ * Mirrors SQLITE_MUTATION in cli/hooks/claudesec-enforce.cjs.
+ */
+const SQLITE_MUTATION =
+  /\b(?:insert|update|delete|drop|alter|replace|vacuum|reindex|attach)\b|\.(?:import|restore|clone|recover)\b/i;
 
 /**
  * Directories and files that, if written, can switch enforcement off. Resolved
@@ -504,10 +603,26 @@ function selfProtectedPrefixes(): string[] {
   // and unhook the enforcer. Guard them alongside the user-level files. cwd is
   // resolved at call time so the floor tracks whichever project is in play.
   const cwd = process.cwd();
+  // The record the supervisor keeps. Resolved exactly as server/db.ts does
+  // (CLAUDESEC_DB → <CLAUDESEC_HOME>/spans.db) so the floor follows an operator
+  // who moved the database rather than guarding an empty default path.
+  const dbPath = process.env.CLAUDESEC_DB || path.join(csecHome, 'spans.db');
   const out = [
     path.join(csecHome, 'hooks'),           // whole enforcement control-plane dir
-    path.join(csecHome, 'audit-key'),       // prefix: audit-key + its .pem siblings
+    path.join(csecHome, 'audit-key'),       // the legacy HMAC file (see AUDIT_KEY_BASENAME)
     path.join(csecHome, 'audit-anchor.json'),
+    // The evidence itself. Unhooking the enforcer and deleting what it already
+    // recorded are the same attack finished at different ends, and the second one
+    // was free: `rm`, `truncate` and `sqlite3 … UPDATE` all sailed through. The
+    // WAL and SHM sidecars are named separately because they are distinct paths —
+    // removing spans.db-wal alone discards the most recent, most interesting spans.
+    dbPath,
+    dbPath + '-wal',
+    dbPath + '-shm',
+    dbPath + '-journal',
+    // Online binary snapshots (server/db.ts writes them beside the database).
+    // A record you can restore is the whole reason a backup is worth taking.
+    path.join(path.dirname(dbPath), 'backups'),
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.claude', 'settings.local.json'),
     path.join(home, '.claude', 'hooks'),
@@ -634,16 +749,56 @@ function selfPathForms(p: string): string[] {
   return forms;
 }
 
-/** Does any spelling of `p` land on the control plane? Returns a reason or null. */
-function selfPathHit(p: string): string | null {
+/**
+ * How a candidate path relates to a protected prefix. Both arguments must
+ * already be lowercased.
+ *
+ * The floor used to ask `candidate.includes(prefix)`, which answers neither of
+ * the two questions that matter. Raw substring containment says YES to
+ * `~/.claude/settings.json.bak` — a different file, an ordinary backup — and NO
+ * to `~/.claudesec`, which is the PARENT of the protected hooks directory. So it
+ * over-blocked a copy and under-blocked `rm -rf ~/.claudesec`, the single command
+ * that takes the whole control plane with it. That is a correctness bug in the
+ * comparison, not a missing entry in the list.
+ *
+ * The relation is therefore computed on path COMPONENTS:
+ *   • the same path, or the candidate sitting INSIDE the prefix → always a hit;
+ *   • the candidate being an ANCESTOR of the prefix → a hit only when the verb
+ *     destroys or displaces a whole tree (`allowAncestor`; see
+ *     DESTRUCTIVE_COMMANDS). `rm -rf ~/.claudesec` destroys the protected child;
+ *     `cp -r ../assets .` does not, and must stay allowed.
+ * Mirrors pathRelated() in cli/hooks/claudesec-enforce.cjs.
+ */
+function pathRelated(candidate: string, prefix: string, allowAncestor: boolean): boolean {
+  if (!candidate || !prefix) return false;
+  // A trailing separator is the same directory (`rm -rf ~/.claudesec/`), but the
+  // filesystem root is one separator and must not be trimmed away to nothing.
+  const trim = (s: string): string => (s.length > 1 ? s.replace(/[\\/]+$/, '') : s);
+  const c = trim(candidate);
+  const p = trim(prefix);
+  if (c === p) return true;
+  const dir = (s: string): string => (s.endsWith('/') || s.endsWith('\\') ? s : s + '/');
+  if (c.startsWith(dir(p))) return true;             // candidate is inside the prefix
+  return allowAncestor && p.startsWith(dir(c));      // candidate contains the prefix
+}
+
+/**
+ * Does any spelling of `p` land on the control plane? Returns a reason or null.
+ * `destructive` says whether the verb that produced this candidate removes or
+ * displaces a whole directory tree, which is what makes an ANCESTOR of a
+ * protected path count (see pathRelated).
+ */
+function selfPathHit(p: string, destructive: boolean): string | null {
   const forms = selfPathForms(p);
   if (!forms.length) return null;
   const prefixes = selfProtectedPrefixes();
   for (const form of forms) {
     for (const prefix of prefixes) {
-      if (form.includes(prefix.toLowerCase())) return prefix;
+      if (pathRelated(form, prefix.toLowerCase(), destructive)) return prefix;
     }
-    if (SELF_BASENAMES.has(form.split(/[\\/]/).pop() || '')) return 'the ClaudeSec enforcement control plane';
+    const base = form.split(/[\\/]/).pop() || '';
+    if (SELF_BASENAMES.has(base)) return 'the ClaudeSec enforcement control plane';
+    if (AUDIT_KEY_BASENAME.test(base)) return 'the ClaudeSec audit signing key';
     if (serviceUnitHit(form)) return 'the ClaudeSec service definition';
   }
   return null;
@@ -716,29 +871,50 @@ function copyWriteTargets(verb: string, args: string[]): string[] {
   return targets;
 }
 
+/** A path a command would write to, and whether the verb destroys a whole tree. */
+interface WriteTarget {
+  /** The path spelling as it appeared on the command line. */
+  value: string;
+  /** True when the verb removes or displaces a directory tree (DESTRUCTIVE_COMMANDS). */
+  destructive: boolean;
+}
+
 /**
  * Pull the paths a command would WRITE to out of the command line. This is
  * deliberately a heuristic and not a shell parser — it only has to tell "reads
  * this path" from "writes this path", which is what keeps `cat …/settings.json`
  * allowed while `cat foo > …/settings.json` is denied.
  *
- * Two things count as a write target:
+ * Three things count as a write target:
  *   • a token immediately after a `>` / `>>` redirect, whatever produced the
- *     stream; and
+ *     stream;
  *   • every argument of a mutating command (MUTATING_COMMANDS), plus the
- *     conditional writers — `sed`/`perl` given `-i`, and an interpreter given an
- *     inline `-c`/`-e` script (the script body is returned whole AND split, so a
- *     path buried inside it is still compared). The copy-shaped verbs are the one
- *     exception: only their destination counts (see copyWriteTargets).
+ *     conditional writers — `sed`/`perl` given `-i`, `sqlite3` given mutating SQL,
+ *     and an interpreter given an inline `-c`/`-e` script (the script body is
+ *     returned whole AND split, so a path buried inside it is still compared). The
+ *     copy-shaped verbs are the one exception: only their destination counts (see
+ *     copyWriteTargets); and
+ *   • everything a nested shell would write — see the "Shell wrappers" section
+ *     above for exactly how far that goes and where it stops.
+ *
+ * `depth` bounds the shell recursion; callers leave it at 0.
  * Mirrors bashWriteTargets() in cli/hooks/claudesec-enforce.cjs.
  */
-function bashWriteTargets(cmd: string): string[] {
-  const out: string[] = [];
+function bashWriteTargets(cmd: string, depth = 0): WriteTarget[] {
+  const out: WriteTarget[] = [];
   if (!cmd) return out;
   // Resolve indirection before tokenizing: same-command variables first, then
   // $HOME, then `~`. Each layer feeds the next, so `P=~/x; … > $P` ends up as an
   // absolute path the prefix compare can actually see.
   const expanded = expandTilde(expandHomeVar(expandLocalVars(cmd)));
+  // `printf '…' | sh` hands the shell its script on stdin, where no argument scan
+  // can see it. When a pipeline ENDS in a bare shell, every quoted string feeding
+  // it is re-analysed as a script.
+  if (depth < MAX_SHELL_DEPTH && PIPE_INTO_SHELL.test(expanded)) {
+    for (const quoted of expanded.match(/"[^"]*"|'[^']*'/g) || []) {
+      for (const t of bashWriteTargets(quoted.slice(1, -1), depth + 1)) out.push(t);
+    }
+  }
   // Rough split into simple commands: a shell separator or a command substitution
   // starts a new command, and a verb only governs the arguments in its own
   // segment. Parentheses are deliberately NOT split on — an inline
@@ -757,7 +933,34 @@ function bashWriteTargets(cmd: string): string[] {
     }
     if (!tokens.length) continue;
     // A redirect target is a write no matter which command produced the stream.
-    for (const t of tokens) if (t.redirect) out.push(t.val);
+    // A redirect truncates a FILE; aimed at a directory the shell simply errors,
+    // so it never counts as destroying a tree.
+    for (const t of tokens) if (t.redirect) out.push({ value: t.val, destructive: false });
+    // A shell (or `script`/`flock`) handed an inline `-c` payload is a WRAPPER,
+    // not a leaf command: re-analyse the payload. The host is looked for at ANY
+    // token position rather than only at command position, which is what covers
+    // `env sh -c`, `sudo sh -c`, `timeout 5 sh -c`, `xargs sh -c`, `nice -n 5 sh -c`
+    // and `script -q /dev/null sh -c` without enumerating a wrapper grammar each.
+    if (depth < MAX_SHELL_DEPTH) {
+      for (let h = 0; h < tokens.length; h++) {
+        if (!INLINE_SCRIPT_HOSTS.test(tokens[h].val.replace(/^.*[\\/]/, ''))) continue;
+        for (let j = h + 1; j < tokens.length; j++) {
+          const a = tokens[j].val;
+          const eq = a.startsWith('--') ? a.indexOf('=') : -1;
+          // Skip past the shell's other flags and `flock`'s lock-file argument;
+          // the payload is whatever follows the inline-script flag.
+          if (!INLINE_SCRIPT_FLAG.test(eq > 0 ? a.slice(0, eq) : a)) continue;
+          // `--command=…` carries the script inline. An EMPTY inline value means
+          // the tokenizer split the argument at its opening quote
+          // (`--command='rm …'` → `--command=` + `rm …`), so the payload is the
+          // next token — which is also where every other spelling puts it.
+          const inline = eq > 0 ? a.slice(eq + 1) : '';
+          const payload = inline || (j + 1 < tokens.length ? tokens[j + 1].val : '');
+          if (payload) for (const t of bashWriteTargets(payload, depth + 1)) out.push(t);
+          break;
+        }
+      }
+    }
     // Command position: step over env assignments and the usual wrappers.
     let i = 0;
     while (i < tokens.length &&
@@ -775,18 +978,26 @@ function bashWriteTargets(cmd: string): string[] {
       // An inline script can open anything for writing. A script FILE cannot be
       // inspected here, so only the `-c`/`-e` forms are covered.
       (/^(?:python[0-9.]*|node|deno|bun|ruby|perl|php|osascript)$/.test(verb) &&
-        args.some((a) => /^-(?:c|e|p|-eval)$/.test(a)));
+        args.some((a) => /^-(?:c|e|p|-eval)$/.test(a))) ||
+      // `sqlite3 db "UPDATE …"` rewrites the database in place; a SELECT reads it.
+      (verb === 'sqlite3' && args.some((a) => SQLITE_MUTATION.test(a)));
     if (!writes) continue;
+    const destructive =
+      DESTRUCTIVE_COMMANDS.has(verb) ||
+      // `rsync --delete` removes whatever the source tree does not contain, so it
+      // empties its destination the way `rm -r` does.
+      (verb === 'rsync' && args.some((a) => a.startsWith('--delete')));
     // A copy reads its sources and writes only its destination; everything else
     // mutates every path it is handed.
     for (const a of COPY_COMMANDS.has(verb) ? copyWriteTargets(verb, args) : args) {
-      out.push(a);
+      out.push({ value: a, destructive });
       // An inline script arrives as one argument with the path buried inside it
       // (`node -e "fs.writeFileSync('.claude/settings.json', …)"`). Break such an
       // argument on the punctuation a script uses around its string literals so
-      // the path itself is compared too.
+      // the path itself is compared too. A fragment carries no verb of its own, so
+      // it never claims to destroy a tree.
       if (/['"(),=]/.test(a)) {
-        for (const frag of a.split(/['"(),=;\s]+/)) if (frag) out.push(frag);
+        for (const frag of a.split(/['"(),=;\s]+/)) if (frag) out.push({ value: frag, destructive: false });
       }
     }
   }
@@ -804,11 +1015,13 @@ function bashWriteTargets(cmd: string): string[] {
  * bypass. Mirrors selfProtectionHit() in cli/hooks/claudesec-enforce.cjs.
  */
 export function selfProtectionHit(target: string, bashCmd: string): string | null {
-  const hitTarget = selfPathHit(target);
+  // An edit tool's target is a single FILE: it can be overwritten, never
+  // recursively removed, so the ancestor reading does not apply to it.
+  const hitTarget = selfPathHit(target, false);
   if (hitTarget) return hitTarget;
   if (!bashCmd) return null;
   for (const candidate of bashWriteTargets(bashCmd)) {
-    const hit = selfPathHit(candidate);
+    const hit = selfPathHit(candidate.value, candidate.destructive);
     if (hit) return hit;
   }
   // Service control by LABEL rather than by path: `launchctl bootout
