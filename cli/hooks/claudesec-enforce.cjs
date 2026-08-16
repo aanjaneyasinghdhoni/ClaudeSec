@@ -49,36 +49,60 @@ const http = require('node:http');
 const CATASTROPHIC = [
   { re: /\brm\s+-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*\s+(?:--no-preserve-root\s+)?\/\s*(?:$|\*|[;&|>])/m, why: 'rm -rf on the filesystem root (/)' },
   { re: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:?\s*&\s*\}\s*;\s*:/, why: 'fork bomb' },
-  { re: /\b(?:curl|wget)\b[^|>\n]*\|\s*(?:sudo\s+)?(?:ba)?sh\b/i, why: 'piping a remote download straight into a shell' },
-  { re: /\b(?:ba)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/tcp\//i, why: 'reverse shell via /dev/tcp' },
-  { re: /\bmkfs\.[a-z0-9]+\b/i, why: 'formatting a filesystem (mkfs)' },
+  // The shell on the receiving end of the pipe is any POSIX-ish shell, not just
+  // `sh`/`bash` — `zsh`/`ksh`/`dash`/`ash`/`fish` execute the payload just the same.
+  // The trailing \b is what keeps the common hash/inspection pipelines out:
+  // `| shasum`, `| sha256sum` have no word boundary after `sh`.
+  { re: /\b(?:curl|wget)\b[^|>\n]*\|\s*(?:sudo\s+)?(?:ba|z|k|da|fi|a)?sh\b/i, why: 'piping a remote download straight into a shell' },
+  { re: /\b(?:ba|z|k|da|a)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/tcp\//i, why: 'reverse shell via /dev/tcp' },
+  // `mkfs` is only destructive at COMMAND POSITION (line start, after a shell
+  // separator, or handed to sudo/xargs) or when it names a /dev/ target. Matching
+  // the bare word anywhere walled off ordinary work — grepping the threat docs,
+  // committing a message that mentions `mkfs.ext4`, a `sed` script rewriting the
+  // string — none of which formats anything. The second alternative also catches
+  // the sub-command spellings the old word-match missed, e.g. `mkfs -t ext4 /dev/sda`.
+  { re: /(?:^|[\n;&|`(]|&&|\bsudo\s+|\bxargs\s+)\s*mkfs(?:\.[a-z0-9]+)?\b|\bmkfs(?:\.[a-z0-9]+)?\s+(?:-\S+\s+)*\/dev\//i, why: 'formatting a filesystem (mkfs)' },
   { re: /\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|disk|hd|mmcblk)/i, why: 'overwriting a raw disk device (dd of=/dev/...)' },
   { re: /(?:cat|base64|tac|xxd|od|head|tail|gpg)\b[^\n|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))[^\n|]*\|[^\n;&]*\b(?:curl|wget|nc|ncat|telnet)\b/i, why: 'reading a secret and piping it into a network tool' },
   { re: /\b(?:curl|wget)\b[^\n;&|]*(?:-d|--data|--data-binary|--data-raw|-F|--form|-T|--upload-file)[ =]@?[^\n;&|]*(?:id_rsa|id_ed25519|id_ecdsa|\.env(?!\.?(?:example|sample|template|dist|tpl)\b)\b|\.aws\/credentials|\.ssh\/[^\s|]*key|secrets?\.(?:json|ya?ml|env))/i, why: 'uploading a secret file over the network (curl/wget)' },
   // `rm --no-preserve-root` is the single flag that tells GNU rm to delete the
   // filesystem root anyway — match it wherever it sits in an `rm` command line.
   { re: /(?:^|[\n;&|`(]|&&|\bsudo\s+)\s*rm\b[^\n]*\s--no-preserve-root\b/, why: 'rm --no-preserve-root (defeats the filesystem-root guard)' },
-  // Recursive delete of a critical system tree or the whole home. We block the
-  // unambiguously catastrophic targets only and CARVE OUT user/temp territory so a
-  // routine cleanup is never walled off:
-  //   • /etc /boot /System /Library  — whole tree.
-  //   • /usr — bare, or /usr/{bin,lib,libexec,sbin,share,include}, but NOT /usr/local
-  //     (Homebrew / npm-global live there and get wiped constantly).
-  //   • /var — bare, or /var/{lib,log,db,spool,run,cache,mail,backups}, but NOT
-  //     /var/folders or /var/tmp (the macOS $TMPDIR — build/test tools wipe these all
-  //     day). /private/var/… is likewise left alone.
+  // Recursive delete of a critical system tree or the whole home. The system roots
+  // split into two kinds, because a deep path under them means opposite things:
+  //   • Fatal at ANY depth — /etc /boot /sys /bin /sbin, plus the macOS /System and
+  //     /Library. These hold config and executables; deleting any subtree of them
+  //     breaks the machine.
+  //   • Fatal only as the WHOLE target — /var /usr /lib /opt /srv, plus the
+  //     second-level trees that are as fatal as the root itself when named whole
+  //     (/usr/{bin,sbin,lib,lib64,libexec,local,include}, /var/{lib,log,db,spool}).
+  //     Their deep paths are where routine cleanup lives: `rm -rf /var/lib/apt/lists/*`
+  //     and `rm -rf /var/cache/apk/*` end almost every Debian and Alpine image build,
+  //     `rm -rf /usr/share/doc` is the standard slimming line, and `rm -rf /var/log/*.gz`
+  //     is log rotation. The floor used to end each root at the following slash, so all
+  //     four were refused — in monitor mode too, with no per-action escape.
   //   • ~ / $HOME — the whole home, not a sub-path.
-  // Each target ends at a path separator / whitespace / shell separator so /var.bak,
-  // /etcd, /usrlocal (user paths) and ~/project, $HOME/dist stay allowed. The flag
-  // fragment is order-independent (-rf and -fr both match).
-  { re: /\brm\s+-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*\s+(?:--no-preserve-root\s+)?(?:\/(?:etc|boot|System|Library)(?:\/|\s|$|[;&|])|\/usr(?:\/(?:bin|lib|lib64|libexec|sbin|share|include)(?:\/|\s|$|[;&|])|\s|$|[;&|])|\/var(?:\/(?:lib|log|db|spool|run|cache|mail|backups)(?:\/|\s|$|[;&|])|\s|$|[;&|])|~(?:\/?\s|\/?$)|\$HOME(?:\/?\s|\/?$))/m, why: 'recursive delete of a critical system directory or the whole home' },
+  // This mirrors the high-severity twin ('rm -rf on critical system directory') in
+  // server/severityRulesExtra.ts exactly: a floor stricter than the rule it backstops
+  // is a floor nobody can reason about. Each whole-target arm ends at whitespace, a
+  // shell separator or a quote, so /var.bak, /etcd, /usrlocal (user paths) and
+  // ~/project, $HOME/dist stay allowed; an optional quote on the left means
+  // `rm -rf "/var"` no longer slips past. The flag fragment is order-independent
+  // (-rf and -fr both match).
+  { re: /\brm\s+-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*\s+(?:--no-preserve-root\s+)?['"]?(?:\/(?:etc|boot|sys|bin|sbin|System|Library)(?=$|[\/\s;&|>)'"])|\/(?:usr|var)(?:\/(?:bin|sbin|lib|lib64|libexec|local|include|log|db|spool))?\/?(?=$|[\s;&|>)'"])|\/(?:lib|opt|srv)\/?(?=$|[\s;&|>)'"])|~(?:\/?\s|\/?$)|\$HOME(?:\/?\s|\/?$))/m, why: 'recursive delete of a critical system directory or the whole home' },
   // netcat reverse shell: -e / -c hands the connecting peer a program (a shell). The
   // dangerous flag is matched as a standalone token ANYWHERE after the nc command
   // (before or after the host), via a single linear pass — no overlapping `(A|B)*`
   // quantifier, so a long flag list can never trigger catastrophic backtracking.
-  { re: /\b(?:nc|ncat|netcat)\b[^\n]*?\s-[a-zA-Z]*[ec][a-zA-Z]*(?:\s|$)/i, why: 'reverse shell via netcat (nc -e / -c)' },
-  // Reverse shell over /dev/udp (the UDP twin of the /dev/tcp pattern above).
-  { re: /\b(?:ba)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/udp\//i, why: 'reverse shell via /dev/udp' },
+  // The second branch covers ncat's LONG spellings of the same handoff
+  // (--exec / --sh-exec / --lua-exec), which the short-flag branch cannot reach
+  // because `--exec` has no single-dash bundle. Named exactly, so the other long
+  // flags (`--ssl`, `--crlf`, `--send-only`, `--listen`) stay allowed.
+  { re: /\b(?:nc|ncat|netcat)\b[^\n]*?\s(?:-[a-zA-Z]*[ec][a-zA-Z]*(?:\s|$)|--(?:exec|sh-exec|lua-exec)\b)/i, why: 'reverse shell via netcat (nc -e / -c / --exec)' },
+  // Reverse shell over /dev/udp (the UDP twin of the /dev/tcp pattern above); both
+  // accept any POSIX-ish shell name, since `zsh -i`/`ksh -i`/`dash -i` build the
+  // same socket. `fish` is absent by design — it has no /dev/tcp redirect.
+  { re: /\b(?:ba|z|k|da|a)?sh\b[^\n]*-i\b[^\n]*>&?\s*\/dev\/udp\//i, why: 'reverse shell via /dev/udp' },
   // Windows whole-disk / boot destroyers at command position. `format` is required to
   // carry a drive-letter argument (`format c:`, `format /q d:`) so the bare Unix word
   // — `make format`, `npm run format`, a `format` alias, `--format=` — is never walled
@@ -128,13 +152,16 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // secret detector; until then keep this set small and high-confidence. Kept in
 // sync with server/enforceEval.ts (LIVE_SECRET).
 const LIVE_SECRET = [
-  { re: /\bAKIA[0-9A-Z]{16}\b/, why: 'AWS access key id' },
-  { re: /\bASIA[0-9A-Z]{16}\b/, why: 'AWS temporary access key id' },
+  // AKIA (long-term) and ASIA (STS/temporary) share one key-id shape; kept as a
+  // single entry so the two spellings can never drift apart.
+  { re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/, why: 'AWS access key id (long-term or temporary)' },
   { re: /\bghp_[0-9A-Za-z]{36}\b/, why: 'GitHub personal access token' },
-  { re: /\bgh[oprs]_[0-9A-Za-z]{36}\b/, why: 'GitHub OAuth/server/refresh token' },
+  { re: /\bgh[oprsu]_[0-9A-Za-z]{36}\b/, why: 'GitHub OAuth/server/refresh/user token' },
   { re: /\bgithub_pat_[0-9A-Za-z_]{22,}\b/, why: 'GitHub fine-grained token' },
   { re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/, why: 'Slack token' },
-  { re: /\bsk_live_[0-9A-Za-z]{20,}\b/, why: 'Stripe live secret key' },
+  // Stripe ships two live server-side keys: the secret key (sk_) and the restricted
+  // key (rk_). Both authenticate; the publishable `pk_live_` deliberately does not match.
+  { re: /\b[rs]k_live_[0-9A-Za-z]{20,}\b/, why: 'Stripe live secret/restricted key' },
   { re: /\bAIza[0-9A-Za-z_\-]{35}\b/, why: 'Google API key' },
   { re: /\bsk-proj-[A-Za-z0-9_\-]{20,}\b/, why: 'OpenAI project API key' },
   { re: /\bsk-ant-[A-Za-z0-9_\-]{20,}\b/, why: 'Anthropic API key' },
@@ -142,6 +169,10 @@ const LIVE_SECRET = [
   { re: /\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b/, why: 'SendGrid API key' },
   { re: /\bSK[0-9a-fA-F]{32}\b/, why: 'Twilio API key SID' },
   { re: /\bnpm_[A-Za-z0-9]{36}\b/, why: 'npm access token' },
+  // HuggingFace user access token: `hf_` + exactly 34 LETTERS. The all-alpha,
+  // fixed-length body is what keeps the ubiquitous `hf_token` / `hf_home` /
+  // `hf_hub_download` identifiers out.
+  { re: /\bhf_[A-Za-z]{34}\b/, why: 'HuggingFace user access token' },
   { re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/, why: 'private key block' },
 ];
 
@@ -153,65 +184,419 @@ const SECRET_PLACEHOLDERS = new Set([
   'AKIAIOSFODNN7EXAMPLE',
 ]);
 
+// An exact-value allowlist cannot scale: every project writes a `.env.example`, and
+// each one spells its fill-me-in differently (`sk-ant-api03-REPLACE-ME-WITH-YOUR-KEY`,
+// `xoxb-YOUR-SLACK-TOKEN-HERE`, `glpat-XXXXXXXXXXXXXXXXXXXX`). Those are the exact
+// SHAPE of a live key, so the floor refused to let anyone author a template.
+//
+// So a match is also released when the MATCHED TOKEN ITSELF carries an obvious
+// fill-me-in marker. Scoped deliberately narrow:
+//   • Only the matched credential is tested — never the surrounding text, so a real
+//     key sitting in a file that happens to say "example" is still blocked.
+//   • Every marker is a word a credential generator cannot emit: runs of x/X/* (no
+//     issuer pads a key that way), or an English fill-me-in word. Real tokens are
+//     base62/hex and carry no such substring.
+const SECRET_PLACEHOLDER_MARKERS =
+  /(?:x{4,}|X{4,}|\*{4,}|your[_\-]?|replace|example|placeholder|changeme|change[_\-]?me|dummy|redacted|<[a-z_]+>|\.{3,})/i;
+
 /**
  * Does the edit CONTENT carry an unambiguous live credential? Returns the matching
  * entry ({ re, why }) or null. This is the minimal DLP floor — the only reason an
- * edit's content (not its path) can be blocked. A match whose entire value is a
- * known placeholder (SECRET_PLACEHOLDERS) is ignored. See LIVE_SECRET above.
+ * edit's content (not its path) can be blocked. A match is ignored when its value is
+ * a known placeholder (SECRET_PLACEHOLDERS) or the matched token itself carries a
+ * fill-me-in marker (SECRET_PLACEHOLDER_MARKERS). See LIVE_SECRET above.
  */
 function liveSecretHit(content) {
   if (!content) return null;
   for (const r of LIVE_SECRET) {
     const m = content.match(r.re);
-    if (m && !SECRET_PLACEHOLDERS.has(m[0])) return r;
+    if (!m) continue;
+    if (SECRET_PLACEHOLDERS.has(m[0])) continue;
+    if (SECRET_PLACEHOLDER_MARKERS.test(m[0])) continue;
+    return r;
   }
   return null;
 }
 
 // ── Self-protection floor (control plane) ────────────────────────────────────
 // ALWAYS blocks, regardless of CLAUDESEC_MODE — an agent must never be able to
-// edit (or shell-redirect into) the enforcement control plane and unhook the
-// enforcer. Guards the whole ~/.claudesec/hooks/ dir (enforce-config.json, the
-// hook itself, the enforcement snapshot, protected-paths.json, rules.json) plus
-// the Claude settings files that register the PreToolUse hook. This guards AGENT
-// tool calls only; the ClaudeSec SERVER process legitimately writes these files
-// on boot — a different process, not subject to this hook. Kept in sync with
-// server/enforceEval.ts (selfProtectionHit).
+// overwrite the enforcement control plane and unhook the enforcer. A security
+// tool that cannot notice being switched off has a hole under everything else it
+// claims, so this floor is mode-independent like the catastrophic one.
+//
+// Two things make the difference between a real floor and theatre:
+//   • It is anchored on the WRITE, never on the filename. Reading, grepping or
+//     merely naming `settings.json` in a commit message is ordinary developer
+//     work every hour of the day; only an action that could CHANGE the file is
+//     denied. (Reads used to be denied too, which walled off the agent looking at
+//     its own settings for no security gain — none of these files hold a secret.)
+//   • Every candidate path is normalized before it is compared: `~` and `$HOME`
+//     expanded, relative and `../` spellings resolved against the cwd, and the
+//     symlink chain followed. A floor a `../` walks around protects nothing.
+//
+// This guards AGENT tool calls only; the ClaudeSec SERVER writes these files from
+// its own process, which is not subject to this hook. The escape hatch is the
+// existing CLAUDESEC_HOOKS_BYPASS=1 (which is itself recorded in the enforce feed).
+
+// Control-plane FILENAMES. These four names are ClaudeSec's own artefacts and
+// mean the same thing wherever they sit — the installed copies under
+// ~/.claudesec/hooks, a Docker-bundled copy beside the hook, or the generated
+// copies in a checkout. Matching the basename covers every layout without having
+// to enumerate them, and the names are specific enough that nothing else on a
+// developer's disk is called this.
+const SELF_BASENAMES = new Set([
+  'enforce-config.json',
+  'rules-enforcement.json',
+  'protected-paths.json',
+  'claudesec-enforce.cjs',
+]);
+
+// Shell commands that WRITE. Anything in this set mutates whatever path it is
+// handed, so naming a control-plane file anywhere in its arguments is a block.
+const MUTATING_COMMANDS = new Set([
+  'rm', 'unlink', 'truncate', 'shred', 'srm', 'mv', 'cp', 'install', 'ln', 'dd',
+  'tee', 'chmod', 'chown', 'chgrp', 'chattr', 'chflags', 'touch', 'mkdir',
+  'rmdir', 'rsync', 'ditto', 'patch', 'sponge', 'plutil', 'defaults',
+  'launchctl', 'systemctl',
+]);
+
+// Words that sit in front of the real verb and must be skipped when working out
+// what a command actually runs (`sudo tee …`, `FOO=1 rm …`, `xargs rm …`).
+const COMMAND_PREFIXES = /^(?:sudo|doas|env|nohup|command|exec|time|nice|xargs|then|do|else)$/;
+
+/**
+ * Directories and files that, if written, can switch enforcement off. Resolved
+ * fresh on every call so the floor tracks CLAUDESEC_HOME, the agent's cwd, and
+ * whichever artefacts this hook is actually reading.
+ */
 function selfProtectedPrefixes() {
   const home = os.homedir();
   // Honor CLAUDESEC_HOME exactly as the installer/server do, so the guard tracks
   // wherever the control plane actually lives.
   const csecHome = process.env.CLAUDESEC_HOME || path.join(home, '.claudesec');
-  // Project-level Claude settings (<cwd>/.claude/settings.json and
-  // settings.local.json) are ALSO honored by Claude Code, so an agent could write
-  // those to register a competing PreToolUse hook and unhook the enforcer. Guard
-  // them alongside the user-level files. cwd is resolved at call time so the floor
-  // tracks whichever project the agent is operating in.
+  // Project-level Claude settings (<cwd>/.claude/…) are ALSO honored by Claude
+  // Code, so an agent could write those to register a competing PreToolUse hook
+  // and unhook the enforcer. Guard them alongside the user-level files. cwd is
+  // resolved at call time so the floor tracks whichever project the agent is in.
   const cwd = process.cwd();
-  return [
-    path.join(csecHome, 'hooks'),          // whole enforcement control-plane dir
+  const out = [
+    path.join(csecHome, 'hooks'),           // whole enforcement control-plane dir
+    path.join(csecHome, 'audit-key'),       // prefix: audit-key + its .pem siblings
+    path.join(csecHome, 'audit-anchor.json'),
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.claude', 'settings.local.json'),
+    path.join(home, '.claude', 'hooks'),
     path.join(cwd, '.claude', 'settings.json'),
     path.join(cwd, '.claude', 'settings.local.json'),
+    path.join(cwd, '.claude', 'hooks'),
+    // The hook that is running RIGHT NOW, and the directory it loads its
+    // artefacts from. Self-reference rather than a hardcoded layout, so an
+    // installed copy, a Docker copy and an in-repo copy each protect themselves.
+    path.resolve(__dirname),
+    // The three files this hook actually reads. Going through the same resolvers
+    // the hook uses means an explicit CLAUDESEC_ENFORCE_* override is protected
+    // too, instead of only the default location.
+    resolveConfigPath(),
+    resolveSnapshotPath(),
+    resolveProtectedPathsPath(),
   ];
+  const seen = new Set();
+  const uniq = [];
+  for (const p of out) {
+    if (!p) continue;
+    const k = p.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(p);
+  }
+  return uniq;
 }
 
 /**
- * Does the call's file TARGET or Bash command touch the enforcement control
- * plane? Matches case-insensitively on the normalized path (case-insensitive
- * filesystems make a case-sensitive compare a trivial bypass). Returns the
- * matching prefix or null. Never matches edit CONTENT — only the target path or
- * the (HOME-expanded) Bash command, so editing a file that merely *mentions* the
- * control plane is not blocked.
+ * Is this path the launchd plist / systemd unit that keeps ClaudeSec running?
+ * Matched by SHAPE rather than a literal path because the file name carries the
+ * bundle id and the directory differs per platform and per install (user agent,
+ * system daemon, user systemd unit). `pathLower` must already be lowercased.
+ */
+function serviceUnitHit(pathLower) {
+  if (!pathLower) return false;
+  return (
+    /(?:^|\/)(?:launchagents|launchdaemons)\/[^/]{0,80}claudesec[^/]{0,40}\.plist/.test(pathLower) ||
+    /(?:^|\/)systemd\/[^/]{0,40}\/[^/]{0,40}claudesec[^/]{0,40}\.(?:service|timer)/.test(pathLower)
+  );
+}
+
+/**
+ * Expand a leading `~` in every argument position of a shell command. The hook
+ * already expands `$HOME` (expandHomeVar); a tilde is the far more common
+ * spelling and, left literal, let `echo x > ~/.claudesec/hooks/enforce-config.json`
+ * sail straight past an absolute-prefix compare.
+ */
+function expandTilde(text) {
+  if (!text) return text;
+  const home = os.homedir();
+  return text.replace(/(^|[\s"'=:(])~(?=[/\s"')]|$)/g, (_m, lead) => lead + home);
+}
+
+/**
+ * Substitute variables assigned EARLIER IN THE SAME command string, so
+ * `P=~/.claude/settings.json; echo x > $P` still resolves onto a real path
+ * instead of hiding behind one letter of indirection.
+ *
+ * Only literal, same-command assignments are followed. A variable exported by
+ * the parent shell, set in an earlier command, or built by command substitution
+ * is out of reach of a static pre-exec hook — the server-side detection layer
+ * remains the backstop for those, exactly as the catastrophic floor documents.
+ */
+function expandLocalVars(cmd) {
+  if (!cmd || cmd.indexOf('$') === -1) return cmd;
+  const assigned = new Map();
+  const rx = /(?:^|[\n;&|(`]|\bexport\s+)\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|'([^']*)'|([^\s;&|]*))/g;
+  let m;
+  while ((m = rx.exec(cmd)) !== null) {
+    const value = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+    if (value) assigned.set(m[1], value);
+  }
+  if (!assigned.size) return cmd;
+  return cmd.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (whole, braced, bare) => {
+      const v = assigned.get(braced || bare);
+      return v === undefined ? whole : v;
+    },
+  );
+}
+
+/**
+ * Every spelling of `p` that should be compared against the protected prefixes:
+ * the literal, the `~`/`$HOME`-expanded form, that form resolved against the cwd
+ * (which also collapses `..`), and finally its realpath. The last two are what
+ * stop the two cheapest bypasses — a relative or `../`-laundered path, and a
+ * symlink planted to point into the control plane. resolveRealpath already falls
+ * back to the nearest existing ancestor, so a file that does not exist yet (the
+ * usual case for a Write) still resolves through a symlinked parent directory.
+ */
+function selfPathForms(p) {
+  if (!p) return [];
+  const home = os.homedir();
+  const forms = [];
+  const push = (v) => { if (v && !forms.includes(v)) forms.push(v); };
+  push(p.toLowerCase());
+  const expanded = expandHomeVar(
+    p === '~' ? home : p.startsWith('~/') ? path.join(home, p.slice(2)) : p,
+  );
+  push(expanded.toLowerCase());
+  let abs = '';
+  try {
+    abs = path.resolve(process.cwd(), expanded);
+    push(abs.toLowerCase());
+  } catch (_) {
+    // An unresolvable path keeps the literal forms above; never throw.
+  }
+  const real = resolveRealpath(abs || expanded);
+  if (real) push(real.toLowerCase());
+  return forms;
+}
+
+/** Does any spelling of `p` land on the control plane? Returns a reason or null. */
+function selfPathHit(p) {
+  const forms = selfPathForms(p);
+  if (!forms.length) return null;
+  const prefixes = selfProtectedPrefixes();
+  for (const form of forms) {
+    for (const prefix of prefixes) {
+      if (form.includes(prefix.toLowerCase())) return prefix;
+    }
+    if (SELF_BASENAMES.has(form.split(/[\\/]/).pop() || '')) return 'the ClaudeSec enforcement control plane';
+    if (serviceUnitHit(form)) return 'the ClaudeSec service definition';
+  }
+  return null;
+}
+
+/**
+ * Copy-shaped commands: the DESTINATION is the write, the earlier path arguments
+ * are reads. Treating every argument of a `cp` as a write refused
+ * `cp ~/.claude/settings.json /tmp/backup.json` — an ordinary backup, and a READ
+ * of the control plane, which the floor is explicitly not meant to police.
+ *
+ * `mv` is deliberately absent: it REMOVES its source, so both ends of an `mv` are
+ * writes. So are `rm`, `truncate`, `shred`, `chmod`, `chown` and `ln` — all of
+ * them keep the every-argument reading.
+ */
+const COPY_COMMANDS = new Set(['cp', 'rsync', 'ditto', 'install']);
+
+/**
+ * Work out which arguments of a copy-shaped command are WRITE targets.
+ *
+ *   • Normally the destination is the final path argument (`cp a b c dir/`).
+ *   • GNU `cp`/`install` accept `-t DIR` / `--target-directory=DIR`, which puts the
+ *     destination FIRST and the sources last. Only those two verbs get that
+ *     reading: rsync's `-t` means "preserve times", so honouring it there would let
+ *     `rsync -t evil ~/.claudesec/hooks/x` walk straight past the floor.
+ *   • An `-o` / `--output` style flag names an output path; its value is added as an
+ *     EXTRA target and never suppresses the trailing one, so `install -o root src dst`
+ *     (where `-o` is really the owner) still reports `dst`. The cost is one harmless
+ *     extra candidate.
+ *   • `install -d` creates every directory it is handed, so all of them are writes.
+ *
+ * Flags whose value sits in the next token are not modelled beyond those cases; an
+ * unrecognised flag value simply becomes a positional candidate, which at worst adds
+ * a target. Erring toward MORE targets keeps the floor from being talked around.
+ */
+function copyWriteTargets(verb, args) {
+  const targets = [];
+  const positional = [];
+  const honorsTargetDir = verb === 'cp' || verb === 'install';
+  let explicitDir = false;
+  let makeDirs = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    // POSIX end-of-options: everything after it is a path.
+    if (a === '--') { for (const rest of args.slice(i + 1)) positional.push(rest); break; }
+    const eq = a.startsWith('--') ? a.indexOf('=') : -1;
+    const name = eq > 0 ? a.slice(0, eq) : a;
+    const inline = eq > 0 ? a.slice(eq + 1) : null;
+    if (honorsTargetDir && (name === '-t' || name === '--target-directory')) {
+      const v = inline !== null ? inline : args[i + 1];
+      if (v) { targets.push(v); explicitDir = true; if (inline === null) i++; }
+      continue;
+    }
+    if (name === '-o' || name === '--output' || name === '--output-file') {
+      const v = inline !== null ? inline : args[i + 1];
+      if (v && !v.startsWith('-')) { targets.push(v); if (inline === null) i++; }
+      continue;
+    }
+    if (a.length > 1 && a.startsWith('-')) {
+      if (verb === 'install' && /^-[a-zA-Z]*d/.test(name)) makeDirs = true;
+      continue;
+    }
+    positional.push(a);
+  }
+  if (makeDirs) return targets.concat(positional);
+  if (explicitDir) return targets;
+  if (positional.length) targets.push(positional[positional.length - 1]);
+  return targets;
+}
+
+/**
+ * Pull the paths a Bash command would WRITE to out of the command line. This is
+ * deliberately a heuristic and not a shell parser — it only has to tell "reads
+ * this path" from "writes this path", which is what keeps `cat …/settings.json`
+ * allowed while `cat foo > …/settings.json` is denied.
+ *
+ * Two things count as a write target:
+ *   • a token immediately after a `>` / `>>` redirect, whatever produced the
+ *     stream; and
+ *   • every argument of a mutating command (MUTATING_COMMANDS), plus the
+ *     conditional writers — `sed`/`perl` given `-i`, and an interpreter given an
+ *     inline `-c`/`-e` script (the script body is returned whole, so a path
+ *     buried inside it is still compared). The copy-shaped verbs are the one
+ *     exception: only their destination counts (see copyWriteTargets).
+ */
+function bashWriteTargets(cmd) {
+  const out = [];
+  if (!cmd) return out;
+  // Resolve indirection before tokenizing: same-command variables first, then
+  // $HOME, then `~`. Each layer feeds the next, so `P=~/x; … > $P` ends up as an
+  // absolute path the prefix compare can actually see.
+  const expanded = expandTilde(expandHomeVar(expandLocalVars(cmd)));
+  // Rough split into simple commands: a shell separator or a command
+  // substitution starts a new command, and a verb only governs the arguments in
+  // its own segment. Parentheses are deliberately NOT split on — an inline
+  // `python -c "open(...)"` script is one argument and must stay intact.
+  for (const seg of expanded.split(/[\n;|&`]+|\$\(/)) {
+    const tokens = [];
+    const rx = /(>>?|<|"([^"]*)"|'([^']*)'|[^\s"'<>|;&]+)/g;
+    let m;
+    let redirect = false;
+    while ((m = rx.exec(seg)) !== null) {
+      if (m[0] === '>' || m[0] === '>>') { redirect = true; continue; }
+      if (m[0] === '<') { redirect = false; continue; }
+      const val = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[0];
+      tokens.push({ val, redirect });
+      redirect = false;
+    }
+    if (!tokens.length) continue;
+    // A redirect target is a write no matter which command produced the stream.
+    for (const t of tokens) if (t.redirect) out.push(t.val);
+    // Command position: step over env assignments and the usual wrappers.
+    let i = 0;
+    while (i < tokens.length &&
+           (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i].val) || COMMAND_PREFIXES.test(tokens[i].val))) {
+      i++;
+    }
+    if (i >= tokens.length) continue;
+    const verb = tokens[i].val.replace(/^.*[\\/]/, '');
+    const args = tokens.slice(i + 1).map((t) => t.val);
+    const writes =
+      MUTATING_COMMANDS.has(verb) ||
+      // `sed -i` / `perl -pi -e` edit in place; without -i they only read.
+      (/^(?:sed|perl|ruby|gawk|awk)$/.test(verb) &&
+        args.some((a) => a === '--in-place' || /^-[a-z]*i/.test(a))) ||
+      // An inline script can open anything for writing. A script FILE cannot be
+      // inspected here, so only the `-c`/`-e` forms are covered.
+      (/^(?:python[0-9.]*|node|deno|bun|ruby|perl|php|osascript)$/.test(verb) &&
+        args.some((a) => /^-(?:c|e|p|-eval)$/.test(a)));
+    if (!writes) continue;
+    // A copy reads its sources and writes only its destination; everything else
+    // mutates every path it is handed.
+    for (const a of COPY_COMMANDS.has(verb) ? copyWriteTargets(verb, args) : args) {
+      out.push(a);
+      // An inline script arrives as one argument with the path buried inside it
+      // (`node -e "fs.writeFileSync('.claude/settings.json', …)"`). Break such an
+      // argument on the punctuation a script uses around its string literals so
+      // the path itself is compared too.
+      if (/['"(),=]/.test(a)) {
+        for (const frag of a.split(/['"(),=;\s]+/)) if (frag) out.push(frag);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Does the call's file TARGET or Bash command WRITE to the enforcement control
+ * plane? Returns a short description of what was hit, or null.
+ *
+ * Never matches edit CONTENT — only the target path or the command — so editing
+ * a file that merely *mentions* the control plane is not blocked. Comparison is
+ * case-INSENSITIVE because on macOS and Windows `/X/.CLAUDESEC` and
+ * `/x/.claudesec` are the same file, which would make a case-sensitive compare a
+ * one-character bypass.
  */
 function selfProtectionHit(target, bashCmd) {
-  const prefixes = selfProtectedPrefixes();
-  const t = target ? target.toLowerCase() : '';
-  const c = bashCmd ? expandHomeVar(bashCmd).toLowerCase() : '';
-  for (const p of prefixes) {
-    const f = p.toLowerCase();
-    if ((t && t.includes(f)) || (c && c.includes(f))) return p;
+  const hitTarget = selfPathHit(target);
+  if (hitTarget) return hitTarget;
+  if (!bashCmd) return null;
+  for (const candidate of bashWriteTargets(bashCmd)) {
+    const hit = selfPathHit(candidate);
+    if (hit) return hit;
+  }
+  // Service control by LABEL rather than by path: `launchctl bootout
+  // gui/501/com.claudesec.agent` and `systemctl --user disable claudesec` never
+  // name the unit file, but stop the supervisor just as dead.
+  if (/\b(?:launchctl|systemctl)\b[^\n;&|]{0,40}\b(?:unload|bootout|disable|remove|stop|mask|kill)\b[^\n;&|]{0,120}claudesec/i.test(bashCmd)) {
+    return 'the ClaudeSec service definition';
+  }
+  // ClaudeSec's OWN removal path. The floor guards the control-plane files and the
+  // service label, but our CLI takes the enforcer apart through neither: an agent
+  // never had to defeat the floor, it could just ask the product to remove itself.
+  // `uninstall-hook` unregisters the PreToolUse hook; `uninstall`/`stop` are aliases
+  // for the same teardown that removes the launchd/systemd unit. `install-hook` is
+  // deliberately NOT matched — refreshing the enforcer must stay possible.
+  //
+  // Matched by SHAPE, like serviceUnitHit(): the binary is `claudesec` on PATH or
+  // the entrypoint invoked directly (`node cli/init.mjs …`, `tsx ./cli/init.ts …`),
+  // it must sit at COMMAND POSITION (line start, after a shell separator, inside a
+  // quoted `-c` payload, or handed to a runner), and only flag tokens may sit
+  // between it and the subcommand. Those two anchors are what keep ordinary work
+  // out: `git commit -m "docs: explain claudesec uninstall-hook"` names the command
+  // without a command position, `npm uninstall lodash` never names ours, and
+  // `~/.claudesec/hooks/…` has no whitespace after the binary name.
+  //
+  // An operator uninstalls from a shell OUTSIDE the agent, which no hook sees.
+  if (/(?:^|[\n;&|`("']|&&|\b(?:sudo|doas|env|npx|pnpm|npm|yarn|bunx|bun|node|tsx|exec|command|xargs)\s+)\s*(?:[^\s;&|]{0,60}\/)?(?:claudesec|init\.(?:mjs|ts|cjs|js))\s+(?:-{1,2}[a-z0-9-]{1,20}\s+){0,3}(?:uninstall-hook|uninstall|stop)\b/i.test(bashCmd)) {
+    return 'the ClaudeSec uninstall command';
   }
   return null;
 }
@@ -1009,13 +1394,18 @@ function run(input) {
   }
 
   // 3a2. Self-protection floor — ALWAYS blocks regardless of mode. An agent must
-  // not be able to edit the enforcement control plane (~/.claudesec/hooks/) or the
-  // Claude settings that register this hook, which would let it disable the
-  // enforcer. Matches the file TARGET or the Bash command only, never edit
-  // content. (The ClaudeSec server writes these files from a different process,
-  // which is not subject to this hook.)
+  // not be able to edit the enforcement control plane (the ~/.claudesec/hooks/
+  // artefacts, this hook, the service definition) or the Claude settings that
+  // register this hook, which would let it disable the enforcer. Matches the file
+  // TARGET or the WRITE targets of the Bash command only, never edit content.
+  // (The ClaudeSec server writes these files from a different process, which is
+  // not subject to this hook.)
   {
-    const hitSelf = selfProtectionHit(fileTarget, bashCmd);
+    // Reads are exempt: none of these files hold a secret, so denying a look at
+    // them bought nothing and walled off the agent inspecting its own settings.
+    // Every other tool carrying a file target is treated as a potential writer.
+    const selfTarget = READ_TOOLS.has(toolName) ? '' : fileTarget;
+    const hitSelf = selfProtectionHit(selfTarget, bashCmd);
     if (hitSelf) {
       return blockAndLog(
         `⛔ ClaudeSec: '${hitSelf}' is part of the enforcement control plane and ` +

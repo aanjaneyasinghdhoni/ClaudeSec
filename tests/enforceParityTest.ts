@@ -21,6 +21,19 @@
  * This test FAILS on that drift and PASSES once the proxy extracts the raw command
  * string + URL and applies the SSRF floor (bugs 1 and 2).
  *
+ * SELF-PROTECTION COVERAGE. An early version of this gate compared only ABSOLUTE,
+ * already-`$HOME`-expanded paths — which is exactly the shape both layers happened
+ * to handle — so it passed green while the two sides genuinely disagreed on every
+ * other spelling of the same file. The self-protection cases below are therefore
+ * written as a matrix of SPELLINGS (tilde, `$HOME`, relative, `../`, a symlinked
+ * parent, a shell variable), WRITE VERBS (redirect, `sed -i`, `tee`, `cp`, `mv`,
+ * `chmod`, an inline interpreter script), and ARTEFACT SHAPES (control-plane
+ * basenames anywhere on disk, `.claude/hooks/`, the launchd plist, a systemd unit,
+ * service control by label) — each paired with the benign counterpart that must
+ * still be allowed (reads, `sed` without `-i`, a commit message naming
+ * settings.json, `.vscode/settings.json`). A regression on either layer flips one
+ * of these and fails the gate.
+ *
  * Mode: enforce is pinned via a temp CLAUDESEC_ENFORCE_CONFIG so the proxy's
  * catastrophic/rule/protected/secret floors are hard blocks (the proxy treats the
  * catastrophic floor as a mode-gated trigger by design — see enforceEval.ts header
@@ -55,8 +68,17 @@ function check(name: string, fn: () => void): void {
   try { fn(); passed++; } catch (e) { failures.push(`${name}: ${(e as Error).message}`); }
 }
 
+// Relative and `../` spellings are resolved against the process cwd on BOTH
+// layers (the hook is spawned with cwd=REPO_ROOT; the proxy runs in-process), so
+// pin the cwd rather than inheriting whatever directory the runner was launched
+// from. Without this the relative-path cases below would be non-deterministic.
+if (process.cwd() !== REPO_ROOT) process.chdir(REPO_ROOT);
+
 // ── Shared sandbox config: one enforce-config, one snapshot, one protected list. ─
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-parity-'));
+// realpath'd: on macOS os.tmpdir() is itself a symlink (/var → /private/var), and
+// the symlink-resolution case below compares a resolved path against a prefix
+// built from this directory — they must be spelled the same way.
+const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'csec-parity-')));
 const ENFORCE_CONFIG = path.join(TMP, 'enforce-config.json');
 fs.writeFileSync(ENFORCE_CONFIG, JSON.stringify({ mode: 'enforce', overrides: {} }), 'utf8');
 const MONITOR_CONFIG = path.join(TMP, 'monitor-config.json');
@@ -69,7 +91,21 @@ fs.writeFileSync(SNAPSHOT, JSON.stringify([
 const EMPTY_PROTECTED = path.join(TMP, 'protected-empty.json');
 fs.writeFileSync(EMPTY_PROTECTED, JSON.stringify([]), 'utf8');
 
+// A sandboxed CLAUDESEC_HOME, pinned for BOTH layers so the control-plane
+// directory the floor guards is the same on each side and never depends on
+// whether the machine running the tests has a real ~/.claudesec install.
+const CSEC_HOME = path.join(TMP, 'csechome');
+const CSEC_HOOKS = path.join(CSEC_HOME, 'hooks');
+fs.mkdirSync(CSEC_HOOKS, { recursive: true });
+
+// A symlink whose TARGET is the control-plane directory. Writing through it names
+// no protected string at all, so it is caught only if the layer resolves the
+// symlink chain — the cheapest bypass of a literal-substring floor.
+const LINKED_PLANE = path.join(TMP, 'linked-plane');
+fs.symlinkSync(CSEC_HOOKS, LINKED_PLANE, 'dir');
+
 const HOME = os.homedir();
+const HOME_SETTINGS = path.join(HOME, '.claude', 'settings.json');
 
 // ── Layer A — spawn the real hook, return its exit verdict. ──────────────────
 function runHook(
@@ -88,6 +124,7 @@ function runHook(
     env.CLAUDESEC_ENFORCE_CONFIG = cfg;
     env.CLAUDESEC_ENFORCE_RULES = SNAPSHOT;
     env.CLAUDESEC_PROTECTED_PATHS = EMPTY_PROTECTED;
+    env.CLAUDESEC_HOME = CSEC_HOME;
     Object.assign(env, extraEnv); // case-specific opt-outs (e.g. allow-local fetch)
 
     const child = spawn(process.execPath, [HOOK], { cwd: REPO_ROOT, env });
@@ -131,31 +168,27 @@ function runProxy(
   extraEnv: Record<string, string> = {},
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const prevCfg = process.env.CLAUDESEC_ENFORCE_CONFIG;
-    const prevRules = process.env.CLAUDESEC_ENFORCE_RULES;
-    const prevPP = process.env.CLAUDESEC_PROTECTED_PATHS;
-    const prevPort = process.env.CLAUDESEC_PORT;
-    const prevAllow = process.env.CLAUDESEC_ALLOW_LOCAL_FETCH;
-    process.env.CLAUDESEC_ENFORCE_CONFIG = cfg;
-    process.env.CLAUDESEC_ENFORCE_RULES = SNAPSHOT;
-    process.env.CLAUDESEC_PROTECTED_PATHS = EMPTY_PROTECTED;
-    process.env.CLAUDESEC_PORT = '9';
-    delete process.env.CLAUDESEC_ALLOW_LOCAL_FETCH;
-    for (const [k, v] of Object.entries(extraEnv)) process.env[k] = v;
+    // The proxy runs IN-PROCESS, so every variable it reads has to be pinned to
+    // the sandbox and put back afterwards — including whatever the ambient shell
+    // had. Remember the previous value the first time each key is touched, then
+    // restore exactly that (delete when it was unset).
+    const prev = new Map<string, string | undefined>();
+    const setEnv = (k: string, v: string | undefined) => {
+      if (!prev.has(k)) prev.set(k, process.env[k]);
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    };
+    setEnv('CLAUDESEC_ENFORCE_CONFIG', cfg);
+    setEnv('CLAUDESEC_ENFORCE_RULES', SNAPSHOT);
+    setEnv('CLAUDESEC_PROTECTED_PATHS', EMPTY_PROTECTED);
+    setEnv('CLAUDESEC_HOME', CSEC_HOME);
+    setEnv('CLAUDESEC_PORT', '9');
+    setEnv('CLAUDESEC_MODE', undefined); // the pinned config is the only mode source
+    setEnv('CLAUDESEC_ALLOW_LOCAL_FETCH', undefined);
+    for (const [k, v] of Object.entries(extraEnv)) setEnv(k, v);
 
     const restore = () => {
-      const set = (k: string, v: string | undefined) => {
+      for (const [k, v] of prev) {
         if (v === undefined) delete process.env[k]; else process.env[k] = v;
-      };
-      set('CLAUDESEC_ENFORCE_CONFIG', prevCfg);
-      set('CLAUDESEC_ENFORCE_RULES', prevRules);
-      set('CLAUDESEC_PROTECTED_PATHS', prevPP);
-      set('CLAUDESEC_PORT', prevPort);
-      set('CLAUDESEC_ALLOW_LOCAL_FETCH', prevAllow);
-      for (const k of Object.keys(extraEnv)) {
-        if (!(k in { CLAUDESEC_ENFORCE_CONFIG: 0, CLAUDESEC_ENFORCE_RULES: 0, CLAUDESEC_PROTECTED_PATHS: 0, CLAUDESEC_PORT: 0, CLAUDESEC_ALLOW_LOCAL_FETCH: 0 })) {
-          delete process.env[k];
-        }
       }
     };
 
@@ -348,6 +381,236 @@ async function main(): Promise<void> {
       mcpName: 'bash', mcpArgs: { command: `echo '{}' > ${path.join(REPO_ROOT, '.claude', 'settings.json')}` },
       cfg: ENFORCE_CONFIG, expectBlock: true,
     },
+    // ── Self-protection floor: PATH NORMALIZATION ───────────────────────────────
+    //    The floor used to compare `$HOME`-expanded ABSOLUTE literals only, on both
+    //    layers, which meant every other spelling of the same file walked straight
+    //    through it. Each case below is a different spelling of ONE path, and each
+    //    one must land on the same verdict on both layers.
+    {
+      name: 'self-protect: tilde redirect into ~/.claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `echo '{}' > ~/.claude/settings.json` },
+      mcpName: 'bash', mcpArgs: { command: `echo '{}' > ~/.claude/settings.json` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: $HOME redirect into ~/.claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `echo '{}' > $HOME/.claude/settings.json` },
+      mcpName: 'bash', mcpArgs: { command: `echo '{}' > $HOME/.claude/settings.json` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: RELATIVE redirect into .claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `echo '{}' > .claude/settings.json` },
+      mcpName: 'bash', mcpArgs: { command: `echo '{}' > .claude/settings.json` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: ../ traversal back into .claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `echo '{}' > docs/../.claude/settings.json` },
+      mcpName: 'bash', mcpArgs: { command: `echo '{}' > docs/../.claude/settings.json` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: RELATIVE edit target .claude/settings.json',
+      hookTool: 'Write', hookInput: { file_path: '.claude/settings.json', content: '{}' },
+      mcpName: 'write', mcpArgs: { file_path: '.claude/settings.json', content: '{}' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: SYMLINKED parent pointing into the control plane',
+      hookTool: 'Write', hookInput: { file_path: path.join(LINKED_PLANE, 'notes.txt'), content: 'x' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(LINKED_PLANE, 'notes.txt'), content: 'x' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: VAR indirection (P=~/.claude/settings.json; … > $P)',
+      hookTool: 'Bash', hookInput: { command: `P=~/.claude/settings.json; echo '{}' > $P` },
+      mcpName: 'bash', mcpArgs: { command: `P=~/.claude/settings.json; echo '{}' > $P` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+
+    // ── Self-protection floor: CONTROL-PLANE ARTEFACTS BY NAME AND SHAPE ────────
+    {
+      name: 'self-protect: enforce-config.json written anywhere on disk',
+      hookTool: 'Write', hookInput: { file_path: path.join(TMP, 'stash', 'enforce-config.json'), content: '{}' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(TMP, 'stash', 'enforce-config.json'), content: '{}' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: user-level .claude/hooks/ (competing PreToolUse hook)',
+      hookTool: 'Write', hookInput: { file_path: path.join(HOME, '.claude', 'hooks', 'rogue.cjs'), content: 'x' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(HOME, '.claude', 'hooks', 'rogue.cjs'), content: 'x' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: project <cwd>/.claude/hooks/',
+      hookTool: 'Write', hookInput: { file_path: path.join(REPO_ROOT, '.claude', 'hooks', 'rogue.cjs'), content: 'x' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(REPO_ROOT, '.claude', 'hooks', 'rogue.cjs'), content: 'x' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: launchd plist for the ClaudeSec service',
+      hookTool: 'Write', hookInput: { file_path: path.join(HOME, 'Library', 'LaunchAgents', 'com.claudesec.agent.plist'), content: 'x' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(HOME, 'Library', 'LaunchAgents', 'com.claudesec.agent.plist'), content: 'x' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: systemd unit for the ClaudeSec service',
+      hookTool: 'Write', hookInput: { file_path: path.join(TMP, 'systemd', 'user', 'claudesec.service'), content: 'x' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(TMP, 'systemd', 'user', 'claudesec.service'), content: 'x' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: launchctl bootout by LABEL (names no file)',
+      hookTool: 'Bash', hookInput: { command: 'launchctl bootout gui/501/com.claudesec.agent' },
+      mcpName: 'bash', mcpArgs: { command: 'launchctl bootout gui/501/com.claudesec.agent' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: systemctl --user disable claudesec',
+      hookTool: 'Bash', hookInput: { command: 'systemctl --user disable claudesec' },
+      mcpName: 'bash', mcpArgs: { command: 'systemctl --user disable claudesec' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+
+    // ── Self-protection floor: WRITE VERBS ──────────────────────────────────────
+    //    The floor is anchored on the ACTION, so each mutating spelling has to be
+    //    recognised as a write — a redirect is not the only way to change a file.
+    {
+      name: 'self-protect: sed -i on ~/.claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `sed -i '' -e 's/monitor/enforce/' ${HOME_SETTINGS}` },
+      mcpName: 'bash', mcpArgs: { command: `sed -i '' -e 's/monitor/enforce/' ${HOME_SETTINGS}` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: tee into ~/.claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `echo '{}' | tee ~/.claude/settings.json` },
+      mcpName: 'bash', mcpArgs: { command: `echo '{}' | tee ~/.claude/settings.json` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: cp onto ~/.claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: 'cp /tmp/rogue.json ~/.claude/settings.json' },
+      mcpName: 'bash', mcpArgs: { command: 'cp /tmp/rogue.json ~/.claude/settings.json' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: mv onto a relative .claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: 'mv rogue.json .claude/settings.json' },
+      mcpName: 'bash', mcpArgs: { command: 'mv rogue.json .claude/settings.json' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    // `cp -t` puts the destination FIRST, so a tokenizer that only looks at the
+    // last argument would miss it on one layer and not the other.
+    {
+      name: 'self-protect: cp -t the control-plane hooks dir',
+      hookTool: 'Bash', hookInput: { command: `cp -t ${CSEC_HOOKS} /tmp/rogue.cjs` },
+      mcpName: 'bash', mcpArgs: { command: `cp -t ${CSEC_HOOKS} /tmp/rogue.cjs` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    // Our own teardown commands: an agent that can ask the product to remove
+    // itself never has to defeat the floor. Both layers must refuse them.
+    {
+      name: 'self-protect: claudesec uninstall-hook',
+      hookTool: 'Bash', hookInput: { command: 'claudesec uninstall-hook' },
+      mcpName: 'bash', mcpArgs: { command: 'claudesec uninstall-hook' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: node cli/init.mjs uninstall-hook --purge',
+      hookTool: 'Bash', hookInput: { command: 'node cli/init.mjs uninstall-hook --purge' },
+      mcpName: 'bash', mcpArgs: { command: 'node cli/init.mjs uninstall-hook --purge' },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: chmod 000 on the installed hook',
+      hookTool: 'Bash', hookInput: { command: `chmod 000 ${path.join(CSEC_HOOKS, 'claudesec-enforce.cjs')}` },
+      mcpName: 'bash', mcpArgs: { command: `chmod 000 ${path.join(CSEC_HOOKS, 'claudesec-enforce.cjs')}` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: inline node script writing .claude/settings.json',
+      hookTool: 'Bash', hookInput: { command: `node -e "require('fs').writeFileSync('.claude/settings.json','{}')"` },
+      mcpName: 'bash', mcpArgs: { command: `node -e "require('fs').writeFileSync('.claude/settings.json','{}')"` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+
+    // ── Self-protection floor: THE FALSE-POSITIVE HALF ──────────────────────────
+    //    `settings.json` and `enforce-config.json` are named constantly in ordinary
+    //    work — read, grepped, quoted in a commit message, listed by a service
+    //    query. None of these files hold a secret, so a floor that fires on a LOOK
+    //    is pure noise. These must be ALLOWED on both layers.
+    {
+      name: 'benign: Read ~/.claude/settings.json → ALLOW',
+      hookTool: 'Read', hookInput: { file_path: HOME_SETTINGS },
+      mcpName: 'read', mcpArgs: { file_path: HOME_SETTINGS },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: cat ~/.claude/settings.json → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `cat ${HOME_SETTINGS}` },
+      mcpName: 'bash', mcpArgs: { command: `cat ${HOME_SETTINGS}` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    // A copy READS its sources and writes only its destination, so backing the
+    // control plane up before changing it must not be refused on either layer.
+    {
+      name: 'benign: cp ~/.claude/settings.json to a backup → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `cp ${HOME_SETTINGS} /tmp/settings.backup.json` },
+      mcpName: 'bash', mcpArgs: { command: `cp ${HOME_SETTINGS} /tmp/settings.backup.json` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    // Refreshing the enforcer stays possible; only removal is refused.
+    {
+      name: 'benign: claudesec install-hook → ALLOW',
+      hookTool: 'Bash', hookInput: { command: 'claudesec install-hook --yes' },
+      mcpName: 'bash', mcpArgs: { command: 'claudesec install-hook --yes' },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    // The container-build cleanup line the catastrophic floor used to refuse.
+    {
+      name: 'benign: rm -rf /var/lib/apt/lists/* → ALLOW',
+      hookTool: 'Bash', hookInput: { command: 'apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*' },
+      mcpName: 'bash', mcpArgs: { command: 'apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*' },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: grep the control-plane config → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `grep -n mode ${path.join(CSEC_HOOKS, 'enforce-config.json')}` },
+      mcpName: 'bash', mcpArgs: { command: `grep -n mode ${path.join(CSEC_HOOKS, 'enforce-config.json')}` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: sed WITHOUT -i only reads → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `sed -n '1,20p' ${HOME_SETTINGS}` },
+      mcpName: 'bash', mcpArgs: { command: `sed -n '1,20p' ${HOME_SETTINGS}` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: commit message naming settings.json → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `git commit -m "document $HOME/.claude/settings.json precedence"` },
+      mcpName: 'bash', mcpArgs: { command: `git commit -m "document $HOME/.claude/settings.json precedence"` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: launchctl list | grep claudesec → ALLOW',
+      hookTool: 'Bash', hookInput: { command: 'launchctl list | grep claudesec' },
+      mcpName: 'bash', mcpArgs: { command: 'launchctl list | grep claudesec' },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: .vscode/settings.json is not the control plane → ALLOW',
+      hookTool: 'Write', hookInput: { file_path: path.join(REPO_ROOT, '.vscode', 'settings.json'), content: '{}' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(REPO_ROOT, '.vscode', 'settings.json'), content: '{}' },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: enforce-config.json.bak is a different file → ALLOW',
+      hookTool: 'Write', hookInput: { file_path: path.join(TMP, 'stash', 'enforce-config.json.bak'), content: '{}' },
+      mcpName: 'write', mcpArgs: { file_path: path.join(TMP, 'stash', 'enforce-config.json.bak'), content: '{}' },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+
     // ── Block rule parity: a command matching the snapshot rule. ────────────────
     {
       name: 'block rule: command hits DANGERMARKER',

@@ -84,10 +84,26 @@ function killTree(child: ChildProcess): void {
   try { child.kill('SIGKILL'); } catch { /* already dead */ }
 }
 
+/**
+ * Mutating /api routes require the control token, and the server will not hand
+ * it to anything that merely asks — so this test pairs the way `claudesec open`
+ * does: read the pairing key off disk and present it once on a navigation, then
+ * keep the cookie the server sets. Without it a local caller gets a 403, which
+ * is the point of the gate.
+ */
+let controlCookie = '';
+async function acquireControlToken(): Promise<void> {
+  const key = fs.readFileSync(path.join(HOME_DIR, 'hooks', 'control-token'), 'utf8').trim();
+  const r = await fetch(`${BASE}/?ct=${key}`, { redirect: 'manual' });
+  const cookie = (r.headers.getSetCookie?.() ?? []).find(c => c.startsWith('claudesec_ct='));
+  if (!cookie) throw new Error('server did not issue a control token for a valid pairing key');
+  controlCookie = cookie.split(';')[0];
+}
+
 const putConfig = (body: unknown) =>
   fetch(`${BASE}/api/enforce/config`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', cookie: controlCookie },
     body: JSON.stringify(body),
   });
 
@@ -143,6 +159,8 @@ async function main(): Promise<void> {
     await waitForServer(30_000, () => exitInfo).catch(err => {
       throw new Error(`${err.message}\n--- server output ---\n${serverLog.slice(-2000)}`);
     });
+
+    await acquireControlToken();
 
     // ── 1. A normal action override round-trips. ──────────────────────────────
     await check('block override persists and echoes back', async () => {

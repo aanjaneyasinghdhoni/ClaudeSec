@@ -90,16 +90,26 @@ const POSITIVE: string[] = [
   'rm --no-preserve-root -rf /',
   'sudo rm -rf --no-preserve-root /',
   // Recursive wipe of a critical system dir / the whole home.
+  // Roots that are fatal at ANY depth — config and executables.
   'rm -rf /etc',
   'rm -fr /etc',                 // flag order fr (not just rf) must also block
-  'rm -rf /var/lib/postgresql',
-  'rm -rf /var/log/syslog',
+  'rm -rf /etc/nginx/conf.d/default.conf',
+  'rm -rf /sys/kernel',
+  'rm -rf /bin',
+  'rm -rf /sbin/init',
+  // Roots that are fatal only as the WHOLE target, plus the second-level trees
+  // that are as fatal as the root itself when named whole.
   'rm -rf /var/db',
+  'rm -rf /var/lib',
+  'rm -rf /var/spool',
   'rm -rf /var',                 // the whole /var tree
+  'rm -rf "/var"',               // …quoted, which used to slip past
   'rm -rf /usr',
   'rm -rf /usr/bin',
   'rm -rf /usr/lib',
-  'rm -rf /usr/share',
+  'rm -rf /lib',
+  'rm -rf /opt',
+  'rm -rf /srv',
   'rm -rf /boot',
   'rm -rf /System/Library',
   'rm -rf /Library/LaunchDaemons',
@@ -157,6 +167,18 @@ const NEGATIVE: string[] = [
   'rm -rf /usr/local/bin/oldtool',      // Homebrew / npm-global
   'rm -rf /usr/local/Cellar/foo',       // Homebrew Cellar
   'rm -rf /opt/homebrew/Cellar/foo',    // Apple-silicon Homebrew
+  // Routine cleanup UNDER a system root. `/var`, `/usr`, `/lib`, `/opt` and `/srv`
+  // hold caches and content, and their deep paths are where housekeeping lives:
+  // these four lines end almost every container build and every log rotation.
+  // The floor has no per-action escape, so refusing them stopped work nobody
+  // opted into policing. Matches the high-severity twin in severityRulesExtra.ts.
+  'apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*',
+  'apk add --no-cache curl && rm -rf /var/cache/apk/*',
+  'rm -rf /usr/share/doc /usr/share/man',
+  'rm -rf /var/log/*.gz',
+  'rm -rf /var/lib/postgresql',         // a named app dir, not the /var/lib root
+  'rm -rf /var/log/syslog',             // a single log file
+  'rm -rf /usr/share',                  // docs/locale content, not executables
   // "format" as a word / flag / function — never the Windows `format <drive:>` command.
   'format',                  // bare word, no drive letter
   'make format',
