@@ -61,6 +61,17 @@ compare(core, documented(/~?(\d{3})\s+core/i, 'core'), 'core');
 compare(extra, documented(/~?(\d{3})\s+extra/i, 'extra'), 'extra');
 compare(total, documented(/~(\d{3})\s+(?:built-in|total)/i, 'total'), 'total');
 
+// COMPLIANCE.md quotes the same total to reviewers. It sat at ~639 for a whole
+// release cycle after the rules grew, because nothing checked it — a compliance
+// doc is the last place a stale number belongs, so it is gated here too.
+const complianceText = read('COMPLIANCE.md');
+const complianceCounts = [...complianceText.matchAll(/~(\d{3})\s+(?:deterministic|built-in|threat)/gi)].map((m) => Number(m[1]));
+if (!complianceCounts.length) {
+  errors.push('COMPLIANCE.md is missing a documented rule count');
+} else {
+  for (const claimed of complianceCounts) compare(total, claimed, 'COMPLIANCE.md total');
+}
+
 if (errors.length) {
   console.error('✖ consistency check failed:');
   for (const e of errors) console.error(`  - ${e}`);

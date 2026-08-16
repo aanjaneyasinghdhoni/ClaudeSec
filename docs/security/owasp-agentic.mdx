@@ -91,7 +91,7 @@ privilege within the system it has access to.
 | OpenAI / Stripe secret key `sk-[A-Za-z0-9]{20,}` detected | DETECTS (HIGH) |
 | SSH directory `~/.ssh/` access | DETECTS (HIGH) |
 | macOS Keychain `security find-generic-password` | DETECTS (MEDIUM) |
-| Secret scrubbing redacts credential shapes before storage | DEFENCE (prevents ClaudeSec itself from storing live keys) |
+| Secret scrubbing redacts credential shapes before storage | DEFENCE (best-effort — reduces the risk of ClaudeSec itself persisting a live key; it recognizes known secret *shapes*, not every possible one) |
 | Real-world case: CVE-2026-21852 — `ANTHROPIC_BASE_URL` env-var override exfiltrating API keys before trust prompt | DETECTS as environment-variable access / env-override; the SSRF guard blocks redirection to private/loopback/metadata hosts on the operator-configured outbound paths, and (with the hook installed) the SSRF-on-fetch floor blocks a `WebFetch` to a cloud-metadata / internal host |
 
 **Honest limits:** ClaudeSec detects credential *patterns* in span text. A credential that is
@@ -228,7 +228,7 @@ sub-processes, or persisting beyond its session — without the user's knowledge
 | Exfiltration rules: secrets/env piped to `curl`/`wget`/`nc`/`scp`/`rsync` | BLOCKS always (catastrophic floor, two high-precision patterns) / DETECTS (CRITICAL) |
 | Netcat file transfer to remote host | DETECTS (CRITICAL) |
 | Process tab surfaces all running agent processes by PID | VISIBILITY |
-| `spans.db` provides a persistent audit log of every tool call, independent of the agent's own logs; the operator audit log and the enforcement block-feed are hash-chained (tamper-evident, verifiable via `GET /api/audit/verify`) | AUDIT |
+| `spans.db` provides a persistent audit log of every tool call, independent of the agent's own logs; the spans ledger, the operator audit log and the enforcement block-feed are hash-chained under an Ed25519-signed tail anchor (tampering is detectable, not prevented; verifiable via `GET /api/audit/verify`) | AUDIT |
 
 ---
 
@@ -240,7 +240,7 @@ to AI coding agents are mapped below.
 | OWASP ID | Category | ClaudeSec coverage |
 |---|---|---|
 | LLM01:2025 | Prompt Injection | HIGH-severity rules for classic injection phrases; hook blocks in enforce mode. Conversational injection that never reaches a tool call is not visible. |
-| LLM02:2025 | Sensitive Information Disclosure | 639 rules detect credential patterns in tool-call spans; secret scrubbing redacts known shapes at storage. |
+| LLM02:2025 | Sensitive Information Disclosure | 671 rules detect credential patterns in tool-call spans; secret scrubbing redacts known shapes at storage. |
 | LLM03:2025 | Supply Chain | Custom index/registry override rules (HIGH); MCP-scan surfaces unverified MCP servers. |
 | LLM05:2025 | Improper Output Handling | `eval(` / `exec(` detection catches cases where model output is executed without sanitisation. |
 | LLM06:2025 | Excessive Agency | Enforcement hook limits what high-severity tool calls can execute; protected paths provide a per-user floor. Scope is Claude Code and MCP-proxied agents only. |

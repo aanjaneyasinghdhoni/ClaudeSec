@@ -14,7 +14,7 @@
 
 ClaudeSec is a self-hosted, local-first security-observability tool for AI coding agents
 (Claude Code, GitHub Copilot CLI, Codex, and any OpenTelemetry/OTLP-emitting agent). It
-ingests agent activity, evaluates each span against ~639 deterministic threat-detection
+ingests agent activity, evaluates each span against ~671 deterministic threat-detection
 rules, persists spans to a local SQLite database, streams them to a local dashboard, and
 can optionally **enforce** (block) tool calls before they run.
 
@@ -54,7 +54,7 @@ controls in any framework belong to the **deployer**. The split is summarized be
 | **Authentication** | Optional bearer token (`CLAUDESEC_TOKEN`) gating non-loopback API/MCP/OTLP access | SSO/MFA, identity lifecycle, and access reviews at the network/identity layer |
 | **Data at rest** | DB file created `0600` (owner-only); secret scrubbing before persistence | Disk/volume encryption (full-disk, LUKS, or equivalent); filesystem ACLs; backup protection |
 | **Data minimization & retention** | Secret/PII scrubbing on by default; count- and age-based pruning (`CLAUDESEC_MAX_SPANS`, `CLAUDESEC_RETENTION_DAYS`) | Set retention to match policy; document lawful basis; honor data-subject requests |
-| **Detection content** | ~639 built-in rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
+| **Detection content** | ~671 built-in rules + custom-rule CRUD; honeytokens; optional MCP/skill scanner | Tune rules to environment; triage alerts; integrate with SIEM/incident process |
 | **Enforcement** | **Opt-in and Claude-Code-only**: nothing blocks until the deployer installs the PreToolUse hook (one-command installer) — until then ClaudeSec only observes. Once installed it is `monitor` by default (only the always-on catastrophic floor — destructive commands plus two high-precision secret-exfiltration patterns — and user-defined protected paths block); `enforce` adds blocking of the broader high/critical (active exfiltration) tool calls. Custom regex rules detect by default; in `enforce` mode a high/critical custom rule also blocks (low/medium stay detect-only). Other agents are gated only via the cross-agent MCP proxy. **Fail-open** by design. Dashboard surfaces hook-registration status (no false green) | Install and verify the hook; decide policy; understand the fail-open, Claude-only, best-effort scope; layer an OS sandbox for hard isolation |
 | **Governance** | Audit-quality event logs and reporting to feed a program | Policies, risk register, roles/accountability, training, vendor management, audits |
 
@@ -77,10 +77,10 @@ deployer obligation. Control identifiers are taken from the published frameworks
 
 | TSC | Criterion | How ClaudeSec supports it | Deployer still owns |
 |---|---|---|---|
-| **CC6.1** | Logical access security measures | Loopback-only default bind; **bind-refusal guard** that exits rather than expose a non-loopback host without a token; optional `CLAUDESEC_TOKEN`; `0600` DB file | MFA/SSO, identity store, password policy, privileged-access management |
-| **CC6.6** | Access restricted from external threats | No egress by default; the only outbound paths (`OTEL_FORWARD_URL`, `CLAUDESEC_JUDGE_URL`) are off unless set and pass an SSRF guard | Network segmentation, IDS/IPS, perimeter controls |
+| **CC6.1** | Logical access security measures | Loopback-only default bind; **bind-refusal guard** that exits rather than expose a non-loopback host without a token; a **control token** on every local mutation, paired out of band and never issued in response to an HTTP request; optional `CLAUDESEC_TOKEN` for remote access; `0600` DB file | MFA/SSO, identity store, password policy, privileged-access management |
+| **CC6.6** | Access restricted from external threats | No egress by default; the four outbound paths (`OTEL_FORWARD_URL`, `CLAUDESEC_WEBHOOK_URL`, `CLAUDESEC_JUDGE_URL`, and audit anchoring via `CLAUDESEC_ANCHOR_METHOD`) are off unless set and pass an SSRF guard | Network segmentation, IDS/IPS, perimeter controls |
 | **CC6.7** | Transmission of data protected | Optional bearer-token auth on remote API/OTLP; SSRF guard blocks egress to private/loopback/metadata ranges | **TLS in transit** (terminate at a reverse proxy) — not provided by the tool |
-| **CC7.1** | Vulnerability & malware detection | ~639 threat rules covering credential theft, reverse shells, supply-chain attacks, exfiltration (a dedicated `critical` tier for active off-machine secret transmission), cloud-metadata SSRF, container escape; MCP/skill static scanner | Endpoint EDR, host vulnerability scanning, patch cadence |
+| **CC7.1** | Vulnerability & malware detection | ~671 threat rules covering credential theft, reverse shells, supply-chain attacks, exfiltration (a dedicated `critical` tier for active off-machine secret transmission), cloud-metadata SSRF, container escape; MCP/skill static scanner | Endpoint EDR, host vulnerability scanning, patch cadence |
 | **CC7.2** | Monitoring for security events | Real-time span ingestion + live alerting; Prometheus `/metrics`; webhook delivery of HIGH alerts; honeytokens | Central SIEM, alert triage SLAs, on-call rotation |
 | **CC7.3 / CC7.4** | Incident evaluation, containment & response | Per-session security reports (`cli/init.mjs report`); the opt-in, Claude-Code-only enforcement hook/proxy can block a tool call before it runs (`enforce` mode, or the always-on floors in any mode) once the deployer installs it — best-effort and fail-open, and the dashboard verifies the hook is registered before claiming blocking is active | Documented IR plan, runbooks, post-incident reviews; install/verify the hook; do not treat fail-open blocking as containment |
 | **CC8.1** | Authorized, tested changes | The project's own SDLC: SHA-pinned GitHub Actions, `pnpm install --frozen-lockfile`, type-check + build gates, ReDoS rule self-test gate as a `prebuild` step | The deployer's own change-management process |
@@ -91,7 +91,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 |---|---|---|---|
 | **A.8.11** | Data masking | **Secret scrubbing** (`server/scrub.ts`): keys, tokens, JWTs, cloud credentials, database connection-string credentials, home paths, usernames, and emails are redacted before anything is stored, broadcast, or exported (on by default). Alert `matchedText` is stored **already scrubbed** — even a `critical` exfiltration alert records the secret *type / redacted shape*, never the live value | Classification scheme; verifying masking meets policy (scrubbing is best-effort regex) |
 | **A.8.12** | Data leakage prevention | A dedicated `critical` severity tier flags active secret **exfiltration** — a credential / `.env` being transmitted off the machine (the broad critical tier blocks in `enforce` mode, while two high-precision read-secret-and-send-it patterns sit on the always-on floor and block in either mode once the opt-in hook is installed); honeytokens fire an exfiltration alert on any match; broader exfiltration rules in the detection set | Enterprise DLP, egress monitoring |
-| **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access; the operator audit log and enforcement block-feed are hash-chained (tamper-*evident*, optionally HMAC-keyed by a key under the self-protected `~/.claudesec/hooks/`). The chain **re-anchors** on retention pruning (so pruning is not mistaken for tampering) and flags a wholesale wipe; `GET /api/audit/verify` reports both | Log retention policy, time-source governance; tamper-evidence is detective, not preventive — it does not stop a same-UID attacker who recomputes the chain or truncates the tail. Protect the key/DB |
+| **A.8.15** | Logging | Every span persisted with nanosecond timing; structured, queryable audit trail of tool calls, commands, and file access; the spans ledger, the operator audit log, and the enforcement block-feed are hash-chained (tamper-*evident*) under an Ed25519-signed tail anchor. The chain **re-anchors** on retention pruning (so pruning is not mistaken for tampering) and flags a wholesale wipe; `GET /api/audit/verify` reports both. **Two span fields are deliberately outside the hash**: `endNano` (written by an `UPDATE` when a tool call finishes, after the span was already inserted and chained at start) and `repo` (often inserted as `unknown` and corrected in place once the working directory resolves) — both are mutated by this same server after the row is first hashed, so a hash that covered them would break on the server's own ordinary writes. Excluding them is honest about the consequence: **duration and repository attribution are not tamper-evident**; everything else about a span — its identity, its content, its place in the sequence — is | Log retention policy, time-source governance; tamper-evidence is detective, not preventive — it does not stop a same-UID attacker who recomputes the chain or truncates the tail. Protect the key/DB |
 | **A.8.16** | Monitoring activities | Continuous evaluation of every span against the rule set; live anomaly surfacing and alerting | SOC processes, correlation across other sources |
 | **A.8.23** | Web filtering / egress control | SSRF guard (`server/ssrf.ts`) DNS-resolves targets at call time and allows only globally-routable unicast addresses — blocking loopback, private, link-local, and `169.254.169.254` metadata; re-resolves on every request to defeat DNS rebinding | Proxy/filtering at the network layer |
 | **A.8.25 / A.8.28** | Secure development lifecycle / secure coding | CodeQL static analysis (weekly + on PR), `pnpm audit --prod`, RE2/linear-time regex compilation for ReDoS safety, ReDoS self-test gate | Applies to the *project*; deployer runs own SDLC for its systems |
@@ -109,6 +109,27 @@ deployer obligation. Control identifiers are taken from the published frameworks
 > the **deployer's** responsibility; ClaudeSec provides the operational monitoring,
 > record-keeping, and oversight tooling that those programs require.
 
+**The Govern tab and its coverage, stated in numbers.** The dashboard's **Govern** category
+evaluates 12 plain-language policies (`server/governance.ts`) against your own alert and
+enforcement history and reports each as **Held**, **Violated**, or **Not provable** — never a
+score or a percentage, and "Held" never means "this did not happen," only that nothing matched
+within the window ClaudeSec still holds (see the in-app "what Held means" note, printed on every
+surface that shows the word). A downloadable evidence pack bundles the underlying alert,
+enforcement, and audit-log rows behind each status. Measured against the frameworks in this
+document, current coverage is:
+
+| Framework | Coverage claimed |
+|---|---|
+| NIST AI RMF 1.0 subcategories | ~10 of 72 |
+| ISO/IEC 42001:2023 Annex A controls | 7 of 38 |
+| ISO/IEC 42001:2023 mandatory clauses (4–10) | **0 of 7** — these are organizational (policy documents, management review, accountability); no runtime observer can satisfy them |
+
+The GOVERN function of NIST AI RMF is almost entirely untouched by this layer (19 of its 21
+subcategories require people and paper, not a process watching a shell). This is one system
+reporting on itself — no independent party, no external time anchor — and it is explicitly not
+"ISO 42001 compliant" or "NIST AI RMF certified." See the pack's own coverage section for the
+full, current list of claimed identifiers.
+
 **NIST AI RMF 1.0**
 
 | Subcategory | Function | How ClaudeSec supports it | Deployer still owns |
@@ -116,7 +137,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | **MEASURE — MS-3.1 / MS-3.2** | AI risk tracked over time | Continuous post-deployment monitoring of agent behavior; per-session health scoring surfaces degradation and anomalous activity | Defining metrics/thresholds; periodic review cadence |
 | **MEASURE — MS-2.4** | Security & privacy assessed | Detection of credential theft, exfiltration, prompt-injection patterns in agent activity; MCP/skill scanner | Formal pre-deployment evaluation of the deployer's AI systems |
 | **MANAGE — MG-2.3** | Emergency interventions | Once the opt-in, Claude-Code-only hook is installed, `enforce` mode + the always-on catastrophic floor and protected paths (e.g. `rm -rf /`, fork bombs, piped RCE) act as a best-effort, fail-open tool-call-level intervention, with the dashboard verifying the hook is registered before claiming blocking is active; process scanner can pause/kill agents | A real "kill switch" / org-level shutdown authority — fail-open blocking is not one |
-| **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail; the operator audit log and the enforcement block-feed are persisted and **hash-chained** (tamper-evident; verifiable via `GET /api/audit/verify`) | Incident log, severity classification, post-incident review |
+| **MANAGE — MG-3.2** | AI incidents documented & investigated | Persistent span store + per-session security reports + webhook alerting provide an incident evidence trail; the spans ledger, the operator audit log and the enforcement block-feed are **hash-chained** under an Ed25519-signed tail anchor (tampering is *detectable*, not prevented, and completeness is never claimed; verifiable via `GET /api/audit/verify`) | Incident log, severity classification, post-incident review |
 | **GOVERN — GV-1.x / GV-4.x** | Policies, cross-functional escalation | (Tool provides evidence inputs only) | **Deployer obligation** — policies, accountability, escalation paths are organizational, not tool features |
 
 **ISO/IEC 42001:2023 (Annex A)**
@@ -124,7 +145,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | Control | Name | How ClaudeSec supports it | Deployer still owns |
 |---|---|---|---|
 | **A.6.2.6** | AI system operation and monitoring | Real-time, continuous monitoring of AI agent operations with alerting on anomalies | Defining alert thresholds and remediation processes |
-| **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call (the spans/alerts tables) sufficient for incident investigation and audit; the enforcement would-block/block feed is persisted to SQLite and **hash-chained** (tamper-evident; survives restart) | Log retention periods and access controls per policy |
+| **A.6.2.8** | AI system recording of event logs | Durable, queryable event logs of every agent tool call (the spans/alerts tables) sufficient for incident investigation and audit; the enforcement would-block/block feed is persisted to SQLite and **hash-chained** (survives restart); deleted spans leave a tombstone carrying their chain link, so retention destroys the data without destroying the evidence that it existed | Log retention periods and access controls per policy |
 | **A.8.4** | Communication of incidents | Webhook delivery of HIGH-severity alerts to Slack/Discord/JSON endpoints; per-session reports | Notification thresholds, regulatory/affected-party reporting |
 | **A.9.2** | Processes for responsible use of AI systems | Once installed, the opt-in, Claude-Code-only enforcement layer can gate agent tool calls against an acceptable-use rule set (`monitor`/`enforce`) on a best-effort, fail-open basis, with the dashboard verifying the hook is registered before claiming blocking is active | The acceptable-use policy itself and human-oversight procedures; not relying on fail-open gating |
 | **A.2.2 / A.3.2 / A.5.2** | AI policy, roles, impact assessment | (Deployer obligation) | **Deployer owns** the AIMS, policy, RACI, and AI impact assessments |
@@ -134,7 +155,7 @@ deployer obligation. Control identifiers are taken from the published frameworks
 | Reference | Topic | How ClaudeSec relates | Notes |
 |---|---|---|---|
 | **Art. 6 / Annex III** | High-risk classification | ClaudeSec is **not** an Annex III high-risk use case and is **not** a safety component under Annex I | It is a developer security tool, not a system making decisions about people |
-| **Art. 26** | Deployer obligations (human oversight, monitoring, log-keeping) | ClaudeSec **supports a deployer** in meeting monitoring and automatically-generated-log retention duties for high-risk AI systems they operate. Note: Art. 26(6) expects logs kept **at least six months** — set `CLAUDESEC_RETENTION_DAYS` to 183 or more and a `CLAUDESEC_MAX_SPANS` cap large enough that count-based pruning never undercuts that window; the defaults are shorter | The legal obligation remains the deployer's |
+| **Art. 26** | Deployer obligations (human oversight, monitoring, log-keeping) | ClaudeSec **supports a deployer** in meeting monitoring and automatically-generated-log retention duties for high-risk AI systems they operate. Art. 26(6) expects logs kept **at least six months**: the default **Minimum** profile is 183 days paired with a 1,000,000-span ceiling, sized so a realistic workload (~3,500 spans/day) reaches the full six months instead of having ingestion pause at 90% of a too-small ceiling. **Audit year** (400 days / 5,000,000) covers a longer sampling period. If you set the two values by hand, check the effective window reported by `/api/db-stats` — a ceiling below the window's own volume stops recording early | The legal obligation remains the deployer's — including choosing a profile that matches the period you must retain, and sizing disk for it |
 | **Art. 50** | Transparency for AI interaction / generated content | Relevant only if the optional local LLM-judge is enabled; its output is internal classification, not user-facing generated content | Off by default; deployer assesses applicability if enabled |
 | **Art. 3 (GPAI)** | GPAI model obligations | **Not applicable** — ClaudeSec trains and ships no model | — |
 
@@ -181,7 +202,13 @@ deployer obligation. Control identifiers are taken from the published frameworks
 - **Where it lives.** A single local SQLite database at `~/.claudesec/spans.db`, created with
   `0600` (owner-only) permissions, plus hourly JSON snapshots in `exports/` (also `0600`; the
   most recent 24 are kept) and periodic online binary backups in `~/.claudesec/backups/` (`0600`;
-  the most recent 7 are kept). Nothing is stored off the host.
+  the most recent 7 are kept). Nothing is stored off the host. The **evidence material that
+  proves the record** is separate: the Ed25519 audit signing key and the signed tail anchor live
+  under `CLAUDESEC_HOME` (`~/.claudesec` by default), not beside the database. **A backup of the
+  database alone is therefore not a complete backup of the audit record** — the chain cannot be
+  verified without the signing key, and the chain's boundaries cannot be checked without the
+  anchor. Retain the two together for whatever period your log-retention policy sets, and record
+  the key's fingerprint (`keyId`) off-box so a re-founded identity is detectable.
 - **Secret & PII scrubbing.** On by default. Before any span is persisted, broadcast, or
   exported, `server/scrub.ts` redacts known secret formats (API keys, tokens, JWTs, cloud
   credentials, private keys, database connection-string credentials), home directory paths,
@@ -189,13 +216,40 @@ deployer obligation. Control identifiers are taken from the published frameworks
   `matchedText`, so a `critical` exfiltration alert stores the secret *type / redacted shape*
   only — never the live credential. Disable only with `CLAUDESEC_DISABLE_SCRUB=1`. Scrubbing
   is best-effort.
-- **Retention.** `CLAUDESEC_MAX_SPANS` (count-based) and `CLAUDESEC_RETENTION_DAYS`
-  (age-based) prune old data automatically; defaults are 50,000 spans and 30 days.
+- **Retention.** Two settings act together and are configured together as a **profile**:
+  `CLAUDESEC_RETENTION_DAYS` (the age window) and `CLAUDESEC_MAX_SPANS` (the span
+  ceiling). The shipped profiles are:
+
+  | Profile | Days | Span ceiling | What it is for |
+  |---|---|---|---|
+  | **Minimum** (default) | 183 | 1,000,000 | A six-month window that a normal workload can actually reach |
+  | **Audit year** | 400 | 5,000,000 | A year plus a ~35-day tail, so day one of the period is still present at audit time |
+  | **Forensic** | unbounded | unbounded | Keep everything; growth is bounded only by disk |
+  | **Custom** | any | any | Both values explicit; the effective window is reported back |
+
+  **How the two interact — the part that is easy to get wrong.** The age window is a
+  hard floor: count-based pruning may only reclaim spans that are *already* past the
+  age cutoff, so the span ceiling can never shorten the window by deleting data. What
+  it *can* do is stop new data arriving — OTLP ingestion pauses at **90% of the
+  ceiling**, and if the ceiling is smaller than the window's own volume, nothing is
+  ever prunable to relieve it and recording stops for good. A ceiling of 50,000 spans
+  against a 183-day window ends ingestion in roughly **twelve days** on a workload of
+  ~3,500 spans/day. Profiles size the two together so this cannot happen by default.
+  A custom pair is allowed, and `/api/db-stats` reports the **effective window** —
+  which limit governs, and the real number of days at the install's own measured
+  ingest rate — so the discrepancy is visible rather than silent. Note that an
+  environment variable **overrides** a value saved from the dashboard; that override
+  is reported too.
 - **Deletion.** Pruning is automatic; full wipe via `POST /api/reset` is **disabled by
   default** and requires `CLAUDESEC_ALLOW_RESET=1` to prevent accidental data loss.
-- **No telemetry-home.** ClaudeSec sends nothing to its authors. The only outbound paths
-  are operator-configured (`OTEL_FORWARD_URL`, `CLAUDESEC_JUDGE_URL`, `CLAUDESEC_WEBHOOK_URL`),
-  off unless set, and SSRF-guarded where applicable.
+- **No telemetry-home.** ClaudeSec sends nothing to its authors. There are exactly four
+  operator-configured outbound paths: `OTEL_FORWARD_URL`, `CLAUDESEC_WEBHOOK_URL`,
+  `CLAUDESEC_JUDGE_URL`, and audit anchoring (`CLAUDESEC_ANCHOR_METHOD=tsa|ots`). Each is off
+  unless set and each is SSRF-guarded. The first three can carry span-derived content, scrubbed.
+  The anchoring path is different in kind: it transmits **only a 32-byte SHA-256 digest** of the
+  audit anchor, never span content, commands, file paths, or repository names, so a Time-Stamp
+  Authority or OpenTimestamps calendar learns that this install seals a record and nothing about
+  what the record contains.
 
 ---
 
@@ -264,14 +318,20 @@ deployer obligation. Control identifiers are taken from the published frameworks
 - **Threat-model boundary — same-user (same-UID) ceiling.** ClaudeSec defends against a
   *misbehaving agent*, not a hostile process running as the operator's own account. Enforcement is
   best-effort and **fail-open**, covering the Claude Code PreToolUse hook and the MCP proxy — not
-  arbitrary egress. Mutating enforcement routes are **loopback-trusted** (no token on localhost), so
-  a same-host process could change the enforcement **mode** or clear **user-added** protected paths —
-  but the **always-on floors** (catastrophic, self-protection, live-secret, cloud-metadata SSRF, and
-  the **default** protected paths) remain in force regardless of mode. The audit log is
+  arbitrary egress. Mutating routes need a **control token** even on loopback, and reads still need
+  nothing. That token is never issued in response to an HTTP request — loopback TCP carries no user
+  or process identity, so no request header can distinguish the operator's browser from another
+  local process. It is a pairing key stored `0600` under the self-protected hooks directory and
+  presented once by `claudesec open`. This closes the HTTP-only path to mutation entirely; it does
+  **not** remove the same-UID ceiling, because a process running as the operator can read that file
+  and then change the enforcement **mode** or clear **user-added** protected paths. Only a separate
+  OS user closes that, and ClaudeSec does not claim to. The **always-on floors** (catastrophic, self-protection, live-secret,
+  cloud-metadata SSRF, and the **default** protected paths) remain in force regardless of mode. The audit log is
   tamper-**evident** (it detects in-place edits, reordering, and deletion via the chain, and a
   wholesale wipe via reset detection) but **not** tamper-**proof**: a same-UID attacker who can
-  recompute the whole chain and read the local HMAC key — now stored under the self-protected hooks
-  directory, which raises but does not eliminate the bar — can forge a consistent history;
+  recompute the whole chain and read the local Ed25519 signing key — stored under the self-protected
+  hooks directory, or optionally moved into the macOS Keychain (`claudesec audit-key to-keychain`),
+  both of which raise the bar without eliminating it — can forge a consistent history;
   **tail-truncation** of the newest rows is the residual gap. For a threat model that includes a
   hostile same-user process, layer an OS sandbox, separate account, or container boundary beneath
   ClaudeSec.
@@ -306,8 +366,9 @@ controls that *support* a deployer's program; it does not by itself confer compl
 Please report security issues responsibly via the process in
 [`.github/SECURITY.md`](.github/SECURITY.md) — GitHub Security Advisories (preferred) or
 direct maintainer contact. **Do not open a public issue for a vulnerability.** Reports are
-acknowledged within 48 hours, with a target fix window of 7 days for critical issues, under
-a coordinated-disclosure process.
+acknowledged within 48 hours, with a status update targeted within 7 days and a patch release
+targeted within **14 days** for critical issues, under a coordinated-disclosure process. These
+are targets a solo maintainer can meet, not a contractual SLA.
 
 ---
 

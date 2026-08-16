@@ -8,9 +8,18 @@ description: "Understand ClaudeSec's built-in threat detection library and learn
 Every span — whether tailed from a local transcript or sent via OTLP to `POST /v1/traces` — is evaluated against the security rule engine. The engine concatenates the span name and all attributes into a single string and tests it against each rule's regular expression in priority order:
 
 1. **Custom rules** are checked first (most recently added = highest priority).
-2. **~639 built-in rules** are checked if no custom rule matches.
+2. **671 built-in rules** are checked if no custom rule matches.
 
 The first matching rule determines the span's severity level (first-match-wins). If no rule matches, the severity is `none` and the span is treated as benign.
+
+## The sequence engine
+
+All 671 rules above match a **single span** in isolation. On top of them, a **stateful sequence
+engine** (`server/sequenceRules.ts`) watches for multi-step chains across a session — for example
+a credential read followed by a network send, or reconnaissance followed by exfiltration — that
+no single span shows on its own. A sequence match produces its own alert and renders the matched
+steps as a **chain** (each step's span and timestamp, in order) in `matchedText`, not just the
+final triggering span. See [Alerts](/security/alerts).
 
 A matched span results in:
 - The span being colored by severity in the Timeline and spans list (yellow/orange/red).
@@ -38,6 +47,32 @@ A matched span results in:
   `critical` is strictly about **transmission**, not presence. A secret, key, or `.env` sitting in a file — or being read locally — stays `high`. It becomes `critical` only when it is sent to a network sink. This keeps the top tier conservative and low-noise.
 </Note>
 
+### Severity is a shipping decision, not a label
+
+`high` and `critical` bake to `action: block` in the enforcement snapshot. Choosing `high` for a
+rule is therefore not a statement that the rule is *important* — it is a decision to **refuse the
+command** whenever the rule matches. That is why the library separates the **act** from the
+**mention**:
+
+- A pattern that reads any text blob will match its keyword inside a `grep` argument, a commit
+  message, a migration file under review or a doc. Those sit at `medium`: fully detected, on the
+  alert feed and in the audit trail, but never a refusal.
+- A pattern anchored on the thing actually happening — a database client with a destructive
+  statement behind it, a write into a LaunchAgent directory, a bare interpreter reading a
+  download — carries `high`.
+
+The same split already governs `eval(` / `exec(` (unanchored matcher alerts; the decode-then-eval
+and process-spawning forms block), the SQL family, and the macOS persistence rules. Both sides of
+each pairing are pinned in `tests/ruleSelfTest.ts`, so a later "let's make this stricter" edit
+cannot quietly turn an alert into a refusal.
+
+<Note>
+  Before changing a severity, measure it. `GET /api/enforce/impact?days=N` replays the tool calls
+  already in your `spans` table through the real evaluator and reports, per rule, how many calls
+  enforce mode would deny and what they were — see [Enforcement](/security/enforcement). A rule's
+  tier is much easier to argue about with its own firing history in front of you.
+</Note>
+
 ---
 
 ## Built-in rules
@@ -60,6 +95,7 @@ The highest tier — reserved for active secret **exfiltration**. Each rule pair
 | private key PEM in curl POST body | a `-----BEGIN … PRIVATE KEY-----` block inside a `curl` POST |
 | API key literal in curl POST to external host | `AKIA…`/`sk-ant-…`/`ghp_…`/`AIza…` in a `curl` POST to a non-local host |
 | Python reads credential file then POSTs to network | `open(".env"/credentials/key)` followed by `requests.post`/`urlopen` |
+| Environment credential sent in request body | A credential-named env var (`…TOKEN`/`KEY`/`SECRET`/`PASSWORD`/`CREDENTIAL`) sent in a `curl`/`wget` POST/form body — not just used in an `Authorization` header, which stays silent |
 | scp / sftp of secrets or cert file to remote host | `.env`/`.pem`/`.key`/`.p12` copied to a remote |
 | netcat file transfer to remote host | a file streamed outbound over `nc`/`netcat` to a remote |
 
@@ -74,8 +110,6 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 | Remote code execution via wget | `wget\s+.*\|\s*(ba)?sh` | `wget URL | bash` one-liners |
 | SQL destructive operation | `DROP\s+(TABLE|DATABASE|SCHEMA)` | Destructive DDL statements |
 | SQL table truncation | `TRUNCATE\s+TABLE` | Mass data deletion |
-| Code eval injection | `eval\s*\(` | Dynamic code execution |
-| Exec injection | `exec\s*\(` | Process spawning from user-controlled input |
 | Prompt injection: instruction override | `ignore\s+(previous\|prior\|all)\s+instructions?` | Classic jailbreak phrasing |
 | Prompt injection: disregard system | `disregard\s+your\s+(previous\|prior\|system)` | System prompt override attempt |
 | DAN jailbreak attempt | `you\s+are\s+now\s+DAN` | "Do Anything Now" jailbreak |
@@ -85,15 +119,28 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 | Supply-chain: custom PyPI index | `pip\s+install\s+.*--index-url` | Dependency confusion / typosquatting |
 | Supply-chain: custom npm registry | `npm\s+install.*--registry` | Custom npm registry override |
 | Clone-and-execute | `git\s+clone\s+.*&&\s*(ba)?sh` | Cloning and immediately executing |
-| SSH directory access | `~\/\.ssh\/` | Access to SSH key directory |
+| SSH private key access | `cat\|cp\|scp\|base64…\s+~\/\.ssh\/id_*` | Reading or copying a private key out of `~/.ssh` — `.pub` is excluded |
+| SSH private key file access | `cat\|scp\|base64…\s+…id_rsa\|id_ed25519` | The same read, for a key kept outside `~/.ssh`. Naming a key is not reading it, so `chmod 600 ~/.ssh/id_ed25519`, `ssh-add` and `ssh-keygen -f` do not fire |
 | Bash TCP reverse shell | `\/dev\/tcp\/` | Bash built-in reverse shell technique |
+| SSH reverse/dynamic port forward | `ssh\s+.*-[RD]\s*\d+:` | `ssh -R`/`-D` tunnels a remote or dynamic port back through the connection |
+| Disk device wipe via dd | `dd\s+.*of=\/dev\/(sda\|nvme\|disk…)` | `dd` targeting a whole block device — a source-file-only `dd` (e.g. writing to a `.img`) is excluded |
+| Find-based root deletion | `find\s+\/\|~\|\$HOME\s+.*-delete` | `find` walking `/`, `~`, or `$HOME` with `-delete`/`-exec rm`; a relative-path `find` (routine cleanup) is excluded |
+| Download-then-execute chain | `curl\|wget\s+.*-o…\s*(&&\|;)\s*sh` | Downloading to disk, then handing the file to a shell in a later command — the two-step form that a single-pipe rule would miss |
+| SUID bit set via chmod | `chmod\s+…\+s` | `chmod u+s`/`g+s` (symbolic form) setting the setuid/setgid bit |
+| Credential store directory copied to another path | `cp\|mv\|ditto\|rsync\s+…\/\.(ssh\|aws\|gnupg\|kube\|azure)` | Staging a whole credential store somewhere innocuous, so the copy can leave later carrying no credential shape. A trailing filename does not match, so single-key reads stay with the rules above |
+| Credential store archived into a tarball/zip | `tar\|zip\|7z\|zstd\s+…\/\.(ssh\|aws\|gnupg\|kube\|azure)` | The same staging step by archive — `tar czf keys.tgz ~/.ssh`. Anchored on the target, so `tar czf dist.tgz dist/` does not fire |
+| perl inline socket/shell one-liner (reverse shell) | `perl\s+…-MSocket\|-e\s+'…use Socket'` | The perl reverse shell, in both the `-MSocket` and the `use Socket` form. `perl -pi -e` stream editing does not fire |
+| AppleScript shell execution via osascript | `osascript\s+…do shell script\|with administrator privileges` | macOS AppleScript used as a shell — `do shell script` is `sh -c`, and `with administrator privileges` is `sudo` with a system password prompt |
+| Process environment read via `/proc/<pid>/environ` | `\/proc\/(self\|\d+)\/environ` | Reading the process environment, where API tokens live — the evasive form of an `env` dump, and against another PID it harvests a different process's secrets |
 
 ### MEDIUM severity
 
 | Rule label | Pattern | What it catches |
 |------------|---------|-----------------|
 | Environment variable access | `process\.env` | Node.js env access (may expose secrets) |
-| Dotenv file access | `\.env\b` | Reading `.env` files |
+| Dotenv file access | `\.env\b` | Touching a `.env` file. The committed templates (`.env.example`, `.sample`, `.template`, `.dist`, `.tpl`) are excluded |
+| Code eval injection | `eval\s*\(` | Dynamic code execution. Alert-only: an unanchored `eval(` also matches prose and commit messages, so the blocking tier is carried by the anchored rules that pair `eval` with a decode or a fetch |
+| Exec injection | `exec\s*\(` | Process spawning. Alert-only for the same reason. The forms that really spawn a process — `child_process.exec`, `subprocess.call`, `os.system`, `os.popen`, `Runtime.getRuntime().exec`, and the encoded variants — are matched individually and stay HIGH |
 | Passwd file read | `cat\s+\/etc\/passwd` | Reading the Unix password database |
 | SSH key manipulation | `ssh-add` | Adding SSH keys to the agent |
 | Sensitive system file access | `\/etc\/(shadow\|hosts\|sudoers\|resolv\.conf)` | Unix security files |
@@ -101,6 +148,9 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 | Base64 decode (CLI) | `base64\s+-d` | Shell base64 decode |
 | macOS Keychain access | `security\s+find-generic-password` | macOS keychain credential extraction |
 | Python one-liner execution | `python[23]?\s+-c\s+["']import` | One-shot Python code execution |
+| Git hook script written (repo-local code execution) | `>\|tee\|cp\|curl -o\s+…\.git\/hooks\/<name>` | A git hook is arbitrary code the developer runs themselves on their next commit. Anchored on the write, so listing, linting and `chmod +x` on a hook stay silent, and git's inert `*.sample` stubs are excluded. The [sequence engine](#the-sequence-engine) escalates to HIGH once a hook-executing git operation follows |
+| AppleScript drives another app or prompts the user (osascript) | `osascript\s+…System Events\|display dialog\|keychain` | AppleScript reaching Keychain, Mail or the browser, or putting a credential prompt on screen |
+| Observability collector process killed by name | `pkill\|killall\|kill\s+…server\/index\.ts\|otelcol` | The collector stopped by process name rather than by service label — the recording ends either way |
 
 ### LOW severity
 
@@ -111,6 +161,7 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 | Sudo usage | `sudo\s+` | Privilege escalation |
 | Global npm package install | `npm\s+install\s+--global` | System-wide package installation |
 | Python package install | `pip\s+install\s+\S` | Python package installation |
+| Inline AppleScript executed via osascript | `osascript\s+…-e` | Any other inline AppleScript. Quitting an app by name is ordinary macOS automation, so this tier is audit trail only |
 
 ---
 

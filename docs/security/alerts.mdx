@@ -12,12 +12,12 @@ An alert is created every time a span's attributes match one of ClaudeSec's [sec
 | `id` | Auto-incrementing integer |
 | `ts` | ISO 8601 timestamp when the alert was created |
 | `ruleLabel` | Name of the rule that fired (e.g., "AWS access key detected") |
-| `severity` | `low`, `medium`, or `high` |
+| `severity` | `low`, `medium`, `high`, or `critical` (active secret exfiltration — see [Security Rules](/security/rules#severity-levels)) |
 | `spanId` | ID of the span that triggered the alert |
 | `traceId` | Session (trace) the span belongs to |
 | `harness` | Which AI agent produced the span |
 | `spanName` | Name of the span operation |
-| `matchedText` | Up to 100 characters of the text that matched the regex |
+| `matchedText` | Up to 100 characters of the text that matched the regex. For a [sequence-engine](/security/rules) finding, this instead carries the full rendered **chain** — each matched step, its span, and its timestamp, in order — so the alert shows the whole story, not just the closing span |
 
 ---
 
@@ -29,7 +29,7 @@ Select **Detect → Alerts** in the left navigation rail to see a live-updating 
 
 ### Severity filter
 
-Use the severity filter pills (`All` / `high` / `medium` / `low`) at the top of the Alert Log to narrow the list.
+Use the severity filter pills (`All` / `Critical` / `high` / `medium` / `low`) at the top of the Alert Log to narrow the list.
 
 ### Grouping and triage
 
@@ -41,7 +41,7 @@ Use the severity filter pills (`All` / `high` / `medium` / `low`) at the top of 
 
 ## Desktop notifications
 
-ClaudeSec uses the browser [Notifications API](https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API) to fire desktop alerts when a high-severity threat is detected.
+ClaudeSec uses the browser [Notifications API](https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API) to fire desktop alerts when a high- or critical-severity threat is detected.
 
 ### Enabling notifications
 
@@ -56,7 +56,7 @@ ClaudeSec uses the browser [Notifications API](https://developer.mozilla.org/en-
 ### Notification content
 
 Each desktop notification shows:
-- **Title**: `ClaudeSec — HIGH Alert`
+- **Title**: `ClaudeSec — HIGH Alert` (or `CRITICAL Alert` for the exfiltration tier)
 - **Body**: the span label, followed by the matched threat rule when one is available
 
 ---
@@ -166,7 +166,7 @@ Socket.io 'alerts-update' broadcast
    ↓
 Browser receives event, refreshes Alerts tab
    ↓
-High severity? → Desktop notification fired
+High/critical severity? → Desktop notification fired
 ```
 
 ---
