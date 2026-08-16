@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The container image builds again — this time for real.** 2.0.1 fixed one of
+  the two things standing between a tag and a published image, and the second
+  only became visible once the first was out of the way: `pnpm install` failed
+  before the build ever reached the test suite. `better-sqlite3` 13 ships a
+  prebuilt binary for every platform it supports, musl included, and its own
+  build file skips compiling when one is present — but node-gyp has to find
+  Python before it can read that file at all, and the Alpine image has none.
+  Version 12 never hit this because it downloaded prebuilds a different way.
+  ClaudeSec no longer compiles that dependency, since there is nothing to
+  compile. **2.0.2 is the first 2.x image you can pull**; 2.0.0 and 2.0.1 were
+  released without one.
+
 ## [2.0.1] - 2026-08-17
 
 ### Fixed
@@ -18,8 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwritable. Root ignores directory permission bits, so the move completed, no
   interruption occurred, and every assertion in that case inverted. The case is
   now skipped under uid 0 — with a line saying why, so the skip is not mistaken
-  for a weakened test — and runs in full for everyone else. If you run ClaudeSec
-  as a container, 2.0.1 is the first 2.x image you can pull.
+  for a weakened test — and runs in full for everyone else. This was one of two
+  faults blocking the image; the second surfaced only after this one was fixed,
+  so 2.0.1 also shipped without an image. See 2.0.2.
 
 ### Build
 
