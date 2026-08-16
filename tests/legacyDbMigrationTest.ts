@@ -365,7 +365,13 @@ function migrate(opts: { targetPath: string; pinned?: boolean; candidates: strin
 // is the closest reproducible stand-in for "the process died mid-move": the
 // rename cannot complete, and the only question that matters is whether the
 // user's single copy is still there and still whole.
-{
+// Root ignores permission bits, so the directory is writable no matter what we
+// chmod it to and the move simply succeeds — inverting every assertion below.
+// The Docker build runs `pnpm build` as root, so this has to be skipped there
+// rather than reported as a failure of the code under test.
+if (typeof process.getuid === 'function' && process.getuid() === 0) {
+  console.log('  case9: skipped — running as root, where permission bits cannot make a directory unwritable');
+} else {
   const { legacy, target } = sandbox('case9-interrupted');
   const { handle } = makeLegacyDb(legacy, 64);
   handle.close();
