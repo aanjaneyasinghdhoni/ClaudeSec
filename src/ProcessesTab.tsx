@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { HARNESSES, type HarnessConfig } from './harnesses';
+import { apiErrorMessage, apiSend } from './lib/api';
 import {
   DataTable, type DataColumn,
   Toolbar, ToolButton, ToolbarTitle,
@@ -169,42 +170,39 @@ export function ProcessesTab({ onSelectSession }: { onSelectSession?: (traceId: 
     if (!window.confirm(`Kill ${name} — PID ${pid}? This sends SIGTERM and cannot be undone.`)) return;
     setKilling(prev => new Set(prev).add(pid));
     try {
-      const res = await fetch(`/api/processes/${pid}`, { method: 'DELETE' });
-      if (res.ok) {
-        addToast(`Killed ${name} — PID ${pid}`, 'success');
-        setTimeout(fetchProcesses, 1000);
-      } else {
-        const d = await res.json();
-        addToast(d.error ?? 'Failed to kill process', 'error');
-      }
-    } catch { addToast('Failed to kill process', 'error'); }
+      await apiSend(`/api/processes/${pid}`, 'DELETE');
+      addToast(`Killed ${name} — PID ${pid}`, 'success');
+      setTimeout(fetchProcesses, 1000);
+    } catch (err: unknown) {
+      addToast(apiErrorMessage(err, 'Failed to kill process'), 'error');
+    }
     setKilling(prev => { const s = new Set(prev); s.delete(pid); return s; });
   };
 
+  // Every bulk action reports the counts the SERVER returned. A refused request
+  // now raises instead of reaching the toast, which is what used to render the
+  // reassuring "Killed undefined/undefined agents" in success green.
   const killAll = async () => {
     if (!window.confirm(`Kill ALL ${data?.total ?? 0} agent processes? This sends SIGTERM to each and cannot be undone.`)) return;
     try {
-      const res = await fetch('/api/processes/kill-all', { method: 'POST' });
-      const d = await res.json();
+      const d = await apiSend<{ killed: number; total: number; failed: number }>('/api/processes/kill-all', 'POST');
       addToast(`Killed ${d.killed}/${d.total} agents`, d.failed > 0 ? 'warning' : 'success');
       setTimeout(fetchProcesses, 1500);
-    } catch { addToast('Kill-all failed', 'error'); }
+    } catch (err: unknown) { addToast(apiErrorMessage(err, 'Kill-all failed'), 'error'); }
   };
 
   const pauseAll = async () => {
     try {
-      const res = await fetch('/api/processes/pause-all', { method: 'POST' });
-      const d = await res.json();
+      const d = await apiSend<{ paused: number }>('/api/processes/pause-all', 'POST');
       addToast(`Paused ${d.paused} agents (SIGSTOP)`, 'success');
-    } catch { addToast('Pause-all failed', 'error'); }
+    } catch (err: unknown) { addToast(apiErrorMessage(err, 'Pause-all failed'), 'error'); }
   };
 
   const resumeAll = async () => {
     try {
-      const res = await fetch('/api/processes/resume-all', { method: 'POST' });
-      const d = await res.json();
+      const d = await apiSend<{ resumed: number }>('/api/processes/resume-all', 'POST');
       addToast(`Resumed ${d.resumed} agents (SIGCONT)`, 'success');
-    } catch { addToast('Resume-all failed', 'error'); }
+    } catch (err: unknown) { addToast(apiErrorMessage(err, 'Resume-all failed'), 'error'); }
   };
 
   useEffect(() => {

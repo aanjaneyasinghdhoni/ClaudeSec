@@ -20,6 +20,7 @@ import {
   Eye, Layers, Sparkles, Loader2, Undo2, Scale, X,
 } from 'lucide-react';
 import { socket } from './socket';
+import { apiErrorMessage, apiSend, reportApiFailure } from './lib/api';
 import type { Severity } from './shared/types';
 import { AlertDetailDrawer, type AlertDetail } from './AlertDetailDrawer';
 import {
@@ -236,11 +237,7 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
   }, [selected]);
 
   const patchAlert = (id: number, body: { dismissed?: boolean; fp?: boolean; fingerprint?: string }) =>
-    fetch(`/api/alerts/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    apiSend(`/api/alerts/${id}`, 'PATCH', body);
 
   // Drop a lingering row from the undo window and resync with the server.
   const finalizePending = (id: number) => {
@@ -262,6 +259,9 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
 
     setTriaging(prev => new Set(prev).add(id));
     try {
+      // Only enter the undo window once the server has actually applied the
+      // triage — otherwise a refused dismiss would hide the alert behind an
+      // "Undo" for something that never happened.
       await patchAlert(id, { ...patch, ...(fingerprint ? { fingerprint } : {}) });
       if (isRemoval) {
         const kind: PendingTriage['kind'] = patch.fp === true ? 'fp' : 'dismissed';
@@ -272,7 +272,9 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
       } else {
         fetchAlerts(severityFilter, showDismissed, groupByRule);
       }
-    } catch {}
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to update alert');
+    }
     setTriaging(prev => { const s = new Set(prev); s.delete(id); return s; });
   };
 
@@ -285,13 +287,21 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
     if (p.patch.fp !== undefined)        inverse.fp = false;
     try {
       await patchAlert(id, { ...inverse, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}) });
-    } catch {}
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to undo');
+    }
+    // Either way, resync: finalizePending refetches, so the row returns to
+    // whatever state the server holds rather than whatever the undo intended.
     finalizePending(id);
   };
 
   const handleClear = async () => {
     if (!window.confirm('Clear all alerts? This cannot be undone.')) return;
-    await fetch('/api/alerts', { method: 'DELETE' });
+    try {
+      await apiSend('/api/alerts', 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to clear alerts');
+    }
   };
 
   // Detect whether the optional LLM-as-judge is configured (so the "Analyze"
@@ -311,15 +321,16 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
   const analyze = async (alert: AlertRow) => {
     setJudgeStates(prev => ({ ...prev, [alert.id]: { status: 'loading' } }));
     try {
-      const r = await fetch('/api/judge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(alert.spanId ? { spanId: alert.spanId } : { text: alert.matchedText }),
-      });
-      const result = (await r.json()) as JudgeResult;
+      const result = await apiSend<JudgeResult>(
+        '/api/judge', 'POST',
+        alert.spanId ? { spanId: alert.spanId } : { text: alert.matchedText },
+      );
       setJudgeStates(prev => ({ ...prev, [alert.id]: { status: 'done', result } }));
-    } catch {
-      setJudgeStates(prev => ({ ...prev, [alert.id]: { status: 'error', message: 'Request failed' } }));
+    } catch (err: unknown) {
+      setJudgeStates(prev => ({
+        ...prev,
+        [alert.id]: { status: 'error', message: apiErrorMessage(err, 'Request failed') },
+      }));
     }
   };
 

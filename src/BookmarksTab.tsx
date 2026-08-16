@@ -17,6 +17,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Bookmark, Trash2, ExternalLink, Edit2, Check, X, Star, BookmarkPlus } from 'lucide-react';
 import { socket } from './socket';
+import { apiSend, reportApiFailure } from './lib/api';
 import type { Severity } from './shared/types';
 import {
   SeveritySpine, severityText, EmptyState, ErrorState, TableSkeleton,
@@ -161,17 +162,24 @@ export function BookmarksTab({
     return () => { socket.off('sessions-update', handler); };
   }, [fetchPinnedSessions]);
 
+  // These are one-click actions with nowhere to put an inline error, so a
+  // refusal goes to the app-level banner. The refetch afterwards is what keeps
+  // the list honest: a row the server declined to remove comes straight back.
   const unpinSession = async (traceId: string) => {
-    await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pinned: false }),
-    });
+    try {
+      await apiSend(`/api/sessions/${encodeURIComponent(traceId)}`, 'PATCH', { pinned: false });
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to unpin session');
+    }
     fetchPinnedSessions();
   };
 
   const deleteBookmark = async (id: number) => {
-    await fetch(`/api/bookmarks/${id}`, { method: 'DELETE' });
+    try {
+      await apiSend(`/api/bookmarks/${id}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to delete bookmark');
+    }
     fetchBookmarks();
   };
 
@@ -181,12 +189,13 @@ export function BookmarksTab({
   };
 
   const saveEdit = async (id: number) => {
-    await fetch(`/api/bookmarks/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: editNote }),
-    });
-    setEditingId(null);
+    try {
+      await apiSend(`/api/bookmarks/${id}`, 'PATCH', { note: editNote });
+      setEditingId(null);
+    } catch (err: unknown) {
+      // Stay in edit mode on failure so the typed note is not thrown away.
+      reportApiFailure(err, 'Failed to save note');
+    }
     fetchBookmarks();
   };
 

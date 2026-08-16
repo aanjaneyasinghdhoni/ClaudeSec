@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Plus, Trash2, Loader2, Sparkles, BellRing } from 'lucide-react';
+import { apiErrorMessage, apiJson, apiSend } from './lib/api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,31 +115,25 @@ export function ThresholdRulesSection(): React.ReactElement {
   const [busyIds, setBusyIds] = useState<Set<number>>(new Set());
 
   const fetchRules = useCallback(() => {
-    fetch('/api/threshold-rules')
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<RulesResponse>;
-      })
+    apiJson<RulesResponse>('/api/threshold-rules')
       .then(d => { setRules(d.rules ?? []); setLoading(false); setError(''); })
       .catch(() => { setError('Failed to load threshold rules'); setLoading(false); });
   }, []);
 
   useEffect(() => { fetchRules(); }, [fetchRules]);
 
-  // Toggle enabled
+  // Toggle enabled. A refused toggle used to leave the switch where it was with
+  // no explanation, which reads as "the click missed" rather than "denied".
   const handleToggle = async (rule: ThresholdRule) => {
     setBusyIds(prev => new Set(prev).add(rule.id));
+    setError('');
     try {
-      const res = await fetch(`/api/threshold-rules/${rule.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: rule.enabled ? 0 : 1 }),
-      });
-      if (res.ok) {
-        setRules(prev =>
-          prev.map(r => r.id === rule.id ? { ...r, enabled: r.enabled ? 0 : 1 } : r)
-        );
-      }
+      await apiSend(`/api/threshold-rules/${rule.id}`, 'PATCH', { enabled: rule.enabled ? 0 : 1 });
+      setRules(prev =>
+        prev.map(r => r.id === rule.id ? { ...r, enabled: r.enabled ? 0 : 1 } : r)
+      );
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to update threshold rule'));
     } finally {
       setBusyIds(prev => { const s = new Set(prev); s.delete(rule.id); return s; });
     }
@@ -147,11 +142,12 @@ export function ThresholdRulesSection(): React.ReactElement {
   // Delete rule
   const handleDelete = async (id: number) => {
     setBusyIds(prev => new Set(prev).add(id));
+    setError('');
     try {
-      const res = await fetch(`/api/threshold-rules/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setRules(prev => prev.filter(r => r.id !== id));
-      }
+      await apiSend(`/api/threshold-rules/${id}`, 'DELETE');
+      setRules(prev => prev.filter(r => r.id !== id));
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to delete threshold rule'));
     } finally {
       setBusyIds(prev => { const s = new Set(prev); s.delete(id); return s; });
     }
@@ -167,27 +163,18 @@ export function ThresholdRulesSection(): React.ReactElement {
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/threshold-rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          metric,
-          operator,
-          value,
-          window_min: windowMin,
-        }),
+      await apiSend('/api/threshold-rules', 'POST', {
+        name: name.trim(),
+        metric,
+        operator,
+        value,
+        window_min: windowMin,
       });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string };
-        setFormError(d.error ?? 'Failed to add rule');
-      } else {
-        setName(''); setMetric('tokens_in'); setOperator('>');
-        setValue(0); setWindowMin(60);
-        fetchRules();
-      }
-    } catch {
-      setFormError('Network error');
+      setName(''); setMetric('tokens_in'); setOperator('>');
+      setValue(0); setWindowMin(60);
+      fetchRules();
+    } catch (err: unknown) {
+      setFormError(apiErrorMessage(err, 'Network error'));
     } finally {
       setSubmitting(false);
     }
@@ -208,9 +195,9 @@ export function ThresholdRulesSection(): React.ReactElement {
   return (
     <div className="space-y-4 mt-3">
 
-      {/* Error loading */}
+      {/* Whatever last failed for the section — a load, a toggle, or a delete */}
       {error && (
-        <p className="text-[11px]" style={{ color: 'var(--cs-danger)' }}>{error}</p>
+        <p className="text-[11px]" style={{ color: 'var(--cs-danger)' }} role="alert">{error}</p>
       )}
 
       {/* Loading state */}

@@ -14,6 +14,7 @@ import { socket } from './socket';
 import { ExperimentalBadge } from './ExperimentalBadge';
 import { useDebouncedCallback } from './lib/useDebouncedCallback';
 import { formatTokens } from './lib/format';
+import { apiErrorMessage, apiJson, apiSend } from './lib/api';
 import {
   DataTable, type DataColumn,
   Toolbar, ToolButton, ToolbarTitle,
@@ -159,29 +160,32 @@ function WebhookPanel() {
     setSaving(true);
     setError('');
     try {
-      const r = await fetch('/api/webhook', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: newUrl.trim(), threshold }),
-      });
-      if (r.ok) { setNewUrl(''); load(); }
-      else { const d = await r.json(); setError(d.error ?? 'Unknown error'); }
-    } catch { setError('Network error'); }
+      await apiSend('/api/webhook', 'POST', { url: newUrl.trim(), threshold });
+      setNewUrl('');
+      load();
+    } catch (err: unknown) { setError(apiErrorMessage(err, 'Network error')); }
     setSaving(false);
   };
 
   const remove = async () => {
-    const r = await fetch('/api/webhook', { method: 'DELETE' });
-    if (r.ok) load(); else { const d = await r.json(); setError(d.error ?? 'Unknown error'); }
+    setError('');
+    try {
+      await apiSend('/api/webhook', 'DELETE');
+      load();
+    } catch (err: unknown) { setError(apiErrorMessage(err, 'Network error')); }
   };
 
   const test = async () => {
     setTesting(true);
     setTestResult(null);
+    setError('');
     try {
-      const r = await fetch('/api/webhook/test', { method: 'POST' });
-      setTestResult(r.ok ? 'ok' : 'error');
-    } catch { setTestResult('error'); }
+      await apiSend('/api/webhook/test', 'POST');
+      setTestResult('ok');
+    } catch (err: unknown) {
+      setTestResult('error');
+      setError(apiErrorMessage(err, 'Network error'));
+    }
     setTesting(false);
     setTimeout(() => setTestResult(null), 4000);
   };
@@ -306,9 +310,10 @@ function DBHealthPanel() {
   const [editing, setEditing]     = useState(false);
   const [maxSpans, setMaxSpans]   = useState('');
   const [retDays, setRetDays]     = useState('');
+  const [error, setError]         = useState('');
 
   const load = () =>
-    fetch('/api/db-stats').then(r => r.json()).then((d: DBStats) => {
+    apiJson<DBStats>('/api/db-stats').then((d: DBStats) => {
       setStats(d);
       setMaxSpans(String(d.retentionConfig.maxSpans));
       setRetDays(String(d.retentionConfig.retentionDays));
@@ -318,22 +323,29 @@ function DBHealthPanel() {
 
   const prune = async () => {
     setPruning(true);
-    const r = await fetch('/api/db-stats/prune', { method: 'POST' });
-    const result = await r.json();
-    setPruneResult(result);
-    setTimeout(() => setPruneResult(null), 5000);
-    load();
+    setError('');
+    try {
+      // Report the counts the prune actually returned. Reading them off a
+      // refused response used to render "Pruned undefined by age" in success green.
+      setPruneResult(await apiSend<{ prunedByAge: number; prunedByCount: number }>('/api/db-stats/prune', 'POST'));
+      setTimeout(() => setPruneResult(null), 5000);
+      load();
+    } catch (err: unknown) { setError(apiErrorMessage(err, 'Prune failed')); }
     setPruning(false);
   };
 
   const saveRetention = async () => {
-    await fetch('/api/db-stats/retention', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxSpans: Number(maxSpans), retentionDays: Number(retDays) }),
-    });
-    setEditing(false);
-    load();
+    setError('');
+    try {
+      await apiSend('/api/db-stats/retention', 'POST', {
+        maxSpans: Number(maxSpans),
+        retentionDays: Number(retDays),
+      });
+      // Close the editor only once the new window is in force; on failure the
+      // typed values stay on screen next to the reason they were rejected.
+      setEditing(false);
+      load();
+    } catch (err: unknown) { setError(apiErrorMessage(err, 'Failed to save retention settings')); }
   };
 
   if (!stats) return null;
@@ -423,6 +435,12 @@ function DBHealthPanel() {
       {pruneResult && (
         <p className="mt-1.5 text-center" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-accent)' }}>
           Pruned {pruneResult.prunedByAge} by age + {pruneResult.prunedByCount} by count
+        </p>
+      )}
+
+      {error && (
+        <p className="mt-1.5 text-center" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-sev-critical-fg)' }} role="alert">
+          {error}
         </p>
       )}
     </div>

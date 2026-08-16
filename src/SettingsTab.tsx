@@ -4,6 +4,7 @@ import {
   History, Copy, Terminal, ShieldCheck, AlertTriangle, CircleSlash, CheckCircle2, Activity, Trash2,
   Lock, Pencil, ArrowRight, Gauge, SlidersHorizontal, RefreshCw, Loader2, HardDrive,
 } from 'lucide-react';
+import { apiErrorMessage, apiSend } from './lib/api';
 import { ThresholdRulesSection } from './ThresholdRulesSection';
 import { WebhookDeliverySection } from './WebhookDeliverySection';
 
@@ -437,20 +438,12 @@ export function RetentionSection() {
     setApplying(id);
     setApplyError('');
     try {
-      const res = await fetch('/api/db-stats/retention', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile: id }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(d.error ?? 'Failed to apply profile');
-      }
+      await apiSend('/api/db-stats/retention', 'POST', { profile: id });
       // Re-read from the canonical endpoint rather than trusting the POST echo,
       // so the picker can never show a consequence the rest of the app disagrees with.
       await load();
     } catch (e) {
-      setApplyError(e instanceof Error ? e.message : 'Failed to apply profile');
+      setApplyError(apiErrorMessage(e, 'Failed to apply profile'));
     } finally {
       setApplying(null);
     }
@@ -466,15 +459,15 @@ export function RetentionSection() {
       setCustomError('Retention days must be a number ≥ 1.');
       throw new Error('invalid retentionDays');
     }
-    const res = await fetch('/api/db-stats/retention', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxSpans: customSpans, retentionDays: customDays }),
-    });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({})) as { error?: string };
-      setCustomError(d.error ?? 'Failed to save');
-      throw new Error(d.error ?? 'Failed to save');
+    try {
+      await apiSend('/api/db-stats/retention', 'POST', {
+        maxSpans: customSpans,
+        retentionDays: customDays,
+      });
+    } catch (e) {
+      // The caller relies on the rejection to keep the editor open.
+      setCustomError(apiErrorMessage(e, 'Failed to save'));
+      throw e;
     }
     await load();
   }, [customSpans, customDays, load]);
@@ -717,15 +710,12 @@ export function WebhookSection() {
 
   const save = useCallback(async () => {
     setError('');
-    const res = await fetch('/api/webhook', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url.trim(), threshold }),
-    });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({})) as { error?: string };
-      setError(d.error ?? 'Failed to save webhook');
-      throw new Error(d.error ?? 'Failed to save webhook');
+    try {
+      await apiSend('/api/webhook', 'POST', { url: url.trim(), threshold });
+    } catch (err: unknown) {
+      // The caller relies on the rejection to keep the form open.
+      setError(apiErrorMessage(err, 'Failed to save webhook'));
+      throw err;
     }
     setConfigured(!!url.trim());
     setUrl('');
@@ -734,15 +724,15 @@ export function WebhookSection() {
 
   const handleDelete = async () => {
     setError('');
-    const res = await fetch('/api/webhook', { method: 'DELETE' });
-    if (res.ok) {
+    try {
+      await apiSend('/api/webhook', 'DELETE');
       setUrl('');
       setUrlPreview(null);
       setConfigured(false);
       setTestMsg('');
       setTestOk(null);
-    } else {
-      setError('Failed to delete webhook');
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to delete webhook'));
     }
   };
 
@@ -750,17 +740,11 @@ export function WebhookSection() {
     setTestMsg('');
     setTestOk(null);
     try {
-      const res = await fetch('/api/webhook/test', { method: 'POST' });
-      if (res.ok) {
-        setTestMsg('Test payload sent successfully.');
-        setTestOk(true);
-      } else {
-        const d = await res.json().catch(() => ({})) as { error?: string };
-        setTestMsg(d.error ?? 'Test failed.');
-        setTestOk(false);
-      }
-    } catch {
-      setTestMsg('Network error during test.');
+      await apiSend('/api/webhook/test', 'POST');
+      setTestMsg('Test payload sent successfully.');
+      setTestOk(true);
+    } catch (err: unknown) {
+      setTestMsg(apiErrorMessage(err, 'Network error during test.'));
       setTestOk(false);
     }
   };
@@ -1243,7 +1227,10 @@ function DataManagementSection(): React.ReactElement {
   const [demoSessions, setDemoSessions] = useState(0);
   const [resetEnabled, setResetEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
+  // `msg` reports the outcome of the last data action; `msgOk` keeps a refusal
+  // from reading like a confirmation.
   const [msg, setMsg] = useState('');
+  const [msgOk, setMsgOk] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   // Two-click confirm for the destructive full reset — no native confirm() dialog,
   // which ad blockers and some browsers suppress.
@@ -1265,13 +1252,18 @@ function DataManagementSection(): React.ReactElement {
   useEffect(() => { load(); }, [load]);
 
   const clearDemo = async () => {
-    setBusy(true); setMsg('');
+    setBusy(true); setMsg(''); setMsgOk(true);
     try {
-      const r = await fetch('/api/demo/clear', { method: 'POST' });
-      const d = await r.json();
-      setMsg(`Cleared ${d.clearedSpans ?? 0} demo spans across ${d.clearedSessions ?? 0} session(s).`);
+      // Only the server's own counts get reported. Reading them off a refused
+      // response produced a confident "Cleared 0 demo spans" while every demo
+      // span was still there.
+      const d = await apiSend<{ clearedSpans?: number; clearedSessions?: number }>('/api/demo/clear', 'POST');
+      setMsg(`Cleared ${d?.clearedSpans ?? 0} demo spans across ${d?.clearedSessions ?? 0} session(s).`);
       load();
-    } catch { setMsg('Failed to clear demo data.'); }
+    } catch (err: unknown) {
+      setMsg(apiErrorMessage(err, 'Failed to clear demo data.'));
+      setMsgOk(false);
+    }
     finally { setBusy(false); }
   };
 
@@ -1283,12 +1275,15 @@ function DataManagementSection(): React.ReactElement {
       return;
     }
     if (confirmTimer.current) clearTimeout(confirmTimer.current);
-    setConfirmAll(false); setBusy(true); setMsg('');
+    setConfirmAll(false); setBusy(true); setMsg(''); setMsgOk(true);
     try {
-      const r = await fetch('/api/reset', { method: 'POST' });
-      if (r.ok) { setMsg('All data cleared.'); load(); }
-      else { const d = await r.json().catch(() => ({})); setMsg(d.hint ?? d.error ?? 'Reset failed.'); }
-    } catch { setMsg('Reset failed.'); }
+      await apiSend('/api/reset', 'POST');
+      setMsg('All data cleared.');
+      load();
+    } catch (err: unknown) {
+      setMsg(apiErrorMessage(err, 'Reset failed.'));
+      setMsgOk(false);
+    }
     finally { setBusy(false); }
   };
 
@@ -1361,7 +1356,14 @@ function DataManagementSection(): React.ReactElement {
         </button>
       </div>
 
-      {msg && <p style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-muted)' }}>{msg}</p>}
+      {msg && (
+        <p
+          role={msgOk ? undefined : 'alert'}
+          style={{ fontSize: 'var(--cs-text-xs)', color: msgOk ? 'var(--cs-text-muted)' : 'var(--cs-sev-critical-fg)' }}
+        >
+          {msg}
+        </p>
+      )}
     </div>
   );
 }

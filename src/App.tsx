@@ -34,6 +34,7 @@ import { applyLayout } from './lib/graphLayout';
 import { useDebouncedCallback } from './lib/useDebouncedCallback';
 import { toMs, formatSpanName } from './lib/format';
 import { useRouteNav } from './lib/useRouteNav';
+import { apiErrorMessage, apiFetch, apiSend, onApiFailure } from './lib/api';
 import { Timeline } from './Timeline';
 import { Button } from './components/ui/button';
 import {
@@ -147,6 +148,12 @@ export default function App() {
   // Surfaces a small "failed to load" notice when a core fetch (sessions / graph)
   // rejects, instead of letting the promise reject unhandled in the console.
   const [loadError, setLoadError] = useState<string | null>(null);
+  // A mutation the server refused, reported by src/lib/api.ts. Separate from
+  // loadError because it is about a change that did NOT happen — most of all
+  // the unpaired-browser 403, which every mutation hits until `claudesec open`
+  // has run and which no single tab can explain on its own.
+  const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => onApiFailure(setActionError), []);
   const [timelineIntroShown, setTimelineIntroShown] = useState(
     () => localStorage.getItem('claudesec-timeline-intro-dismissed') !== 'true'
   );
@@ -211,13 +218,14 @@ export default function App() {
     return () => { socket.off('enforce-config', refreshEnforce); };
   }, []);
 
+  // The badge must never lead the server. It shows the mode the PUT gives back,
+  // so a refused request (an unpaired browser answers 403) leaves it reading
+  // exactly what is still in force rather than what was asked for.
   const toggleEnforceMode = useCallback(() => {
     const next = enforceMode === 'enforce' ? 'monitor' : 'enforce';
-    fetch('/api/enforce/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: next }),
-    }).then(() => setEnforceMode(next)).catch(() => {});
+    apiSend<{ mode?: string }>('/api/enforce/config', 'PUT', { mode: next })
+      .then(cfg => setEnforceMode(cfg?.mode === 'enforce' ? 'enforce' : 'monitor'))
+      .catch((err: unknown) => setLoadError(apiErrorMessage(err, 'Failed to change enforcement mode')));
   }, [enforceMode]);
 
   // ── Notification state ────────────────────────────────────────────────────
@@ -372,19 +380,15 @@ export default function App() {
     reader.onload = async (ev) => {
       try {
         const body = JSON.parse(ev.target?.result as string);
-        const res = await fetch('/api/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+        const data = await apiSend<{ imported?: number }>('/api/import', 'POST', body);
+        setImportStatus({ msg: `Imported ${data?.imported ?? 0} spans`, ok: true });
+      } catch (err: unknown) {
+        // A SyntaxError means the file never left the browser; anything else is
+        // the server declining to ingest it, and says so in its own words.
+        setImportStatus({
+          msg: err instanceof SyntaxError ? 'Invalid JSON file' : apiErrorMessage(err, 'Import failed'),
+          ok: false,
         });
-        const data = await res.json();
-        if (res.ok) {
-          setImportStatus({ msg: `Imported ${data.imported} spans`, ok: true });
-        } else {
-          setImportStatus({ msg: data.error ?? 'Import failed', ok: false });
-        }
-      } catch {
-        setImportStatus({ msg: 'Invalid JSON file', ok: false });
       }
       setTimeout(() => setImportStatus(null), 4000);
       if (importInputRef.current) importInputRef.current.value = '';
@@ -543,11 +547,13 @@ export default function App() {
   // ── Session mutations ─────────────────────────────────────────────────────
 
   const patchSession = useCallback(async (traceId: string, body: Record<string, unknown>) => {
-    await fetch(`/api/sessions/${encodeURIComponent(traceId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).catch(() => {});
+    try {
+      await apiSend(`/api/sessions/${encodeURIComponent(traceId)}`, 'PATCH', body);
+    } catch (err: unknown) {
+      setLoadError(apiErrorMessage(err, 'Failed to update session'));
+    }
+    // Refetch either way: on failure this pulls the list back to what the
+    // server actually holds, so a rejected rename cannot linger on screen.
     fetchSessions();
   }, []);
 
@@ -739,7 +745,9 @@ export default function App() {
               e.preventDefault();
               const params = activeSession ? `?session=${activeSession}` : '';
               try {
-                const res = await fetch(`/api/graph/mermaid${params}`);
+                // apiFetch, not fetch: an error body must never be what lands
+                // on the clipboard under a "Copied!" label.
+                const res = await apiFetch(`/api/graph/mermaid${params}`);
                 await navigator.clipboard.writeText(await res.text());
                 setMermaidCopy('copied');
               } catch (err) {
@@ -896,6 +904,19 @@ export default function App() {
           <AlertTriangle className="size-3.5 shrink-0" />
           {loadError}
           <button type="button" onClick={() => setLoadError(null)} className="ml-auto rounded p-0.5" aria-label="Dismiss">
+            <X className="size-3" />
+          </button>
+        </div>
+      )}
+      {actionError && (
+        <div
+          className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-xs font-medium"
+          style={{ background: 'var(--cs-sev-medium-bg)', color: 'var(--cs-sev-medium-fg)' }}
+          role="alert"
+        >
+          <ShieldAlert className="size-3.5 shrink-0" />
+          <span className="min-w-0">{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="ml-auto shrink-0 rounded p-0.5" aria-label="Dismiss">
             <X className="size-3" />
           </button>
         </div>

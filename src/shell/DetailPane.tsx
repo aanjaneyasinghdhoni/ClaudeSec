@@ -3,6 +3,7 @@ import { Bookmark, PanelRightClose, PanelRightOpen, Plus, X } from 'lucide-react
 import type { Severity } from '../shared/types';
 import { SEVERITY_LABEL } from '../dashboardTypes';
 import { formatSpanName } from '../lib/format';
+import { apiSend, reportApiFailure } from '../lib/api';
 import { SpanAttributes } from '../SpanAttributes';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -277,17 +278,16 @@ function DetailBody({ target, onClose, onCollapse }: {
       .catch(() => {});
   }, [spanId, traceId]);
 
+  // The star follows the server, not the click: a refused save used to leave a
+  // filled star for a bookmark that was never stored.
   const toggleBookmark = async () => {
     const next = !bookmarked;
-    setBookmarked(next);
-    if (next) {
-      await fetch('/api/bookmarks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spanId, traceId }),
-      }).catch(() => {});
-    } else {
-      await fetch(`/api/bookmarks/span/${encodeURIComponent(spanId)}`, { method: 'DELETE' }).catch(() => {});
+    try {
+      if (next) await apiSend('/api/bookmarks', 'POST', { spanId, traceId });
+      else await apiSend(`/api/bookmarks/span/${encodeURIComponent(spanId)}`, 'DELETE');
+      setBookmarked(next);
+    } catch (err: unknown) {
+      reportApiFailure(err, next ? 'Failed to save bookmark' : 'Failed to remove bookmark');
     }
   };
 
@@ -296,34 +296,34 @@ function DetailBody({ target, onClose, onCollapse }: {
     if (!text) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/spans/${encodeURIComponent(spanId)}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
       // The route replies with the stored row itself, not a wrapper.
-      const row = await res.json() as Annotation;
+      const row = await apiSend<Annotation>(
+        `/api/spans/${encodeURIComponent(spanId)}/annotations`, 'POST', { text },
+      );
       if (row?.id) setAnnotations(prev => [...prev, row]);
       setAnnotationText('');
-    } catch { /* leave the text in place so the note is not lost */ }
+    } catch (err: unknown) {
+      // Leave the text in place so the note is not lost, and say why it did
+      // not save — silently clearing the box was the worst of both.
+      reportApiFailure(err, 'Failed to save annotation');
+    }
     setSaving(false);
   };
 
   const addTag = async () => {
     const tag = tagInput.trim();
     if (!tag) return;
-    setTagInput('');
     // The server normalises the tag (lowercase, restricted charset), so take the
     // stored value back rather than showing what was typed.
     try {
-      const res = await fetch(`/api/spans/${encodeURIComponent(spanId)}/tags`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag }),
-      });
-      const { tag: stored } = await res.json() as { tag?: string };
+      const { tag: stored } = await apiSend<{ tag?: string }>(
+        `/api/spans/${encodeURIComponent(spanId)}/tags`, 'POST', { tag },
+      );
       if (stored) setTags(prev => (prev.includes(stored) ? prev : [...prev, stored]));
-    } catch { /* a failed tag is not worth interrupting triage for */ }
+      setTagInput('');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to add tag');
+    }
   };
 
   return (

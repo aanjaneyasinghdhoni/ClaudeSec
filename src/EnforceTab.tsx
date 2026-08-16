@@ -27,6 +27,7 @@ import {
   Radio, ListX, BarChart3, ChevronDown, ChevronRight, Info,
 } from 'lucide-react';
 import { socket } from './socket';
+import { apiErrorMessage, apiSend } from './lib/api';
 import type { Severity } from './shared/types';
 import {
   DataTable, type DataColumn,
@@ -525,22 +526,15 @@ export function EnforceTab() {
     setSaving(true);
     setError('');
     try {
-      const res = await fetch('/api/enforce/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: next }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const updated = await res.json();
+      const updated = await apiSend<{ mode: EnforceMode; overrides: Record<string, EnforceAction> }>(
+        '/api/enforce/config', 'PUT', { mode: next },
+      );
       setConfig(prev => (prev ? { ...prev, mode: updated.mode, overrides: updated.overrides } : prev));
       // The toggle just rewrote enforce-config.json, which is the top precedence
       // layer — refetch so effectiveMode / modeSource re-resolve against it.
       fetchConfig();
     } catch (e) {
-      setError((e as Error).message || 'Failed to update mode');
+      setError(apiErrorMessage(e, 'Failed to update mode'));
     } finally {
       setSaving(false);
     }

@@ -27,6 +27,7 @@ import {
   FileWarning, ShieldOff,
 } from 'lucide-react';
 import { socket } from './socket';
+import { ApiError, apiErrorMessage, apiSend, reportApiFailure } from './lib/api';
 import type { Severity } from './shared/types';
 import {
   DataTable, type DataColumn,
@@ -252,17 +253,24 @@ export function RulesTab() {
   const activeSuppression = (ruleId: string): Suppression | undefined =>
     suppressions.find(s => s.ruleKey === ruleId && new Date(s.suppressUntil) > new Date());
 
+  // Snoozing silences a detection rule, so a refusal that reads as success
+  // would leave the operator believing a rule is muted — or unmuted — when the
+  // opposite is true. The refetch is the source of truth for what stuck.
   const handleSnooze = async (ruleId: string, ms: number) => {
-    await fetch('/api/suppressions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ruleKey: ruleId, durationMs: ms, reason: 'manual snooze' }),
-    });
+    try {
+      await apiSend('/api/suppressions', 'POST', { ruleKey: ruleId, durationMs: ms, reason: 'manual snooze' });
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to snooze rule');
+    }
     fetchSuppressions();
   };
 
   const handleCancelSnooze = async (suppressionId: number) => {
-    await fetch(`/api/suppressions/${suppressionId}`, { method: 'DELETE' });
+    try {
+      await apiSend(`/api/suppressions/${suppressionId}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to cancel snooze');
+    }
     fetchSuppressions();
   };
 
@@ -284,24 +292,22 @@ export function RulesTab() {
     try { new RegExp(pattern); } catch { setError('Invalid regex pattern'); return; }
     setSubmitting(true);
     try {
-      const res = await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pattern: pattern.trim(), severity, label: label.trim() }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        setError(d.error ?? 'Failed to add rule');
-      } else {
-        setPattern(''); setLabel(''); setTestInput(''); setTestResult(null);
-        setRuleDialogOpen(false);
-      }
-    } catch { setError('Network error'); }
+      await apiSend('/api/rules', 'POST', { pattern: pattern.trim(), severity, label: label.trim() });
+      setPattern(''); setLabel(''); setTestInput(''); setTestResult(null);
+      setRuleDialogOpen(false);
+    } catch (err: unknown) {
+      // Leave the dialog open with the typed pattern intact.
+      setError(apiErrorMessage(err, 'Network error'));
+    }
     setSubmitting(false);
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    try {
+      await apiSend(`/api/rules/${encodeURIComponent(id)}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to delete rule');
+    }
   };
 
   // The effective action for a rule = an explicit override, else its natural
@@ -324,19 +330,18 @@ export function RulesTab() {
     if (next === natural) delete merged[rule.label];
     else merged[rule.label] = next;
 
+    // Block/Monitor is the switch that decides whether a match is stopped or
+    // merely logged, so nothing here is optimistic: the row only moves once the
+    // server has echoed the map it persisted. `savingLabel` covers the wait.
     setSavingLabel(rule.label);
-    setOverrides(merged); // optimistic
     try {
-      const res = await fetch('/api/enforce/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ overrides: merged }),
-      });
-      if (!res.ok) { fetchEnforceConfig(); return; } // server rejected → resync truth
-      const updated = await res.json();
-      setOverrides(updated.overrides ?? merged);
-    } catch {
-      fetchEnforceConfig(); // network error → resync
+      const updated = await apiSend<{ overrides?: Record<string, EnforceAction> }>(
+        '/api/enforce/config', 'PUT', { overrides: merged },
+      );
+      setOverrides(updated?.overrides ?? merged);
+    } catch (err: unknown) {
+      reportApiFailure(err, `Failed to change the action for "${rule.label}"`);
+      fetchEnforceConfig(); // resync truth — the row must not show the intent
     } finally {
       setSavingLabel(null);
     }
@@ -348,27 +353,28 @@ export function RulesTab() {
     if (!ppPath.trim()) { setPpError('A file path is required'); return; }
     setPpBusy(true);
     try {
-      const res = await fetch('/api/protected-paths', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: ppPath.trim(), label: ppLabel.trim() || undefined }),
+      await apiSend('/api/protected-paths', 'POST', {
+        path: ppPath.trim(),
+        label: ppLabel.trim() || undefined,
       });
-      if (res.status === 409) {
-        setPpError('That path is already protected.');
-      } else if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        setPpError(d.error ?? 'Failed to add protected path');
-      } else {
-        setPpPath(''); setPpLabel('');
-        // The socket event refreshes the list, but update optimistically too.
-        fetchProtectedPaths();
-      }
-    } catch { setPpError('Network error'); }
+      setPpPath(''); setPpLabel('');
+      // The socket event refreshes the list, but pull it now so the new row
+      // appears the moment the server confirms it.
+      fetchProtectedPaths();
+    } catch (err: unknown) {
+      setPpError(err instanceof ApiError && err.status === 409
+        ? 'That path is already protected.'
+        : apiErrorMessage(err, 'Network error'));
+    }
     setPpBusy(false);
   };
 
   const handleDeleteProtectedPath = async (id: string) => {
-    await fetch(`/api/protected-paths/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    try {
+      await apiSend(`/api/protected-paths/${encodeURIComponent(id)}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to remove protected path');
+    }
     fetchProtectedPaths();
   };
 

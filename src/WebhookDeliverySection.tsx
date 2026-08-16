@@ -23,6 +23,7 @@ import {
   EmptyState, ErrorState,
   Toolbar, ToolButton, ToolbarTitle,
 } from './components/data';
+import { apiSend, reportApiFailure } from './lib/api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,11 +137,12 @@ export function WebhookDeliverySection() {
   const handleRetry = useCallback(async (id: number) => {
     setRetryingId(id);
     try {
-      await fetch(`/api/webhook-deliveries/${id}/retry`, { method: 'POST' });
+      await apiSend(`/api/webhook-deliveries/${id}/retry`, 'POST');
       fetchDeliveries();
-    } catch {
-      // The row's own status simply won't change on the next fetch — no
-      // separate banner needed for a single retry click.
+    } catch (err: unknown) {
+      // A retry that never reached the server looks identical to one that ran
+      // and failed again, so say which it was.
+      reportApiFailure(err, 'Failed to retry delivery');
     } finally {
       setRetryingId(null);
     }
@@ -150,11 +152,13 @@ export function WebhookDeliverySection() {
     if (!window.confirm('Clear all webhook delivery history? This cannot be undone.')) return;
     setClearing(true);
     try {
-      await fetch('/api/webhook-deliveries', { method: 'DELETE' });
+      // Empty the table only once the server confirms it emptied the history —
+      // a blank list is otherwise indistinguishable from a successful clear.
+      await apiSend('/api/webhook-deliveries', 'DELETE');
       setRows([]);
       setTotal(0);
-    } catch {
-      // silently fail — the list still reflects the last successful fetch
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to clear delivery history');
     } finally {
       setClearing(false);
     }
