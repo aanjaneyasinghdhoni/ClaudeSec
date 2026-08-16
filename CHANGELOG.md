@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-16
+
 ### Upgrade notes
 
 **This is a major release and it changes behaviour you are relying on.** Read this
@@ -777,7 +779,8 @@ without anything leaving your computer.
 - Released under the [AGPL-3.0-only](LICENSE) license. Commercial and
   dual-licensing options are documented in [`.github/LICENSING.md`](.github/LICENSING.md).
 
-[Unreleased]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases/tag/v2.0.0
 [1.3.0]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases/tag/v1.3.0
 [1.2.2]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases/tag/v1.2.2
 [1.2.1]: https://github.com/aanjaneyasinghdhoni/ClaudeSec/releases/tag/v1.2.1
