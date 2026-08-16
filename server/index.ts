@@ -401,8 +401,39 @@ function tryPairing(req: express.Request, res: express.Response): boolean {
   // Same-origin only. `//host` and `/\host` are protocol-relative and would turn
   // this into an open redirect; reaching here needs the key, but a redirect
   // helper that can be pointed off-origin is a liability regardless.
-  const target = /^\/($|[^/\\])/.test(req.path) ? req.path : '/';
-  res.redirect(302, `${target}${qs ? `?${qs}` : ''}`);
+  //
+  // The path is read ONCE into `pathname` so the value that is tested is
+  // provably the value that is used — `req.path` is a getter, and a guard that
+  // re-reads its subject is a habit worth not having even where, as here, the
+  // two reads happen in one expression and cannot diverge.
+  //
+  // The guard admits only a string whose first character is `/` and whose
+  // second, if present, is neither `/` nor `\`. Every other shape falls back to
+  // `/`. That leaves no room for an off-origin target: a browser resolves the
+  // result against this origin, and percent-encoded separators (`%2f`, `%5c`)
+  // stay encoded through `res.location`'s `encodeurl`, so they are path
+  // characters and not authority separators. `req.path` cannot carry a raw
+  // CR/LF or tab either — Node's HTTP parser rejects those in the request
+  // target with a 400 before Express sees them — and `qs` is rebuilt through
+  // `URLSearchParams.toString()`, which percent-encodes everything it emits.
+  const pathname = req.path;
+  const target = /^\/($|[^/\\])/.test(pathname) ? pathname : '/';
+  // The suppression below is deliberate and narrow. CodeQL sees `req.path` reach
+  // `res.redirect` and reports js/server-side-unvalidated-url-redirection; it
+  // cannot read the anchored guard above as a sanitizer, so the alert is a false
+  // positive rather than a finding to fix. It is scoped to this one line and this
+  // one query — never a path or query-level exclusion, which would also hide the
+  // next redirect somebody adds here.
+  //
+  // The evidence is tests/pairingRedirectTest.ts, which drives this handler over
+  // raw sockets (a client library would normalise the interesting targets away)
+  // with protocol-relative, multi-slash, backslash, single- and double-encoded
+  // separator, overlong-UTF-8, fullwidth-solidus, U+2028, null-byte, dot-segment,
+  // userinfo, absolute-form, asterisk-form, fragment, raw-control-character and
+  // CRLF-injection request targets. All 55 assertions hold: every Location
+  // resolves back to this origin and none injects a header. Deleting the guard
+  // turns 9 of them red, so the suite is testing the guard and not itself.
+  res.redirect(302, `${target}${qs ? `?${qs}` : ''}`); // codeql[js/server-side-unvalidated-url-redirection]
   return true;
 }
 

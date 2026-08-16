@@ -289,17 +289,50 @@ export function stripHeredocs(cmd: string): string {
     if (open.index < cursor) continue; // opener sat inside a body we already ate
     const bodyStart = src.indexOf('\n', HEREDOC_OPEN.lastIndex);
     if (bodyStart === -1) break;
-    const end = new RegExp(`^\\s*${open[2]}\\s*$`, 'm');
-    end.lastIndex = 0;
-    const tail = src.slice(bodyStart + 1);
-    const m = end.exec(tail);
-    // An unterminated heredoc runs to the end of the command; drop the rest.
-    const bodyEnd = m ? bodyStart + 1 + m.index + m[0].length : src.length;
+    const bodyEnd = findTerminator(src, bodyStart + 1, open[2]);
     out += src.slice(cursor, HEREDOC_OPEN.lastIndex);
     cursor = bodyEnd;
     HEREDOC_OPEN.lastIndex = bodyEnd;
   }
   return cursor === 0 ? src : out + src.slice(cursor);
+}
+
+/**
+ * Index of the newline that ends the line closing a heredoc opened with
+ * `delim`, or `src.length` when the heredoc is never terminated (an
+ * unterminated heredoc runs to the end of the command, so the rest is dropped).
+ *
+ * WHY this is a string comparison and not a regex. The delimiter is read out of
+ * the command being analysed, which is untrusted input — this module exists to
+ * inspect exactly the commands an attacker gets to write. Building
+ * `new RegExp('^\\s*' + delim + '\\s*$', 'm')` put that untrusted text into
+ * regex SOURCE, and the only thing standing between it and a metacharacter was
+ * the character class inside HEREDOC_OPEN thirty lines away, where nothing said
+ * so. Widen that opener to accept the terminators bash actually allows
+ * (`<<'EOF-1'`, `<<\EOF`, `<<'E O F'` — all of which it currently misses) and
+ * the hole opens with it; the enforcement hook's equivalent opener already
+ * accepts an arbitrary quoted delimiter.
+ *
+ * The pattern was never anything but an anchored literal, so a per-line
+ * comparison is the same test with no source to inject into, and it drops a
+ * regex compile per heredoc opener off the ingest hot path. This is also the
+ * shape the hook's stripQuotedHeredocBodies already uses, so the two now reason
+ * the same way.
+ *
+ * Matching on the trimmed line is deliberately more permissive than POSIX, for
+ * the same reason the hook gives: erring that way ends the body EARLY, so more
+ * text is classified as shell rather than less.
+ */
+export function findTerminator(src: string, from: number, delim: string): number {
+  let i = from;
+  while (i <= src.length) {
+    const nl = src.indexOf('\n', i);
+    const lineEnd = nl === -1 ? src.length : nl;
+    if (src.slice(i, lineEnd).trim() === delim) return lineEnd;
+    if (nl === -1) break;
+    i = nl + 1; // strictly increasing, so this stays one linear pass
+  }
+  return src.length;
 }
 
 /** Is the destination of this egress command off this machine and off the LAN? */

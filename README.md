@@ -73,7 +73,8 @@ development with C++" workload and Python so `better-sqlite3` and `re2` can comp
   rules for prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration,
   SSRF, container escape, and more. The CRITICAL tier is reserved for active secret *exfiltration*
   — a credential or `.env` being transmitted off the machine. Every rule is held to a linear-time
-  execution gate by the ReDoS self-test, and custom rules you add are compiled with RE2. A **stateful sequence engine** on top of the single-span rules watches for
+  execution gate by the ReDoS self-test, and a custom rule you add is validated with RE2 — which
+  rejects backreferences and lookaround — before it is accepted. A **stateful sequence engine** on top of the single-span rules watches for
   multi-step chains across a session — recon then exfiltration, a credential read followed by a
   network send — and renders the matched steps as a chain on the alert, not just the final span.
 - **Enforcement (opt-in, Claude Code only)** — out of the box ClaudeSec only *observes*: there is

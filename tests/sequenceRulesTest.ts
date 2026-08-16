@@ -38,6 +38,7 @@ import {
   SEQUENCE_RULES,
   RULE_STATEMENTS,
   classify,
+  findTerminator,
   renderChain,
   stripHeredocs,
   type SequenceInput,
@@ -332,6 +333,108 @@ console.log('\n── the finding explains itself ──────────
     .map((f) => f.kind);
   if (kinds.includes('payload-egress')) pass('shell AFTER a heredoc is still classified');
   else fail('stripHeredocs swallowed the command following the heredoc');
+}
+
+// ---------------------------------------------------------------------------
+// The heredoc terminator is untrusted input (CodeQL js/regex-injection)
+// ---------------------------------------------------------------------------
+//
+// The terminator is read out of the command being analysed, so it is written by
+// whoever wrote the command. It used to be interpolated into a RegExp source
+// string. It no longer is — findTerminator compares strings — and these checks
+// hold the terminator matcher to that contract INDEPENDENTLY of how permissive
+// the opener happens to be, because the opener is the only thing that ever kept
+// the old construction safe and it is thirty lines away from the risk.
+{
+  // Delimiters chosen so that a regex reading of them would behave differently
+  // from a literal reading: a wildcard, an anchor, a quantifier, an exponential
+  // backtracker, and two that are not valid regex source at all.
+  const adversarial: [name: string, delim: string][] = [
+    ['wildcard .*',            '.*'],
+    ['dot',                    '.'],
+    ['alternation a|b',        'a|b'],
+    ['anchor ^X$',             '^X$'],
+    ['huge quantifier',        'A{1,99999}'],
+    ['nested quantifier',      '(a+)+$'],
+    ['char-class open',        '['],
+    ['lone backslash',         '\\'],
+    ['group open',             '('],
+    ['backreference \\1',      '(x)\\1'],
+    ['everything',             '.*+?^$()[]{}|\\'],
+  ];
+
+  let throws = 0;
+  let mismatched = 0;
+  for (const [name, delim] of adversarial) {
+    // The delimiter's literal line sits LAST. A regex reading of `.*` (or of
+    // `^X$`, or of the quantifiers) would match one of the earlier lines and end
+    // the body early; a literal reading can only match the final line.
+    const body = ['first line', 'XXX', 'a', 'x', 'not the delimiter'];
+    const src = `${body.join('\n')}\n${delim}\ntrailing`;
+    let got: number;
+    try {
+      got = findTerminator(src, 0, delim);
+    } catch (e) {
+      throws++;
+      fail(`findTerminator threw on delimiter ${name}: ${(e as Error).message}`);
+      continue;
+    }
+    const want = src.indexOf(`\n${delim}\n`) + 1 + delim.length;
+    if (got !== want) {
+      mismatched++;
+      fail(`delimiter ${name} matched at ${got}, expected the literal line at ${want}` +
+        ` (body would be ${JSON.stringify(src.slice(0, got))})`);
+    }
+  }
+  if (throws === 0) pass(`no adversarial delimiter throws (${adversarial.length} probed)`);
+  if (mismatched === 0) pass('every delimiter is matched literally, never as a pattern');
+
+  // A delimiter that never appears must run the body to the end of the command
+  // — the documented unterminated-heredoc behaviour — and must not throw.
+  let unterminatedBad = 0;
+  for (const [name, delim] of adversarial) {
+    const src = 'one\ntwo\nthree';
+    try {
+      if (findTerminator(src, 0, delim) !== src.length) {
+        unterminatedBad++;
+        fail(`unterminated body with delimiter ${name} did not run to the end`);
+      }
+    } catch (e) {
+      unterminatedBad++;
+      fail(`unterminated body with delimiter ${name} threw: ${(e as Error).message}`);
+    }
+  }
+  if (unterminatedBad === 0) pass('an unterminated body runs to the end of the command for every delimiter');
+
+  // Cost must not depend on the SHAPE of the delimiter. The old construction
+  // compiled one RegExp per opener, so a command could pay compilation for every
+  // `<<` it contained; this is the regression guard for that.
+  const evil = '(a+)+$';
+  const haystack = `${'a'.repeat(4_000)}\n`.repeat(2) + evil;
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < 2_000; i++) findTerminator(haystack, 0, evil);
+  const evilMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  if (evilMs < 250) pass(`exponential-shaped delimiter stays linear (${evilMs.toFixed(1)} ms × 2000)`);
+  else fail(`exponential-shaped delimiter took ${evilMs.toFixed(1)} ms — the matcher is backtracking`);
+
+  // Many openers in one command: 500 heredocs used to mean 500 regex compiles.
+  const manyOpeners = Array.from({ length: 500 }, (_, i) => `cat <<T${i}\nbody\nT${i}`).join('\n');
+  const t1 = process.hrtime.bigint();
+  for (let i = 0; i < 200; i++) stripHeredocs(manyOpeners);
+  const manyMs = Number(process.hrtime.bigint() - t1) / 1e6;
+  if (manyMs < 250) pass(`500 heredoc openers stay cheap (${manyMs.toFixed(1)} ms × 200)`);
+  else fail(`500 heredoc openers took ${manyMs.toFixed(1)} ms`);
+
+  // The module must compile NO regex out of command text. This is the invariant
+  // CodeQL was asserting, and it is the one that survives someone widening the
+  // opener to accept the terminators bash actually allows.
+  const moduleSrc = fs.readFileSync(
+    path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'server', 'sequenceRules.ts'),
+    'utf8',
+  );
+  const dynamic = /new RegExp\s*\(\s*[^)'"/]/.exec(moduleSrc);
+  if (!dynamic) pass('sequenceRules.ts compiles no RegExp from a non-literal source');
+  else fail(`sequenceRules.ts builds a RegExp dynamically: ${JSON.stringify(dynamic[0])}`);
 }
 
 // Loopback and RFC1918 are not "off-box".
