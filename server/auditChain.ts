@@ -37,6 +37,32 @@
 //      anchor, which is why "the table is empty" and "the table was emptied" are
 //      now different answers.
 //
+//   2b. THE PIN ONLY MOVES OVER STATE THAT STILL VERIFIES. The anchor's whole
+//      job is to let a verifier compare the record against a point in the past,
+//      so advancing the pin is an assertion that everything the OLD pin covered
+//      is still intact. It is therefore conditional: before the pin moves from
+//      row P to a newer row, the probe is asked what hash row P carries RIGHT
+//      NOW, and the move happens only if that is still, byte for byte, the hash
+//      the anchor signed for P.
+//
+//      Why one row is enough. rowHash(P) is a function of row P's content and
+//      rowHash(P-1), transitively of every row before it. Rewriting any row
+//      k <= P forces a rewrite of every hash from k to P to keep the links
+//      consistent — which changes rowHash(P). An attacker who declines to
+//      re-thread instead leaves row k+1's stored prevHash pointing at a hash
+//      that no longer exists, which the link walk reports. So "row P still
+//      hashes to what we signed" plus "the links walk cleanly" covers the whole
+//      prefix, at the cost of ONE indexed lookup per sweep rather than a
+//      289,000-row rehash per append.
+//
+//      Without this, the pin was a moving target an attacker could wait out:
+//      rewrite a row, re-thread the positions after it with the same PUBLIC
+//      SHA-256 this file documents, then let the next append carry the anchor
+//      forward onto the forged tail — a full forge of the record with no access
+//      to the private key at all. The pin now freezes instead (`pinFrozenAt`),
+//      the freeze is counted for good (`pinBreaks`), and nothing after a frozen
+//      pin is reported as attested.
+//
 //   3. Ed25519 SIGNATURE over the anchor, NOT per row. Signing every row with an
 //      asymmetric key would cost ~50µs each and buy nothing extra — the row
 //      chain already binds the rows to each other. Signing only the anchor is
@@ -437,6 +463,17 @@ export function resetSigningKeyCacheForTests(): void {
   keychainWarnAt = 0;
 }
 
+/** Test seam: forget the in-memory anchor so the next read comes off disk.
+ *  Needed by tests that write an anchor file behind this module's back — chiefly
+ *  the one proving that an attacker WITH the private key can still mint an anchor
+ *  that verifies. Not used by the server. */
+export function resetAnchorCacheForTests(): void {
+  anchorState = undefined;
+  anchorDirty = false;
+  anchorFileExisted = false;
+  anchorSignatureValid = true;
+}
+
 /** Short, stable fingerprint of a public key — sha256 of its DER, first 32 hex. */
 function fingerprint(publicPem: string): string {
   try {
@@ -650,11 +687,49 @@ export function reanchorChain(
   for (const row of rows) {
     if (!row.rowHash) continue;
     const rowHash = computeRowHash(row.canonical, prev);
+    // A re-thread is the one hash rewrite this server performs on purpose, so it
+    // is also the one the conditional pin must be told about — otherwise the
+    // next sweep would read the pinned row, find a hash it never signed, and
+    // freeze the anchor over our own maintenance. See repinAfterRethread.
+    repinAfterRethread(row.id, row.rowHash, rowHash);
     applyUpdate(row.id, prev, rowHash);
     prev = rowHash;
     tail = rowHash;
   }
   return tail;
+}
+
+/**
+ * Carry the anchor's pin across a hash rewrite that THIS PROCESS performed.
+ *
+ * Reachable only from reanchorChain, i.e. only from the capped logs' prune path.
+ * It is deliberately keyed on an exact (position, previous hash) pair rather than
+ * on a chain name: the caller supplying the name would be one more thing a future
+ * caller could forget, whereas a match here requires already knowing the hash the
+ * anchor holds for that exact position — which is to say, requires being the code
+ * that just rewrote it. The move is stamped (`rethreads` / `rethreadedAt`) so an
+ * auditor sees that the pinned hash changed for a reason other than an append.
+ *
+ * Not persisted synchronously: the caller runs inside a SQLite transaction, and
+ * flushing the anchor from inside one would sign a state that could still roll
+ * back. The next sweep (<= ANCHOR_SWEEP_MS) seals it. A crash inside that window
+ * leaves the anchor pinned to the pre-prune hash, which reports as tail_mismatch
+ * — a false alarm rather than a missed detection, which is the direction this
+ * whole file errs in.
+ */
+function repinAfterRethread(id: number, from: string, to: string): void {
+  if (!from || !to || from === to) return;
+  try {
+    const state = loadAnchor();
+    for (const entry of Object.values(state.chains)) {
+      if (entry.lastId !== id || entry.lastRowHash !== from) continue;
+      entry.lastRowHash = to;
+      entry.rethreads   = (entry.rethreads ?? 0) + 1;
+      entry.rethreadedAt = new Date().toISOString();
+      entry.updatedAt   = entry.rethreadedAt;
+      anchorDirty = true;
+    }
+  } catch { /* never break a prune */ }
 }
 
 // ── Tail anchor ─────────────────────────────────────────────────────────────
@@ -712,6 +787,28 @@ export interface ChainAnchorEntry {
    *  rather than silently forgotten — a re-founded chain makes no claim about
    *  anything that happened before this timestamp. */
   refoundedAt?: string;
+  /** Set while the pin is FROZEN: the row this anchor had pinned no longer
+   *  carries the hash it was pinned with, so the pin refuses to move forward and
+   *  nothing newer than it is attested. Cleared if the pinned state comes back
+   *  (an operator restoring a good copy), which is why the count below is the
+   *  durable half of the evidence. */
+  pinFrozenAt?: string;
+  /** The position that stopped matching. */
+  pinFrozenId?: number;
+  /** How many times this anchor has ever refused to advance. Never decreases:
+   *  a chain that verifies today but reports pinBreaks > 0 was, at some moment,
+   *  inconsistent with what had already been signed. */
+  pinBreaks?: number;
+  /** Pin moves caused by this server re-threading a capped log after a prune,
+   *  rather than by an append. Stamped because the pinned hash changing without
+   *  the position changing is otherwise exactly what tampering looks like. */
+  rethreads?: number;
+  rethreadedAt?: string;
+  /** How many times the pinned position had already been pruned away by a capped
+   *  log's own retention when the anchor next looked. Counted rather than
+   *  silently allowed, because it marks a stretch of a capped log the pin never
+   *  got to cover. */
+  pinsPruned?: number;
 }
 
 interface AnchorFile {
@@ -730,6 +827,37 @@ export interface ChainProbeReading {
   appended: number;
   lastId: number;
   lastRowHash: string;
+  /**
+   * Lowest id still present, for a chain that drops its oldest rows on purpose
+   * (the two capped logs). A pinned position BELOW this fell out of the retention
+   * window rather than being tampered with, which is the one case where the pin
+   * may be re-founded without the old one verifying.
+   *
+   * That is safe precisely because pruning is oldest-first: for the pinned row to
+   * be gone, every row before it is gone too, so there is nothing left below the
+   * pin for a rewrite to hide in. Deletions that are NOT the cap doing its job
+   * still show up, as a row count short of min(everWritten, cap).
+   *
+   * Omit (or 0) for a chain that never loses a position — the spans ledger keeps
+   * a tombstone for every deletion, so nothing there is ever legitimately absent.
+   */
+  firstId?: number;
+}
+
+/** How the anchor reads a guarded table. Two questions, both cheap. */
+export interface ChainProbe {
+  /** The table's high-water mark and current tail. */
+  read(): ChainProbeReading;
+  /**
+   * The hash the table stores at position `id` right now, or null when that
+   * position is no longer present at all (for chains with tombstones, a
+   * tombstoned position IS present — it keeps its hash).
+   *
+   * This is what makes re-anchoring conditional, so it must be an indexed point
+   * lookup: it runs once per chain per sweep, and a sequential scan here would
+   * put a full table read on a 5-second timer.
+   */
+  pin(id: number): string | null;
 }
 
 /** The exact bytes that get signed. Chain names are sorted so the payload is
@@ -746,7 +874,7 @@ let anchorFileExisted = false;
 let anchorDirty = false;
 let sweepTimer: NodeJS.Timeout | null = null;
 
-const probes = new Map<string, () => ChainProbeReading>();
+const probes = new Map<string, ChainProbe>();
 
 function anchorPath(): string {
   return path.join(hooksDir(), ANCHOR_FILE);
@@ -805,32 +933,86 @@ function entryFor(chain: string): ChainAnchorEntry {
  * holds the database handle. The probe is read on a timer and before any
  * verification, so no write path has to remember to update anything.
  */
-export function registerChainProbe(chain: string, probe: () => ChainProbeReading): void {
+export function registerChainProbe(chain: string, probe: ChainProbe): void {
   probes.set(chain, probe);
   refreshChainAnchors();
 }
 
 /**
- * Fold every probe reading into the anchor, taking the maximum in both
- * directions. The tail hash is only accepted when the probe has moved PAST the
- * position we already anchored: at the same position we keep what we signed, so
- * rewriting a row in place cannot launder itself into the anchor.
+ * Fold every probe reading into the anchor.
+ *
+ * Two different rules, because the two numbers mean different things.
+ *
+ *   • `appended` is a high-water mark, so it only ever goes UP. Raising it is
+ *     always safe: it can only ever increase what verification demands of the
+ *     table, never excuse a shortfall.
+ *   • the PIN (`lastId` + `lastRowHash`) is a claim about the past, so moving it
+ *     forward is only sound while the state it already covered is still intact.
+ *     Before the pin advances we ask the probe what hash the currently pinned
+ *     position holds and require it to equal what we signed. See the "2b" note
+ *     at the top of this file for why checking that ONE row is sufficient — and
+ *     for what an unconditional advance let an attacker do without a key.
+ *
+ * When the check fails the pin does not move. It stays where it is, the freeze
+ * is stamped and counted, and every verifier downstream reports the chain as
+ * unattested past that point rather than quietly re-baselining onto whatever the
+ * table happens to say now.
  */
 export function refreshChainAnchors(): void {
+  const now = () => new Date().toISOString();
   for (const [chain, probe] of probes) {
     try {
-      const r = probe();
+      const r = probe.read();
       const e = entryFor(chain);
       // Measured from the chain's origin, so a re-founded chain counts its own
       // rows rather than every row the table ever held.
       const effective = Math.max(0, r.appended - (e.origin ?? 0));
       if (effective > e.appended) { e.appended = effective; anchorDirty = true; }
-      if (r.lastId > e.lastId) {
-        e.lastId = r.lastId;
-        e.lastRowHash = r.lastRowHash;
-        e.updatedAt = new Date().toISOString();
+
+      // Never lower the pin, and never re-pin in place: at the same position we
+      // keep what we signed, so rewriting a row cannot launder itself in.
+      if (r.lastId <= e.lastId) continue;
+
+      // Nothing pinned yet — the first reading founds the pin, and there is no
+      // earlier claim for it to contradict.
+      if (!e.lastRowHash) {
+        e.lastId = r.lastId; e.lastRowHash = r.lastRowHash; e.updatedAt = now();
         anchorDirty = true;
+        continue;
       }
+
+      // The pinned row fell off the front of a capped log. Not tampering — see
+      // ChainProbeReading.firstId for why re-founding the pin here hides nothing.
+      if (r.firstId !== undefined && r.firstId > 0 && e.lastId < r.firstId) {
+        e.pinsPruned = (e.pinsPruned ?? 0) + 1;
+        e.lastId = r.lastId; e.lastRowHash = r.lastRowHash; e.updatedAt = now();
+        anchorDirty = true;
+        continue;
+      }
+
+      if (probe.pin(e.lastId) !== e.lastRowHash) {
+        // The row we pinned is gone, or carries a hash we never signed. Freeze:
+        // whatever happens after this is not covered by anything we can stand
+        // behind, and saying so is the entire point of the anchor.
+        if (!e.pinFrozenAt) {
+          e.pinFrozenAt = now();
+          e.pinFrozenId = e.lastId;
+          e.pinBreaks   = (e.pinBreaks ?? 0) + 1;
+          anchorDirty   = true;
+        }
+        continue;
+      }
+
+      // The pinned state held. Thaw (the break stays counted in pinBreaks — that
+      // is the durable record that something was once inconsistent) and advance.
+      if (e.pinFrozenAt) {
+        delete e.pinFrozenAt;
+        delete e.pinFrozenId;
+      }
+      e.lastId = r.lastId;
+      e.lastRowHash = r.lastRowHash;
+      e.updatedAt = now();
+      anchorDirty = true;
     } catch { /* a probe that throws must not break the sweep */ }
   }
 }
@@ -975,7 +1157,7 @@ export function refoundChain(chain: string): void {
     const now = new Date().toISOString();
     const previous = state.chains[chain];
     state.chains[chain] = {
-      appended: 0, origin: probes.get(chain)?.().appended ?? 0,
+      appended: 0, origin: probes.get(chain)?.read().appended ?? 0,
       lastId: 0, lastRowHash: '', segments: [],
       foundedAt: previous?.foundedAt ?? now,
       updatedAt: now,
@@ -1000,6 +1182,7 @@ export type ChainVerdict =
   | 'wiped'            // rows the anchor accounts for are gone, or every hash was blanked
   | 'truncated'        // fewer rows present than the anchor accounts for
   | 'tail_mismatch'    // the row the anchor pinned is present but carries a different hash
+  | 'tail_unpinned'    // the anchor accounts for rows but pins no tail hash to check them against
   | 'anchor_missing'   // the table holds chained rows but no anchor exists
   | 'anchor_unsigned'  // an anchor exists but its Ed25519 signature does not verify
   | 'unanchored';      // nothing chained and nothing anchored — no claim either way
@@ -1016,8 +1199,17 @@ export interface ChainStatus {
    *  the public key CANNOT check these. */
   legacyHmacRows: number;
   brokenAtId?: number;
-  /** The chain's boundaries are covered by a signed anchor. */
+  /** The chain's boundaries are covered by a signed anchor AND that anchor is
+   *  still advancing — a frozen pin means everything newer than it is covered by
+   *  nothing, so this is false however good the signature is. */
   attested: boolean;
+  /** How many times the anchor has ever refused to advance because the state it
+   *  had pinned stopped verifying. Non-zero is durable evidence even on a chain
+   *  that verifies today. */
+  anchorPinBreaks?: number;
+  /** Set while the pin is frozen: when it froze, and at which row. */
+  pinFrozenAt?: string;
+  pinFrozenId?: number;
   /** An Ed25519 signing key is available on this install. */
   signed: boolean;
   expectedRows?: number;
@@ -1059,7 +1251,12 @@ export function verifyChain(rows: ChainRow[], opts: VerifyOptions = {}): ChainSt
   const expected = anchor
     ? (opts.cap !== undefined ? Math.min(anchor.appended, opts.cap) : anchor.appended)
     : 0;
-  const attested = anchored && anchorIsSigned();
+  // A frozen pin is not a signature problem — the anchor may be perfectly signed
+  // — but it means the anchor stopped covering the table at some earlier row, so
+  // there is nothing to attest the current state with. Reporting attested:true
+  // here would be the exact claim we cannot make.
+  const pinFrozen = Boolean(anchor?.pinFrozenAt);
+  const attested = anchored && anchorIsSigned() && !pinFrozen;
 
   let hashedRows = 0;
   let legacyHmacRows = 0;
@@ -1079,6 +1276,8 @@ export function verifyChain(rows: ChainRow[], opts: VerifyOptions = {}): ChainSt
     keyId,
     expectedRows: anchor ? expected : undefined,
     anchoredId: anchor?.lastId,
+    ...(anchor?.pinBreaks ? { anchorPinBreaks: anchor.pinBreaks } : {}),
+    ...(anchor?.pinFrozenAt ? { pinFrozenAt: anchor.pinFrozenAt, pinFrozenId: anchor.pinFrozenId } : {}),
     ...extra,
   });
 
@@ -1134,7 +1333,9 @@ export function verifyChain(rows: ChainRow[], opts: VerifyOptions = {}): ChainSt
 
   // Tail check. Rows appended since the last anchor flush are expected and fine
   // (they are simply not yet sealed), so we check that the row the anchor PINNED
-  // is still present and still carries the hash it was pinned with.
+  // is still present and still carries the hash it was pinned with. Note this is
+  // checked at the PINNED POSITION, not at the end of the table: a chain that has
+  // grown past the pin must still answer for the row the pin covers.
   if (anchor!.lastRowHash) {
     if (tailId < anchor!.lastId) {
       return base('truncated', `The anchor pins row ${anchor!.lastId} as the newest; the table ends at ${tailId}. The end of the record was cut off.`);
@@ -1146,6 +1347,16 @@ export function verifyChain(rows: ChainRow[], opts: VerifyOptions = {}): ChainSt
     if (pinned.rowHash !== anchor!.lastRowHash) {
       return base('tail_mismatch', `Row ${anchor!.lastId} is present but carries a different hash than the anchor recorded.`);
     }
+  } else if (hashedRows > 0) {
+    // The anchor counts rows for this chain but holds no hash to check any of
+    // them against. That is not a clean bill of health — it is a verifier with
+    // nothing to compare to — so it gets its own verdict rather than falling
+    // through to 'ok'.
+    return base('tail_unpinned', `The anchor accounts for ${expected} row(s) but pins no tail hash, so the end of the chain cannot be checked at all.`);
+  }
+
+  if (pinFrozen) {
+    return base('tail_mismatch', `The anchor stopped advancing at row ${anchor!.pinFrozenId ?? anchor!.lastId} (${anchor!.pinFrozenAt}) because the state it had pinned no longer verified. Nothing written since is covered by a signed boundary.`);
   }
 
   if (!attested) {
@@ -1183,4 +1394,6 @@ export const AUDIT_LIMITS: readonly string[] = [
   'A key held on this machine does not bind this machine\'s owner. Whoever controls the host controls the signing key and can produce a history that verifies.',
   'Third-party verification covers only rows hashed with SHA-256. Rows still carrying the pre-cutover HMAC (reported as legacyHmacRows) need the local secret to check.',
   'Changes made through this server\'s own database handle are recorded as legitimate. The boundary check catches modifications made outside it — offline edits, another sqlite3 session, a restored copy.',
+  'Rows newer than the last sealed anchor are UNSEALED for up to five seconds. The pin cannot move over a rewritten history, but rows written since the last sweep are not yet covered by any signature, so a rewrite confined to that window leaves no residue. Sealing every append instead would cost an fsync per span.',
+  'The two capped logs (operator audit, enforcement feed) forgive deletion up to their retention cap by design — the expected count is min(everWritten, cap), so a wholesale replacement of a capped log with a fabricated one of the same length is not distinguishable from ordinary pruning. The spans ledger does not have this property: it tombstones every deletion.',
 ];

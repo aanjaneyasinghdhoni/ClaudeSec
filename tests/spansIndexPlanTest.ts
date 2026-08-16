@@ -68,6 +68,11 @@ function cleanup(): void {
 // db.ts's history (traceId_startNano, severity, endNano, traceId_severity,
 // repo, repo_severity) must be gone, not just unused.
 const EXPECTED_INDEXES = [
+  // Not a query index: this one serves the hash chain. The anchor sweep reads the
+  // chain tail and the pinned position every few seconds, and without it both are
+  // sequential scans of the whole table. Partial + covering so it stays small and
+  // is never picked for a spans query.
+  'idx_spans_chainSeq',
   'idx_spans_harness',
   'idx_spans_harness_endNano',
   'idx_spans_harness_severity',

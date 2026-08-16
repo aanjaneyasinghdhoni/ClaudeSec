@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import {
   adoptChainBaseline, anchorIsSigned, auditKeyId, canonicalString, computeRowHash,
   flushChainAnchors, getChainAnchor, isAuditSigned, recordChainSegment,
-  registerChainProbe, type ChainProbeReading,
+  registerChainProbe, type ChainProbe, type ChainProbeReading,
 } from './auditChain.js';
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1110,26 @@ db.exec(`
   END;
 `);
 
+// The chain's own index. Without it every chain read — the tail probe on the
+// 5-second anchor sweep, the backfill's resume lookup, the mutable-field repair,
+// and the pin check that keeps re-anchoring conditional — is a sequential scan
+// of the whole spans table; measured at 289,923 rows that is ~50 ms a time, on a
+// timer, forever. As an index seek it is two page reads.
+//
+// Partial (`WHERE chainSeq IS NOT NULL`) so it holds only rows that are actually
+// in the chain and stays uninteresting to the query planner for anything else.
+// chainSeq alone, NOT (chainSeq, rowHash): measured over 290,000 rows the covering
+// form answers the probe 0.2 µs faster and costs 21 MB more, which is a bad trade
+// against a lookup that runs twice every five seconds. chainSeq only ever
+// increases, so maintaining this is an append at the right edge of the B-tree —
+// no measurable ingest cost (7.31 µs/row either way).
+db.exec(`CREATE INDEX IF NOT EXISTS idx_spans_chainSeq ON spans(chainSeq) WHERE chainSeq IS NOT NULL`);
+
+const spanTailLive  = db.prepare(`SELECT chainSeq AS seq, rowHash FROM spans WHERE chainSeq IS NOT NULL ORDER BY chainSeq DESC LIMIT 1`);
+const spanTailTomb  = db.prepare(`SELECT chainSeq AS seq, rowHash FROM span_chain_tombstones ORDER BY chainSeq DESC LIMIT 1`);
+const spanHashAtSeq = db.prepare(`SELECT rowHash FROM spans WHERE chainSeq = ?`);
+const tombHashAtSeq = db.prepare(`SELECT rowHash FROM span_chain_tombstones WHERE chainSeq = ?`);
+
 // ── Anchor probes ───────────────────────────────────────────────────────────
 // Registered here because this is the only module holding the database handle.
 // Each probe reports the table's id high-water mark and its current tail; the
@@ -1123,13 +1143,30 @@ db.exec(`
 // it. That is what turns "the table is empty" into "the table held 4,000 rows
 // and now holds none".
 
-function autoincrementProbe(table: string): () => ChainProbeReading {
+// Each probe also answers `pin(id)` — the hash stored at one position — which is
+// what lets the anchor refuse to move its pin over a rewritten history. It runs
+// once per chain per sweep, so it has to be a point lookup: the two logs get one
+// for free from their INTEGER PRIMARY KEY, and the spans chain gets
+// idx_spans_chainSeq below.
+
+function autoincrementProbe(table: string): ChainProbe {
   const seq  = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = ?`);
   const tail = db.prepare(`SELECT id, rowHash FROM ${table} ORDER BY id DESC LIMIT 1`);
-  return () => {
-    const high = (seq.get(table) as { seq?: number } | undefined)?.seq ?? 0;
-    const t    = tail.get() as { id?: number; rowHash?: string } | undefined;
-    return { appended: high, lastId: t?.id ?? 0, lastRowHash: t?.rowHash ?? '' };
+  const head = db.prepare(`SELECT id FROM ${table} ORDER BY id ASC LIMIT 1`);
+  const at   = db.prepare(`SELECT rowHash FROM ${table} WHERE id = ?`);
+  return {
+    read(): ChainProbeReading {
+      const high = (seq.get(table) as { seq?: number } | undefined)?.seq ?? 0;
+      const t    = tail.get() as { id?: number; rowHash?: string } | undefined;
+      const h    = head.get() as { id?: number } | undefined;
+      // Both of these logs are CAPPED: they drop their oldest rows on insert, so
+      // a pin below the surviving head is retention, not tampering.
+      return { appended: high, lastId: t?.id ?? 0, lastRowHash: t?.rowHash ?? '', firstId: h?.id ?? 0 };
+    },
+    pin(id: number): string | null {
+      const r = at.get(id) as { rowHash?: string } | undefined;
+      return r === undefined ? null : (r.rowHash ?? '');
+    },
   };
 }
 
@@ -1138,16 +1175,22 @@ registerChainProbe('enforce_log',        autoincrementProbe('enforce_log'));
 
 // The spans chain has its own counter (`chainSeq`), and a pruned span keeps its
 // position in the tombstone table, so the high-water mark is the larger of the
-// two — a deleted tail still counts as having existed.
-registerChainProbe('spans', () => {
-  const live = db.prepare(
-    `SELECT chainSeq AS seq, rowHash FROM spans WHERE chainSeq IS NOT NULL ORDER BY chainSeq DESC LIMIT 1`,
-  ).get() as { seq?: number; rowHash?: string } | undefined;
-  const tomb = db.prepare(
-    `SELECT chainSeq AS seq, rowHash FROM span_chain_tombstones ORDER BY chainSeq DESC LIMIT 1`,
-  ).get() as { seq?: number; rowHash?: string } | undefined;
-  const best = (live?.seq ?? 0) >= (tomb?.seq ?? 0) ? live : tomb;
-  return { appended: best?.seq ?? 0, lastId: best?.seq ?? 0, lastRowHash: best?.rowHash ?? '' };
+// two — a deleted tail still counts as having existed. `pin` reads the same
+// union: a tombstoned position is still a position the anchor can be held to,
+// because the tombstone froze the hash that used to live there.
+registerChainProbe('spans', {
+  read(): ChainProbeReading {
+    const live = spanTailLive.get() as { seq?: number; rowHash?: string } | undefined;
+    const tomb = spanTailTomb.get() as { seq?: number; rowHash?: string } | undefined;
+    const best = (live?.seq ?? 0) >= (tomb?.seq ?? 0) ? live : tomb;
+    return { appended: best?.seq ?? 0, lastId: best?.seq ?? 0, lastRowHash: best?.rowHash ?? '' };
+  },
+  pin(seq: number): string | null {
+    const live = spanHashAtSeq.get(seq) as { rowHash?: string } | undefined;
+    if (live !== undefined) return live.rowHash ?? '';
+    const tomb = tombHashAtSeq.get(seq) as { rowHash?: string } | undefined;
+    return tomb === undefined ? null : (tomb.rowHash ?? '');
+  },
 });
 
 // Backfill bookkeeping, in `config` for the same reason the FTS migration keeps
@@ -1327,6 +1370,13 @@ function spanChainTail(): { seq: number; rowHash: string } {
     spanTail = { seq: 0, rowHash: '' };
   }
   return spanTail;
+}
+
+/** Test seam: forget the cached tail so the next append re-reads it from the
+ *  table. Needed by fixtures that rewrite the spans table through a second
+ *  connection, which this process's cache cannot see. Not used by the server. */
+export function resetSpanChainTailCacheForTests(): void {
+  spanTail = undefined;
 }
 
 /**
@@ -1884,6 +1934,7 @@ export type SpanChainVerdict =
   | 'truncated'         // fewer rows than the anchor accounts for
   | 'wiped'             // the anchor accounts for rows; nothing is left
   | 'tail_mismatch'     // the anchored position carries a different hash
+  | 'tail_unpinned'     // the anchor counts positions but pins no hash to check them against
   | 'anchor_missing'
   | 'anchor_unsigned';
 
@@ -1909,7 +1960,17 @@ export interface SpanChainStatus {
   deep: boolean;
   brokenAtSeq?: number;
   expectedRows?: number;
+  /** A signed anchor covers this chain's boundaries AND is still advancing. A
+   *  frozen pin makes this false regardless of the signature: everything newer
+   *  than the freeze is covered by nothing. */
   attested: boolean;
+  /** How many times the anchor has ever refused to advance because the position
+   *  it had pinned stopped carrying the hash it was pinned with. Never
+   *  decreases — non-zero on a chain that verifies today still means the record
+   *  was, at some moment, inconsistent with what had already been signed. */
+  anchorPinBreaks?: number;
+  pinFrozenAt?: string;
+  pinFrozenSeq?: number;
   signed: boolean;
   keyId: string;
   backfillComplete: boolean;
@@ -1943,7 +2004,11 @@ export async function verifySpanChain(
   const window = Math.max(0, opts.window ?? 5_000);
   const anchor = getChainAnchor('spans');
   const anchored = anchor !== null && anchor.appended > 0;
-  const attested = anchored && anchorIsSigned();
+  // A frozen pin means the anchor stopped covering this table at some earlier
+  // position, so however good its signature is there is nothing here it can
+  // attest. See refreshChainAnchors in server/auditChain.ts.
+  const pinFrozen = Boolean(anchor?.pinFrozenAt);
+  const attested = anchored && anchorIsSigned() && !pinFrozen;
   const segments = new Set(anchor?.segments ?? []);
 
   const totalSpans   = (db.prepare(`SELECT COUNT(*) AS c FROM spans`).get() as { c: number }).c;
@@ -1965,6 +2030,8 @@ export async function verifySpanChain(
     deep,
     expectedRows: anchor ? anchor.appended : undefined,
     attested,
+    ...(anchor?.pinBreaks ? { anchorPinBreaks: anchor.pinBreaks } : {}),
+    ...(anchor?.pinFrozenAt ? { pinFrozenAt: anchor.pinFrozenAt, pinFrozenSeq: anchor.pinFrozenId } : {}),
     signed: isAuditSigned(),
     keyId: auditKeyId(),
     backfillComplete: spanChainBackfillComplete(),
@@ -1994,9 +2061,16 @@ export async function verifySpanChain(
   let prevHash = '';
   let lastSeq  = 0;
   let lastHash = '';
+  // The hash currently stored at the position the anchor pinned. Picked up
+  // during the walk we are already doing, so checking the pin at its own
+  // position — rather than only when it happens to be the last row — costs one
+  // integer comparison per row and no extra query.
+  let pinnedHash: string | undefined;
+  const pinnedSeq = anchor?.lastId ?? 0;
   let n = 0;
   for (const raw of walk.iterate()) {
     const row = raw as { seq: number; prevHash: string; rowHash: string; tomb: number };
+    if (row.seq === pinnedSeq) pinnedHash = row.rowHash;
     if (prevSeq >= 0) {
       if (row.seq !== prevSeq + 1) {
         return out('unaccounted_gap', `Chain position ${prevSeq + 1} is missing and no tombstone accounts for it — ${row.seq - prevSeq - 1} span(s) were deleted outside this server.`, { brokenAtSeq: prevSeq + 1 });
@@ -2073,17 +2147,40 @@ export async function verifySpanChain(
   if (present < expected) {
     return out('truncated', `The anchor accounts for ${expected} chained span(s); ${present} remain (live plus tombstoned). ${expected - present} were removed outside this server.`);
   }
-  if (anchor!.lastRowHash && lastSeq < anchor!.lastId) {
-    return out('truncated', `The anchor pins chain position ${anchor!.lastId} as the newest; the chain ends at ${lastSeq}. The end of the record was cut off.`);
+  if (anchor!.lastRowHash) {
+    if (lastSeq < anchor!.lastId) {
+      return out('truncated', `The anchor pins chain position ${anchor!.lastId} as the newest; the chain ends at ${lastSeq}. The end of the record was cut off.`);
+    }
+    // Checked AT THE PINNED POSITION, not only when the pin happens to be the
+    // last row. The old form (`lastSeq === anchor.lastId`) silently checked
+    // nothing the moment one more span landed, which — together with an anchor
+    // that re-pinned unconditionally — let a rewritten and re-threaded history
+    // verify clean without any key at all.
+    if (pinnedHash === undefined) {
+      return out('truncated', `The anchor pins chain position ${anchor!.lastId}, which is neither a live span nor a tombstone.`, { brokenAtSeq: anchor!.lastId });
+    }
+    if (pinnedHash !== anchor!.lastRowHash) {
+      return out('tail_mismatch', `Chain position ${anchor!.lastId} carries a different hash than the anchor recorded — the record was rewritten and re-threaded beneath the anchor.`, { brokenAtSeq: anchor!.lastId });
+    }
+  } else {
+    // Positions are accounted for, but the anchor holds no hash to check any of
+    // them against. That is a verifier with nothing to compare to, not a pass.
+    return out('tail_unpinned', `The anchor accounts for ${expected} chain position(s) but pins no tail hash, so the end of the chain cannot be checked at all.`);
   }
-  if (anchor!.lastRowHash && lastSeq === anchor!.lastId && lastHash !== anchor!.lastRowHash) {
-    return out('tail_mismatch', `Chain position ${anchor!.lastId} carries a different hash than the anchor recorded.`);
+  if (pinFrozen) {
+    return out('tail_mismatch', `The anchor stopped advancing at chain position ${anchor!.pinFrozenId ?? anchor!.lastId} (${anchor!.pinFrozenAt}) because the state it had pinned no longer verified. Nothing recorded since is covered by a signed boundary.`, { brokenAtSeq: anchor!.pinFrozenId ?? anchor!.lastId });
   }
   if (!attested) {
     return out('anchor_unsigned', 'The spans chain is internally consistent, but the anchor is unsigned or its signature does not verify — its boundaries cannot be trusted.');
   }
 
-  return out('ok', `Chain intact across ${chainedSpans} live span(s) and ${tombstones} tombstone(s); ${checkedHashes} content hash(es) recomputed${deep ? '' : ' (windowed — pass deep=1 for all of them)'}, of which ${legacyFieldRows} verify only under the pre-fix scheme and are not protected against a future endNano/repo edit. Detection only — this is not proof that every event was recorded.`);
+  // A chain that verifies today but whose anchor once refused to advance is not
+  // the same thing as a chain that was never disturbed, so the count is said out
+  // loud rather than left in a field nobody reads.
+  const priorBreaks = anchor!.pinBreaks
+    ? ` The anchor has refused to advance ${anchor!.pinBreaks} time(s) in the past (see anchorPinBreaks): this chain verifies now, but it did not always.`
+    : '';
+  return out('ok', `Chain intact across ${chainedSpans} live span(s) and ${tombstones} tombstone(s); ${checkedHashes} content hash(es) recomputed${deep ? '' : ' (windowed — pass deep=1 for all of them)'}, of which ${legacyFieldRows} verify only under the pre-fix scheme and are not protected against a future endNano/repo edit.${priorBreaks} Detection only — this is not proof that every event was recorded.`);
 }
 
 // ---------------------------------------------------------------------------
