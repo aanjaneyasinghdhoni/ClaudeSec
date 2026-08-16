@@ -1,142 +1,28 @@
-import React, { useEffect, useState } from 'react';
-import {
-  Eye, AlertTriangle, Shield, Bookmark, Settings, PanelLeftClose, PanelLeftOpen, BookOpen,
-} from 'lucide-react';
-// Value import is safe despite dashboardTypes importing Category from here:
-// that import is type-only, so no runtime cycle exists.
-import { CATEGORY_TABS, type Tab } from './dashboardTypes';
+import React from 'react';
+import { AlertTriangle, Bookmark, Eye, Scale, Settings, Shield } from 'lucide-react';
 
-export type Category = 'observe' | 'detect' | 'protect' | 'review' | 'manage';
+/**
+ * The six top-level groups of the product. This file holds only the data —
+ * the rail that renders it lives in `src/shell/NavRail.tsx`, because the shape
+ * of the navigation is a layout concern and this list is not.
+ *
+ * `Category` is imported as a type by the router, the route resolver and the
+ * tab map, so it stays here rather than moving into the shell.
+ *
+ * `govern` sits between Review and Manage on purpose: Protect holds the
+ * implementation (Rules, Enforce, MCP Scan); Govern is a different job —
+ * proving what Protect actually did, not doing it. It is the one screen a
+ * non-engineer opens, so it gets its own stop rather than living inside
+ * Protect where the premise (a readable layer sitting *over* the machinery)
+ * would be buried beside its own implementation.
+ */
+export type Category = 'observe' | 'detect' | 'protect' | 'review' | 'govern' | 'manage';
 
 export const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
-  { id: 'observe', label: 'Observe',  icon: <Eye className="w-4 h-4 shrink-0" /> },
-  { id: 'detect',  label: 'Detect',   icon: <AlertTriangle className="w-4 h-4 shrink-0" /> },
-  { id: 'protect', label: 'Protect',  icon: <Shield className="w-4 h-4 shrink-0" /> },
-  { id: 'review',  label: 'Review',   icon: <Bookmark className="w-4 h-4 shrink-0" /> },
-  { id: 'manage',  label: 'Manage',   icon: <Settings className="w-4 h-4 shrink-0" /> },
+  { id: 'observe', label: 'Observe', icon: <Eye className="size-4 shrink-0" /> },
+  { id: 'detect',  label: 'Detect',  icon: <AlertTriangle className="size-4 shrink-0" /> },
+  { id: 'protect', label: 'Protect', icon: <Shield className="size-4 shrink-0" /> },
+  { id: 'review',  label: 'Review',  icon: <Bookmark className="size-4 shrink-0" /> },
+  { id: 'govern',  label: 'Govern',  icon: <Scale className="size-4 shrink-0" /> },
+  { id: 'manage',  label: 'Manage',  icon: <Settings className="size-4 shrink-0" /> },
 ];
-
-const STORAGE_KEY = 'claudesec.railCollapsed';
-
-interface Props {
-  active: Category;
-  onChange: (cat: Category) => void;
-  /** Current tab, used to highlight the matching sub-item in the expanded rail. */
-  activeTab?: Tab;
-  /** Navigate straight to a tab from its rail sub-item. */
-  onTabChange?: (tab: Tab) => void;
-  alertCount?: number;
-  onOpenDocs?: () => void;
-  docsActive?: boolean;
-}
-
-export function CategoryNav({ active, onChange, activeTab, onTabChange, alertCount = 0, onOpenDocs, docsActive = false }: Props) {
-  const [collapsed, setCollapsed] = useState<boolean>(
-    () => localStorage.getItem(STORAGE_KEY) === 'true'
-  );
-
-  useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, String(collapsed)); } catch { /* ignore */ }
-  }, [collapsed]);
-
-  return (
-    <div
-      className={`hidden md:flex shrink-0 flex-col py-3 px-2 gap-1 transition-[width] duration-200 ease-out overflow-y-auto overflow-x-hidden ${collapsed ? 'w-[56px] items-center' : 'w-[180px]'}`}
-      style={{
-        borderRight: '1px solid var(--cs-border)',
-        background: 'var(--cs-bg-surface)',
-      }}
-    >
-      <button
-        onClick={() => setCollapsed(v => !v)}
-        title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
-        className={`category-btn h-10 rounded-xl flex items-center mb-1 ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
-        style={{ color: 'var(--cs-text-faint)' }}
-      >
-        {collapsed ? <PanelLeftOpen className="w-4 h-4 shrink-0" /> : <PanelLeftClose className="w-4 h-4 shrink-0" />}
-        {!collapsed && (
-          <span className="text-xs font-medium tracking-wide whitespace-nowrap">Collapse</span>
-        )}
-      </button>
-
-      {CATEGORIES.map(cat => {
-        const isActive = active === cat.id;
-        return (
-          <div key={cat.id} className={`flex flex-col gap-0.5 ${collapsed ? 'items-center' : 'w-full'}`}>
-            <button
-              onClick={() => onChange(cat.id)}
-              title={cat.label}
-              className={`category-btn relative h-10 rounded-xl flex items-center ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
-              style={{
-                background: isActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
-                color: isActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
-              }}
-            >
-              {cat.icon}
-              {!collapsed && (
-                <span className="text-xs font-medium tracking-wide whitespace-nowrap">{cat.label}</span>
-              )}
-
-              {cat.id === 'detect' && alertCount > 0 && (
-                <span
-                  className={`min-w-[16px] h-[16px] px-1 text-[9px] font-bold rounded-full flex items-center justify-center leading-none bg-rose-500 text-white ${
-                    collapsed ? 'absolute -top-0.5 -right-0.5' : 'ml-auto'
-                  }`}
-                >
-                  {alertCount > 999 ? '999+' : alertCount}
-                </span>
-              )}
-
-              {isActive && (
-                <div className="absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full" style={{ background: 'var(--cs-accent)' }} />
-              )}
-            </button>
-
-            {/* Tabs inside this category — visible only when the rail is expanded,
-                so every view is discoverable without clicking through categories. */}
-            {!collapsed && onTabChange && CATEGORY_TABS[cat.id].map(t => {
-              const tabActive = !docsActive && activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => onTabChange(t.id)}
-                  title={t.label}
-                  className="category-btn relative h-7 rounded-lg flex items-center w-full pl-9 pr-2"
-                  style={{
-                    background: tabActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
-                    color: tabActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
-                  }}
-                >
-                  <span className="text-[11px] tracking-wide whitespace-nowrap">{t.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        );
-      })}
-
-      <div
-        className={`mt-auto mb-1 ${collapsed ? 'w-6' : 'w-full'}`}
-        style={{ height: '1px', background: 'var(--cs-border)' }}
-      />
-
-      <button
-        onClick={() => onOpenDocs?.()}
-        title="Documentation"
-        className={`category-btn relative h-10 rounded-xl flex items-center ${collapsed ? 'w-10 justify-center' : 'w-full px-2.5 gap-2.5'}`}
-        style={{
-          background: docsActive ? 'rgba(var(--cs-accent-rgb),0.1)' : 'transparent',
-          color: docsActive ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
-        }}
-      >
-        <BookOpen className="w-4 h-4 shrink-0" />
-        {!collapsed && (
-          <span className="text-xs font-medium tracking-wide whitespace-nowrap">Docs</span>
-        )}
-        {docsActive && (
-          <div className="absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full" style={{ background: 'var(--cs-accent)' }} />
-        )}
-      </button>
-    </div>
-  );
-}
