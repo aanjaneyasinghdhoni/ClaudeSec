@@ -66,14 +66,14 @@
     "dev": "tsx server/index.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "init": "tsx cli/init.ts",
-    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/retentionConfigValidationTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/costDedupeTest.ts && tsx tests/criticalSeverityTest.ts && tsx tests/installHookTest.ts && tsx tests/enforceStatusTest.ts && tsx tests/enforceHookLogTest.ts && tsx tests/protectedPathsHookTest.ts && tsx tests/exfilFloorHookTest.ts && tsx tests/catastrophicFloorHookTest.ts && tsx tests/ssrfFetchHookTest.ts && tsx tests/editEnforceFloorTest.ts && tsx tests/enforceParityTest.ts && tsx tests/enforceConfigPathParityTest.ts && tsx tests/customRuleEnforceTest.ts && tsx tests/enforceOverrideTest.ts && tsx tests/repoIdentityTest.ts && tsx tests/reposRouteTest.ts && tsx tests/sessionsRouteTest.ts && tsx tests/entryGuardTest.ts && tsx tests/auditChainTest.ts",
+    "test": "tsx tests/ruleSelfTest.ts && tsx tests/catastrophic-parity.test.ts && tsx tests/scrubTest.ts && tsx tests/ssrfTest.ts && tsx tests/retentionTest.ts && tsx tests/retentionConfigValidationTest.ts && tsx tests/retentionProfilesTest.ts && tsx tests/authTest.ts && tsx tests/otlpIngestTest.ts && tsx tests/otlpForwardScrubTest.ts && tsx tests/costDedupeTest.ts && tsx tests/criticalSeverityTest.ts && tsx tests/severityMaxTest.ts && tsx tests/installHookTest.ts && tsx tests/enforceStatusTest.ts && tsx tests/enforceImpactTest.ts && tsx tests/enforceHookLogTest.ts && tsx tests/protectedPathsHookTest.ts && tsx tests/selfProtectionFloorTest.ts && tsx tests/exfilFloorHookTest.ts && tsx tests/catastrophicFloorHookTest.ts && tsx tests/ssrfFetchHookTest.ts && tsx tests/editEnforceFloorTest.ts && tsx tests/enforceParityTest.ts && tsx tests/enforceConfigPathParityTest.ts && tsx tests/customRuleEnforceTest.ts && tsx tests/enforceOverrideTest.ts && tsx tests/repoIdentityTest.ts && tsx tests/reposRouteTest.ts && tsx tests/sessionsRouteTest.ts && tsx tests/sessionsPaginationTest.ts && tsx tests/entryGuardTest.ts && tsx tests/legacyDbMigrationTest.ts && tsx tests/auditChainTest.ts && tsx tests/auditIntegrityTest.ts && tsx tests/auditAnchorTest.ts && tsx tests/auditKeyStoreTest.ts && tsx tests/spanChainMutableFieldTest.ts && tsx tests/spanFieldCoverageTest.ts && tsx tests/anomalyDedupWindowTest.ts && tsx tests/anomalySqlParityTest.ts && tsx tests/ftsMirrorTest.ts && tsx tests/ftsUpdateTriggerTest.ts && tsx tests/ftsExternalContentTest.ts && tsx tests/controlPlaneGateTest.ts && tsx tests/routeHardeningTest.ts && tsx tests/toolOutcomeTest.ts && tsx tests/subAgentLineageTest.ts && tsx tests/sequenceRulesTest.ts && tsx tests/spansIndexPlanTest.ts && tsx tests/liveActivityParityTest.ts && tsx tests/governancePolicyLabelsTest.ts && tsx tests/governTabStatusTest.ts && tsx tests/evidencePackSigningTest.ts && tsx tests/repoTreeGroupingTest.ts && tsx tests/sessionLabelTest.ts && tsx tests/graphFilterTest.ts && tsx tests/webhookDeliveryFormatTest.ts && tsx tests/comparePanelDeltaTest.ts",
     "prebuild": "pnpm test",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "scan": "node scripts/scan-secrets.mjs",
-    "preflight": "pnpm lint && pnpm test && pnpm build && node scripts/check-consistency.mjs && node scripts/scan-secrets.mjs && pnpm audit --prod --audit-level high"
+    "preflight": "pnpm lint && pnpm test && pnpm build && node scripts/check-consistency.mjs && node scripts/check-deployed-hook.mjs && node scripts/scan-secrets.mjs && pnpm audit --prod --audit-level high"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
@@ -87,6 +87,9 @@
     "@xyflow/react": "^12.11.0",
     "better-sqlite3": "^12.10.0",
     "body-parser": "^2.2.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
@@ -96,15 +99,17 @@
     "lucide-react": "^1.17.0",
     "mermaid": "^11.15.0",
     "motion": "^12.23.24",
-    "re2": "^1.24.1",
+    "radix-ui": "^1.6.7",
+    "re2": "^1.26.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router-dom": "^7.17.0",
+    "react-router-dom": "^7.18.2",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
     "remark-mdx-frontmatter": "^5.2.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "tailwind-merge": "^3.6.0",
     "tsx": "^4.22.4",
     "vite": "^8.0.16"
   },
@@ -117,7 +122,9 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.21",
+    "shadcn": "^4.18.0",
     "tailwindcss": "^4.3.0",
+    "tw-animate-css": "^1.4.0",
     "typescript": "~5.8.2"
   }
 }
