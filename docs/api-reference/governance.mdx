@@ -1,0 +1,145 @@
+---
+title: "Governance API"
+description: "Read-only endpoints backing the Govern tab — policy status snapshot and the downloadable evidence pack."
+icon: "clipboard-check"
+---
+
+## Overview
+
+Both endpoints are pure reads over tables that already exist (`alerts`, `enforce_log`,
+`rule_overrides`, `suppressions`, `operator_audit_log`, `spans`) plus the same hook-status and
+chain-verify calls the Enforce and Audit surfaces already use. Neither writes to the database,
+mutates config, or evaluates a new detection — see [Governance](/govern/policies) for what the
+12 policies mean and what their statuses do and don't prove.
+
+---
+
+## GET /api/governance/policies
+
+The coverage strip plus all 12 policy rows, for the Govern tab.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `days` | integer | `90` | Evaluation window in days. Capped at `3650` |
+
+### Response (abridged)
+
+```json
+{
+  "generatedAt": "2026-08-15T12:00:00.000Z",
+  "period": { "days": 90, "from": "…", "to": "…" },
+  "coverage": {
+    "dataHeld": { "configuredDays": 183, "effectiveDays": 76, "cappedByMaxSpans": false, "warning": null },
+    "mode": "monitor",
+    "effectiveMode": "monitor",
+    "modeSource": "monitor default",
+    "hook": { "installed": "yes", "scopes": ["user"] },
+    "chain": { "ok": true, "audit": { "…": "…" }, "enforce": { "…": "…" }, "spans": { "…": "…" } },
+    "agentsSeen": [{ "harness": "claude-code", "sessions": 12, "spans": 4021 }]
+  },
+  "policies": [
+    {
+      "id": "P1",
+      "sentence": "Agents must not read credential stores.",
+      "status": "held",
+      "reasons": [],
+      "severityFloor": "high",
+      "enforcement": "floor",
+      "enforcementNote": "…",
+      "ruleLabels": ["AWS credentials file read", "…"],
+      "ruleLabelCount": 21,
+      "evidence": { "alerts": 0, "blocked": 0, "disabledCount": 0, "suppressedCount": 0 },
+      "evidenceDescription": "…",
+      "doesNotProve": ["…"],
+      "frameworks": { "nist": ["MS-2.4", "…"], "iso": ["A.9.2", "…"] },
+      "configPolicy": false
+    }
+  ],
+  "frameworkCoverage": {
+    "nist": { "claimed": ["MS-2.4", "…"], "claimedCount": 10, "total": 72 },
+    "iso": {
+      "claimed": ["A.9.2", "…"], "claimedCount": 7, "total": 38,
+      "mandatoryClauses": { "claimed": 0, "total": 7 }
+    }
+  },
+  "honesty": {
+    "heldMeans": "…", "notAScore": "…", "notCertification": "…",
+    "biggestGap": "…", "governGap": "…"
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `status` | `held` \| `violated` \| `not-provable` — see [Governance](/govern/policies#the-three-word-status) |
+| `reasons` | Why a `not-provable` status is not-provable; empty for `held`/`violated` |
+| `severityFloor` | The minimum severity this policy's backing carries, or `null` for a configuration policy |
+| `enforcement` | `floor` \| `enforce` \| `detect` \| `config` — the dominant enforcement class |
+| `evidence.alerts` / `evidence.blocked` | Counts within the requested window |
+| `evidence.disabledCount` / `evidence.suppressedCount` | How many of this policy's backing rule labels are currently disabled or suppressed |
+| `configPolicy` | `true` for P11 (retention) and P12 (local-only + scrubbing) — status derives from config state, not rule matches |
+| `frameworkCoverage` | The full claimed-identifier lists and totals — see [Governance → Framework coverage](/govern/policies#framework-coverage-honestly) |
+
+```bash
+curl http://localhost:3000/api/governance/policies
+curl "http://localhost:3000/api/governance/policies?days=365"
+```
+
+---
+
+## GET /api/governance/evidence
+
+Downloads a dated evidence pack: the same snapshot as `/api/governance/policies`, plus a Markdown
+summary and the raw `alerts` / `enforce_log` / `operator_audit_log` rows for the window, as CSV.
+
+### Query parameters
+
+Same as above — `days` (default `90`, capped at `3650`).
+
+### Response
+
+`Content-Disposition: attachment; filename="claudesec-evidence-pack-<date>.json"`
+
+```json
+{
+  "manifest": {
+    "appVersion": "…",
+    "generatedAt": "…",
+    "period": { "…": "…" },
+    "policySetHash": "sha256 of the 12 policy definitions",
+    "ruleCount": 210,
+    "coverage": { "…": "…" },
+    "policies": [ "…" ],
+    "frameworkCoverage": { "…": "…" },
+    "rowCounts": { "alerts": 12, "enforce": 3, "audit": 40 }
+  },
+  "summaryMarkdown": "# ClaudeSec evidence pack\n\n…",
+  "alertsCsv": "id,ts,ruleLabel,severity,harness,spanName,matchedText,dismissed,fp\n…",
+  "enforceCsv": "id,ts,mode,label,severity,command,wouldBlock,blocked\n…",
+  "auditCsv": "id,ts,actor,action,target,detail,sourceIp\n…",
+  "verification": {
+    "signed": true,
+    "algorithm": "ed25519",
+    "keyId": "…",
+    "signature": "base64 Ed25519 signature over the canonical payload",
+    "publicKeyEndpoint": "/api/audit/public-key",
+    "howToVerify": "…"
+  }
+}
+```
+
+<Note>
+  `verification.signed` tells you honestly whether this particular pack carries a valid Ed25519
+  signature. It is `false`, carrying a `reason` instead of `signature`, only on an install that has
+  no audit signing key — see [Governance → The evidence pack](/govern/policies#the-evidence-pack).
+  When `signed` is `true`, `howToVerify` describes exactly
+  how to recompute the canonical payload and check the signature against the public key at
+  `publicKeyEndpoint` — the same key [`/api/audit/public-key`](/api-reference/audit-log#get-apiauditpublic-key) serves.
+</Note>
+
+```bash
+curl -o evidence-pack.json http://localhost:3000/api/governance/evidence
+curl -o evidence-pack.json "http://localhost:3000/api/governance/evidence?days=400"
+```
