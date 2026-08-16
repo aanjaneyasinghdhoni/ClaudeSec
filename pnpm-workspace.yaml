@@ -2,9 +2,20 @@
 # Build scripts are blocked for all packages by default in pnpm 10+.
 # Allowlist packages that need native compilation or binary bundling.
 allowBuilds:
-  better-sqlite3: true
+  # false, not absent: pnpm 11 fails the install outright on a build script it
+  # skipped without being told to.
+  better-sqlite3: false
   esbuild: true
   re2: true
+
+# better-sqlite3 is denied above. From 13.0.0 it ships a prebuilt binary
+# for every platform it supports — including both musl targets — inside the
+# published tarball, and lib/binding.js loads that directly. Its binding.gyp
+# even short-circuits when a prebuild is present, but node-gyp must run its
+# configure step, and therefore find Python, before it can evaluate the file at
+# all. The Alpine image carries no Python, so allowing the build there fails the
+# install outright instead of falling back. Nothing needs compiling, so nothing
+# runs. Re-add it only alongside a toolchain in the Dockerfile.
 
 # Force-patch transitive deps to clear known advisories (pnpm reads overrides here
 # in 11.x, not from package.json). Each patched release stays within the same major,
