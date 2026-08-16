@@ -240,7 +240,7 @@ to AI coding agents are mapped below.
 | OWASP ID | Category | ClaudeSec coverage |
 |---|---|---|
 | LLM01:2025 | Prompt Injection | HIGH-severity rules for classic injection phrases; hook blocks in enforce mode. Conversational injection that never reaches a tool call is not visible. |
-| LLM02:2025 | Sensitive Information Disclosure | 671 rules detect credential patterns in tool-call spans; secret scrubbing redacts known shapes at storage. |
+| LLM02:2025 | Sensitive Information Disclosure | 673 rules detect credential patterns in tool-call spans; secret scrubbing redacts known shapes at storage. |
 | LLM03:2025 | Supply Chain | Custom index/registry override rules (HIGH); MCP-scan surfaces unverified MCP servers. |
 | LLM05:2025 | Improper Output Handling | `eval(` / `exec(` detection catches cases where model output is executed without sanitisation. |
 | LLM06:2025 | Excessive Agency | Enforcement hook limits what high-severity tool calls can execute; protected paths provide a per-user floor. Scope is Claude Code and MCP-proxied agents only. |

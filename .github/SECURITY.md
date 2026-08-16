@@ -59,7 +59,7 @@ not itself an isolated sandbox and carries the limitations any local server does
   tokens, private-key PEM blocks, DB connection strings, JWTs, home paths) from every span
   before it is stored, broadcast, or exported. Scrubbing catches known *shapes*, not arbitrary
   free-form text.
-- **Threat detection engine** — 671 regex rules. Every one is held to a linear-time execution
+- **Threat detection engine** — 673 regex rules. Every one is held to a linear-time execution
   gate by the rule self-test, and custom rules you author are additionally compiled with RE2,
   which rejects backtracking constructs outright. Pattern matching produces false positives. It
   is defence-in-depth, not a guarantee.
@@ -125,7 +125,7 @@ individual developer workstations or internal team networks behind a VPN.
 
 - Ingests OTLP traces on `localhost` (default port 3000) and stores them in a local SQLite
   database (`spans.db`).
-- Evaluates every span against 671 built-in regex rules to detect suspicious patterns.
+- Evaluates every span against 673 built-in regex rules to detect suspicious patterns.
 - Broadcasts updates to connected browser clients via Socket.io.
 - Serves reads to any local caller, and gates every local **mutation** behind a control token
   paired out of band by `claudesec open`.
@@ -144,7 +144,7 @@ individual developer workstations or internal team networks behind a VPN.
 
 ### Known Limitations
 
-- Regex pattern matching produces false positives and false negatives. The 671 built-in rules
+- Regex pattern matching produces false positives and false negatives. The 673 built-in rules
   are a starting point, not an exhaustive threat library.
 - The process scanner uses `ps aux` to detect running agents. It is informational only.
 - Webhook delivery is best-effort. Do not rely on it for critical alerting without a

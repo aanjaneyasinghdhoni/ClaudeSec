@@ -10,7 +10,7 @@
 Claude Code, GitHub Copilot CLI, and Codex all write full session transcripts to disk as they
 work. ClaudeSec tails those transcripts in real time — across every repo on your machine — and
 surfaces what your agents are actually doing: every tool call, every command, every file touched,
-scored live against ~671 built-in threat-detection rules plus a stateful sequence engine that
+scored live against ~673 built-in threat-detection rules plus a stateful sequence engine that
 correlates multi-step attack chains. Nothing leaves your machine by default — the only outbound
 paths are four optional sinks you have to turn on yourself.
 
@@ -69,7 +69,7 @@ development with C++" workload and Python so `better-sqlite3` and `re2` can comp
 
 - **Live timeline & orchestration** — tool calls streaming in with nanosecond durations, per-agent
   tool inventory, a command-audit trail, and a sensitive-file-access panel.
-- **671 built-in threat rules** (194 core + 477 extra) — CRITICAL / HIGH / MEDIUM / LOW regex
+- **673 built-in threat rules** (194 core + 479 extra) — CRITICAL / HIGH / MEDIUM / LOW regex
   rules for prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration,
   SSRF, container escape, and more. The CRITICAL tier is reserved for active secret *exfiltration*
   — a credential or `.env` being transmitted off the machine. Every rule is held to a linear-time

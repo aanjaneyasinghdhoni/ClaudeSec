@@ -5,7 +5,7 @@ description: "A zero-config, fully-local security observatory for your AI coding
 
 ## What is ClaudeSec?
 
-ClaudeSec is a **zero-config, local-first security observatory** for AI coding agents. It watches every Claude Code, GitHub Copilot CLI, and Codex session already running on your machine — across every repo — and surfaces what your agents are actually doing: every tool call, every command, every file touched, scored live against 671 built-in threat-detection rules plus a stateful sequence engine that correlates multi-step attack chains.
+ClaudeSec is a **zero-config, local-first security observatory** for AI coding agents. It watches every Claude Code, GitHub Copilot CLI, and Codex session already running on your machine — across every repo — and surfaces what your agents are actually doing: every tool call, every command, every file touched, scored live against 673 built-in threat-detection rules plus a stateful sequence engine that correlates multi-step attack chains.
 
 No environment variables. No restarting your terminal. Nothing leaves your machine by default — the four optional outbound paths (OTLP forwarding, webhooks, the LLM judge, and audit anchoring) are off unless you turn them on.
 
@@ -44,7 +44,7 @@ That's it — open **http://localhost:3000**. See the [Quickstart](/quickstart) 
   <Card title="Zero-config capture" icon="bolt">
     Tails on-disk transcripts for Claude Code, GitHub Copilot CLI, and Codex — real tool names, full command text, and durations, with no setup (plus token usage for Claude Code and Copilot CLI; Codex capture is experimental).
   </Card>
-  <Card title="671 threat rules" icon="shield-halved">
+  <Card title="673 threat rules" icon="shield-halved">
     CRITICAL / HIGH / MEDIUM / LOW regex rules covering prompt injection, credential theft, reverse shells, supply-chain attacks, exfiltration, and recon — evaluated on every span, plus a stateful sequence engine for multi-step chains. The CRITICAL tier flags active secret exfiltration off the machine.
   </Card>
   <Card title="Honeytokens & secret scrubbing" icon="user-secret">
@@ -89,7 +89,7 @@ flowchart LR
     CX --> W
     REMOTE["Remote / CI agents"] -->|"OTLP POST /v1/traces"| ING
     W --> ING["ingestSpan()"]
-    ING --> RULES["671 rules + sequence engine + secret scrub"]
+    ING --> RULES["673 rules + sequence engine + secret scrub"]
     RULES --> DB[("SQLite · spans.db · 0600")]
     DB --> IO["Socket.io"]
     IO --> UI["Dashboard · 127.0.0.1:3000"]

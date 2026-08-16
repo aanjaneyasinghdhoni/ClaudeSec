@@ -8,13 +8,13 @@ description: "Understand ClaudeSec's built-in threat detection library and learn
 Every span — whether tailed from a local transcript or sent via OTLP to `POST /v1/traces` — is evaluated against the security rule engine. The engine concatenates the span name and all attributes into a single string and tests it against each rule's regular expression in priority order:
 
 1. **Custom rules** are checked first (most recently added = highest priority).
-2. **671 built-in rules** are checked if no custom rule matches.
+2. **673 built-in rules** are checked if no custom rule matches.
 
 The first matching rule determines the span's severity level (first-match-wins). If no rule matches, the severity is `none` and the span is treated as benign.
 
 ## The sequence engine
 
-All 671 rules above match a **single span** in isolation. On top of them, a **stateful sequence
+All 673 rules above match a **single span** in isolation. On top of them, a **stateful sequence
 engine** (`server/sequenceRules.ts`) watches for multi-step chains across a session — for example
 a credential read followed by a network send, or reconnaissance followed by exfiltration — that
 no single span shows on its own. A sequence match produces its own alert and renders the matched
@@ -108,8 +108,9 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 | Recursive root deletion | `rm\s+-rf\s+[\/\\]` | `rm -rf /` or `rm -rf \` style commands |
 | Remote code execution via curl | `curl\s+.*\|\s*(ba)?sh` | `curl URL | bash` one-liners |
 | Remote code execution via wget | `wget\s+.*\|\s*(ba)?sh` | `wget URL | bash` one-liners |
-| SQL destructive operation | `DROP\s+(TABLE|DATABASE|SCHEMA)` | Destructive DDL statements |
-| SQL table truncation | `TRUNCATE\s+TABLE` | Mass data deletion |
+| SQL destructive statement executed through a database client | `psql\|mysql\|sqlite3…\s+…\s+DROP\|TRUNCATE\|DELETE FROM t;\|DROP COLUMN` | A destructive statement and the client that runs it on one command line. A `DELETE` with a `WHERE` clause is scoped cleanup and does not fire; only the whole-table form does |
+| SQL destructive statement piped into a database client | `DROP\|TRUNCATE\|DELETE FROM t;\s+…\s\|\s*psql\|mysql\|sqlite3…` | The same statement arriving on stdin — `echo "DROP TABLE x;" \| psql`. The pipe must be a real shell pipe, so a `grep` alternation (`\|psql\|`) does not fire |
+| SQL destructive statement fed to a database client by heredoc | `psql\|sqlite3…\s+…<<'SQL'` then the statement in the body | The same statement arriving by heredoc, on a later line. The client has to introduce the heredoc, so a script merely containing SQL does not fire |
 | Prompt injection: instruction override | `ignore\s+(previous\|prior\|all)\s+instructions?` | Classic jailbreak phrasing |
 | Prompt injection: disregard system | `disregard\s+your\s+(previous\|prior\|system)` | System prompt override attempt |
 | DAN jailbreak attempt | `you\s+are\s+now\s+DAN` | "Do Anything Now" jailbreak |
@@ -141,6 +142,10 @@ Critical rules are blocked in `enforce` mode alongside HIGH rules; in `monitor` 
 | Dotenv file access | `\.env\b` | Touching a `.env` file. The committed templates (`.env.example`, `.sample`, `.template`, `.dist`, `.tpl`) are excluded |
 | Code eval injection | `eval\s*\(` | Dynamic code execution. Alert-only: an unanchored `eval(` also matches prose and commit messages, so the blocking tier is carried by the anchored rules that pair `eval` with a decode or a fetch |
 | Exec injection | `exec\s*\(` | Process spawning. Alert-only for the same reason. The forms that really spawn a process — `child_process.exec`, `subprocess.call`, `os.system`, `os.popen`, `Runtime.getRuntime().exec`, and the encoded variants — are matched individually and stay HIGH |
+| SQL destructive operation | `DROP\s+(TABLE\|DATABASE\|SCHEMA)` | Destructive DDL. Alert-only: the unanchored keyword also matches a `grep` pattern, a commit message and a migration file under review, which is most of what schema work is. The blocking tier is carried by the three client-anchored rules above |
+| SQL table truncation | `TRUNCATE\s+TABLE` | Same unanchored keyword problem, same alert-only tier |
+| SQL unrestricted DELETE | `DELETE\s+FROM\s+\w+\s*;` | A whole-table delete named in text. It blocks only when a database client is running it |
+| SQL column drop | `ALTER\s+TABLE\s+.*DROP\s+COLUMN` | Same — three of four matches in real history were `grep` over migration files |
 | Passwd file read | `cat\s+\/etc\/passwd` | Reading the Unix password database |
 | SSH key manipulation | `ssh-add` | Adding SSH keys to the agent |
 | Sensitive system file access | `\/etc\/(shadow\|hosts\|sudoers\|resolv\.conf)` | Unix security files |

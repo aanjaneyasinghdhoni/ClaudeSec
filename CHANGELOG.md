@@ -306,7 +306,7 @@ writes in **monitor** mode as well as `enforce`.
   refusal — while a pattern anchored on the thing actually happening carries
   `high`. Both sides of each pairing are pinned by the rule self-test, so a later
   "let's make this stricter" edit cannot quietly turn an alert into a refusal.
-- **671 built-in rules** (194 core + 477 extra), up from 639. The new rules cover
+- **673 built-in rules** (194 core + 479 extra), up from 639. The new rules cover
   ClaudeSec's own control plane, credential staging and anti-forensics (copying a
   credential store elsewhere, archiving one, reading `/proc/<pid>/environ`,
   writing a shell startup file), execution surfaces that had no coverage at all
