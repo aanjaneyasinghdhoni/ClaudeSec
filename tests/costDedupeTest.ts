@@ -18,6 +18,16 @@
  *      usage tuples within 10s of a kept sibling [heuristic, old data]. Demo
  *      traces (traceId LIKE 'demo-%') are excluded from every aggregate.
  *
+ *   3. INPUT ATTRIBUTION — a real production comparison against Claude Code's own
+ *      `/stats` found ClaudeSec's reported input tokens at 257% of the all-time
+ *      figure despite covering a SHORTER window, while output (39%) and cache-read
+ *      (45%) tracked the window correctly. Traced to spans ingested before this
+ *      integration's OTLP source split cache tokens out of `input_tokens`: those
+ *      rows carry NO `cache_read_input_tokens` key at all (absent, not zero) and
+ *      `input_tokens` alone runs into six figures — the full resent context, not a
+ *      real per-call input count. `dedupedUsageRows()` flags any such row
+ *      `inputUnreliable: true`; every consumer must then treat its `tokensIn` as 0.
+ *
  * This runs as its OWN process (spawned by main below) so it can point
  * CLAUDESEC_DB at an isolated temp DB BEFORE importing server/db.ts — the module
  * opens the database at import time. The temp DB is deleted in a finally block.
@@ -46,7 +56,7 @@ const TSX_BIN = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 async function runWorker(): Promise<void> {
   // db.ts reads CLAUDESEC_DB at import time, so it must be set in env BEFORE this.
   const { db } = await import('../server/db.js');
-  const { dedupedUsageRows } = await import('../server/routes/costs.js');
+  const { dedupedUsageRows, dedupedTokenTotals } = await import('../server/routes/costs.js');
 
   const insert = db.prepare(`
     INSERT OR IGNORE INTO spans
@@ -100,6 +110,28 @@ async function runWorker(): Promise<void> {
     startNano: msToNano(1_700_000_300_000), endNano: msToNano(1_700_000_300_000),
   });
 
+  // ── Scenario D: INPUT ATTRIBUTION — reproduces the real inflated rows found in
+  // production: `input_tokens` in the hundreds of thousands with the cache-read
+  // KEY entirely absent (this is what an ingest source reports before it starts
+  // splitting cache tokens out of input — not a shape any version of this app's
+  // own transcriptWatcher.ts has ever written). Paired with a genuinely reliable
+  // row in the same trace that DOES carry the cache keys, as explicit zeros, so
+  // the fix can't be a blanket "no cache = drop everything" rule.
+  insert.run({
+    spanId: 'otlp-legacy-1:llm', traceId: 'trace-inputattr', harness: 'claude-code',
+    attributes: JSON.stringify({ 'gen_ai.request.model': 'claude-opus-4-8', 'gen_ai.usage.input_tokens': 900000, 'gen_ai.usage.output_tokens': 4000 }),
+    startNano: msToNano(1_700_000_400_000), endNano: msToNano(1_700_000_400_000),
+  });
+  insert.run({
+    spanId: 'otlp-reliable-1:llm', traceId: 'trace-inputattr', harness: 'claude-code',
+    attributes: JSON.stringify({
+      'gen_ai.request.model': 'claude-opus-4-8', 'gen_ai.usage.input_tokens': 300,
+      'gen_ai.usage.output_tokens': 150, 'gen_ai.usage.cache_read_input_tokens': 0,
+      'gen_ai.usage.cache_creation_input_tokens': 0,
+    }),
+    startNano: msToNano(1_700_000_450_000), endNano: msToNano(1_700_000_450_000),
+  });
+
   let passed = 0;
   const failures: string[] = [];
   const check = (name: string, fn: () => void) => {
@@ -141,13 +173,40 @@ async function runWorker(): Promise<void> {
     assert.strictEqual(demo.length, 0, `demo rows leaked into aggregates: ${demo.length}`);
   });
 
-  // 5. Grand totals are the hand-computed, deduped numbers (no inflation).
+  // 5. INPUT ATTRIBUTION: the cache-key-absent row is flagged unreliable with its
+  //    raw tokensIn preserved (nothing is silently rewritten); the row that
+  //    carries the cache keys, even as explicit zeros, is trusted as normal.
+  check('query: cache-key-absent row is flagged inputUnreliable, raw value kept', () => {
+    const bad = rows.find(r => r.traceId === 'trace-inputattr' && r.tokensIn === 900000);
+    assert.ok(bad, 'expected the 900000-input row to survive dedupe');
+    assert.strictEqual(bad!.inputUnreliable, true, 'cache-key-absent row must be flagged unreliable');
+    const good = rows.find(r => r.traceId === 'trace-inputattr' && r.tokensIn === 300);
+    assert.ok(good, 'expected the 300-input row to survive dedupe');
+    assert.strictEqual(good!.inputUnreliable, false, 'row with explicit-zero cache keys must NOT be flagged');
+  });
+
+  // 6. dedupedTokenTotals (the shared basis for /api/costs, harness and session
+  //    reports) must exclude the unreliable row's tokensIn from the trace total,
+  //    while its tokensOut still counts — only the input dimension was ever wrong.
+  //    This is the assertion that would have FAILED before the fix: totals.tokensIn
+  //    would have been 900300 instead of 300, a >3000x inflation from one row.
+  check('totals: unreliable input is excluded, output is not', () => {
+    const totals = dedupedTokenTotals('trace').get('trace-inputattr');
+    assert.ok(totals, 'expected a totals entry for trace-inputattr');
+    assert.strictEqual(totals!.tokensIn, 300, `expected only the reliable row's 300 in, got ${totals!.tokensIn}`);
+    assert.strictEqual(totals!.tokensOut, 4150, `expected 4000+150=4150 out, got ${totals!.tokensOut}`);
+  });
+
+  // 7. Grand totals are the hand-computed, deduped RAW figures (dedupedUsageRows
+  //    never rewrites tokensIn itself — only downstream consumers apply the
+  //    input-attribution correction, checked separately above).
   check('query: grand totals equal the hand-computed deduped figures', () => {
     const totIn = rows.reduce((n, r) => n + r.tokensIn, 0);
     const totOut = rows.reduce((n, r) => n + r.tokensOut, 0);
-    // new(1000) + legacy(800+50) = 1850 in ; new(500) + legacy(400+25) = 925 out
-    assert.strictEqual(totIn, 1850, `expected 1850 in, got ${totIn}`);
-    assert.strictEqual(totOut, 925, `expected 925 out, got ${totOut}`);
+    // new(1000) + legacy(800+50) + inputattr(900000+300) = 902150 in
+    // new(500) + legacy(400+25) + inputattr(4000+150) = 5075 out
+    assert.strictEqual(totIn, 902150, `expected 902150 in, got ${totIn}`);
+    assert.strictEqual(totOut, 5075, `expected 5075 out, got ${totOut}`);
   });
 
   const total = passed + failures.length;

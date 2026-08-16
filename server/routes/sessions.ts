@@ -10,45 +10,109 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
     throw new Error('registerSessionRoutes requires healthFromCounts and computeHealthScore in ctx');
   }
 
-  app.get('/api/sessions', (req, res) => {
-    const labelFilter = req.query.label ? String(req.query.label) : null;
-    const rows = db.prepare(`
+  // Largest page a caller may ask for. The list row is small, but it is joined
+  // against aggregates over the whole spans table, so an unbounded `limit` is an
+  // easy way to make one request do all the work in the database.
+  const SESSIONS_MAX_LIMIT = 500;
+
+  // Each aggregate is computed ONCE over the whole spans table in its own CTE and
+  // then joined by traceId, rather than being correlated per session. The repo
+  // list in particular used to re-scan `spans WHERE traceId = ?` once per row —
+  // 6.5k scans of a 265k-row table on every dashboard load.
+  //
+  // The aggregates stay in SEPARATE CTEs, never a single multi-way join, for the
+  // same reason the alert count was originally a subquery: joining spans and
+  // alerts together produces a cartesian product, and every SUM(CASE …) below
+  // would be multiplied by the session's alert count. A session with 10 spans
+  // (3 high) and 4 alerts would report threatCount = 12 instead of 3, feeding a
+  // wrong health score, a wrong grade, and a skewed sort order.
+  const SESSION_LIST_SQL = `
+    WITH span_agg AS (
       SELECT
-        se.traceId,
-        se.name,
-        se.createdAt,
-        se.pinned,
-        COALESCE(se.label, 'normal') AS label,
-        COALESCE(se.notes, '')       AS notes,
-        COUNT(DISTINCT s.spanId) AS spanCount,
-        SUM(CASE WHEN s.severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
-        MAX(CASE s.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
-        GROUP_CONCAT(DISTINCT s.harness) AS harnesses,
-        -- SQLite forbids a custom separator on a DISTINCT aggregate
-        -- (GROUP_CONCAT(DISTINCT x, sep) is a syntax error), so de-dupe the
-        -- repos in a correlated subquery first, then join them with a newline.
-        -- Newline (not comma) because a repo path can itself contain a comma.
-        (SELECT GROUP_CONCAT(r, char(10))
-           FROM (SELECT DISTINCT repo AS r FROM spans WHERE traceId = se.traceId)) AS repo,
+        traceId,
+        COUNT(*) AS spanCount,
+        SUM(CASE WHEN severity != 'none' THEN 1 ELSE 0 END) AS threatCount,
+        MAX(CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS maxSeverityRank,
+        GROUP_CONCAT(DISTINCT harness) AS harnesses,
         -- critical is the exfiltration tier above high; fold it into the high
         -- bucket so a confirmed exfil still penalizes health and surfaces in the
         -- breakdown instead of falling through to the green/none default.
-        SUM(CASE WHEN s.severity IN ('high', 'critical') THEN 1 ELSE 0 END) AS threatHigh,
-        SUM(CASE WHEN s.severity = 'medium' THEN 1 ELSE 0 END) AS threatMedium,
-        SUM(CASE WHEN s.severity = 'low'    THEN 1 ELSE 0 END) AS threatLow,
-        COUNT(DISTINCT a.id) AS alertCount
-      FROM sessions se
-      LEFT JOIN spans  s ON s.traceId = se.traceId
-      LEFT JOIN alerts a ON a.traceId = se.traceId
-      GROUP BY se.traceId
-      ORDER BY se.pinned DESC, (threatCount > 0) DESC, threatCount DESC, se.createdAt DESC
-    `).all() as any[];
+        SUM(CASE WHEN severity IN ('high', 'critical') THEN 1 ELSE 0 END) AS threatHigh,
+        SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS threatMedium,
+        SUM(CASE WHEN severity = 'low'    THEN 1 ELSE 0 END) AS threatLow
+      FROM spans GROUP BY traceId
+    ),
+    repo_agg AS (
+      -- SQLite forbids a custom separator on a DISTINCT aggregate
+      -- (GROUP_CONCAT(DISTINCT x, sep) is a syntax error), so de-dupe first and
+      -- then join with a newline. Newline (not comma) because a repo path can
+      -- itself contain a comma.
+      SELECT traceId, GROUP_CONCAT(repo, char(10)) AS repo
+      FROM (SELECT DISTINCT traceId, repo FROM spans)
+      GROUP BY traceId
+    ),
+    alert_agg AS (
+      SELECT traceId, COUNT(*) AS alertCount FROM alerts GROUP BY traceId
+    )
+    SELECT
+      se.traceId,
+      se.name,
+      se.createdAt,
+      se.pinned,
+      COALESCE(se.label, 'normal') AS label,
+      COALESCE(se.notes, '')       AS notes,
+      -- A session with no spans yet joins to nothing; COALESCE keeps the zeros
+      -- the old LEFT JOIN … GROUP BY produced instead of leaking NULLs.
+      COALESCE(sa.spanCount, 0)       AS spanCount,
+      COALESCE(sa.threatCount, 0)     AS threatCount,
+      COALESCE(sa.maxSeverityRank, 0) AS maxSeverityRank,
+      sa.harnesses                    AS harnesses,
+      ra.repo                         AS repo,
+      COALESCE(sa.threatHigh, 0)      AS threatHigh,
+      COALESCE(sa.threatMedium, 0)    AS threatMedium,
+      COALESCE(sa.threatLow, 0)       AS threatLow,
+      COALESCE(aa.alertCount, 0)      AS alertCount
+    FROM sessions se
+    LEFT JOIN span_agg  sa ON sa.traceId = se.traceId
+    LEFT JOIN repo_agg  ra ON ra.traceId = se.traceId
+    LEFT JOIN alert_agg aa ON aa.traceId = se.traceId
+    WHERE (? IS NULL OR COALESCE(se.label, 'normal') = ?)
+    ORDER BY se.pinned DESC, (threatCount > 0) DESC, threatCount DESC, se.createdAt DESC
+    LIMIT ? OFFSET ?
+  `;
+
+  app.get('/api/sessions', (req, res) => {
+    const labelFilter = req.query.label ? String(req.query.label) : null;
+
+    // Paging is OPT-IN. The dashboard fetches this list on every load and expects
+    // the complete array, so omitting both params keeps returning every session —
+    // the response shape is unchanged, only widened with the paging metadata a
+    // client needs to start paging. Pass `limit` (and optionally `offset`) to get
+    // a page instead.
+    const paged     = req.query.limit !== undefined || req.query.offset !== undefined;
+    const rawLimit  = Number(req.query.limit ?? SESSIONS_MAX_LIMIT);
+    const limit     = paged
+      ? Math.min(Math.max(1, Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : SESSIONS_MAX_LIMIT), SESSIONS_MAX_LIMIT)
+      : -1;   // SQLite: a negative LIMIT means no limit.
+    const rawOffset = Number(req.query.offset ?? 0);
+    const offset    = paged && Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
+
+    // The label filter is applied in SQL, not after the fact: filtering the page
+    // in JavaScript would silently drop rows out of an already-sliced window and
+    // make `total` disagree with what the caller can actually reach.
+    const total = (db.prepare(`
+      SELECT COUNT(*) AS c FROM sessions se
+      WHERE (? IS NULL OR COALESCE(se.label, 'normal') = ?)
+    `).get(labelFilter, labelFilter) as { c: number }).c;
+
+    const rows = db.prepare(SESSION_LIST_SQL)
+      .all(labelFilter, labelFilter, limit, offset) as any[];
 
     // Compute per-session health using the SHARED healthFromCounts() formula —
     // the same one behind /api/sessions/:id/health (and the CLI report), so the
     // two paths can no longer diverge. The list query already SELECTs every input
     // the formula needs, so this adds zero extra DB round-trips (no N+1).
-    let sessions = rows.map(r => {
+    const sessions = rows.map(r => {
       const health = healthFromCounts(r.threatHigh ?? 0, r.threatMedium ?? 0, r.threatLow ?? 0, r.alertCount ?? 0);
       const healthScore = health.score;
       // riskScore retained as the inverse for any consumer expecting it.
@@ -56,11 +120,13 @@ export function registerSessionRoutes(app: Express, ctx: RouteContext): void {
       return { ...r, healthScore, riskScore, grade: health.grade };
     });
 
-    if (labelFilter) {
-      sessions = sessions.filter(s => s.label === labelFilter);
-    }
-
-    res.json({ sessions });
+    res.json({
+      sessions,
+      total,
+      limit: paged ? limit : total,
+      offset,
+      hasMore: offset + sessions.length < total,
+    });
   });
 
   // ── Session health ────────────────────────────────────────────────────────

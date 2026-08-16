@@ -103,7 +103,11 @@ export function registerCommandAuditRoutes(app: Express, _ctx: RouteContext): vo
         const toolName = attrs['tool'] ?? attrs['gen_ai.tool.name'] ?? span.name ?? '';
         if (!SHELL_TOOLS.has(toolName) && !span.name.toLowerCase().includes('bash')) continue;
         const cmd = attrs['command'] ?? attrs['tool.input'] ?? '';
-        if (!cmd) continue;
+        // `tool.input` is whatever the agent sent — often a JSON object. Scoring
+        // an object coerces it to "[object Object]", which scores 0 and ships a
+        // non-string `command` to a client that types it as a string. Only a
+        // real command string is auditable.
+        if (!cmd || typeof cmd !== 'string') continue;
         commands.push({
           spanId:    span.spanId,
           traceId:   span.traceId,
@@ -112,6 +116,9 @@ export function registerCommandAuditRoutes(app: Express, _ctx: RouteContext): vo
           severity:  span.severity,
           riskScore: computeRiskScore(cmd),
           tool:      toolName || 'bash',
+          // Epoch *nanoseconds* in a string, like every other span time in the
+          // API — 19 digits overflow a JS number, and a client that hands this
+          // straight to `new Date()` gets Invalid Date. Divide by 1e6 first.
           timestamp: span.startNano,
         });
       } catch {}

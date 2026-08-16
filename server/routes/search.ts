@@ -5,6 +5,22 @@ import type { RouteContext } from './context.js';
 
 // ── Full-text search (s54) ───────────────────────────────────────────────
 
+/** Thrown for input we refuse to guess at, surfaced as a 400 rather than a wider search. */
+class BadSearchInput extends Error {}
+
+/**
+ * Parse a caller-supplied date bound into nanoseconds.
+ *
+ * A date we can't parse must FAIL, not be ignored. This is the evidence surface:
+ * dropping an unparseable `from`/`to` silently widened the query to the whole
+ * table, so a typo returned everything while looking like a filtered result.
+ */
+function boundToNano(value: string, field: 'from' | 'to'): string {
+  const ms = new Date(value).getTime();
+  if (!Number.isFinite(ms)) throw new BadSearchInput(`Invalid \`${field}\` date: ${value}`);
+  return String(BigInt(ms) * 1_000_000n);
+}
+
 function buildSearchQuery(opts: {
   q: string; severity?: string; harness?: string;
   from?: string; to?: string; tag?: string; limit: number; offset: number;
@@ -23,9 +39,15 @@ function buildSearchQuery(opts: {
   // Free-text query restricts to spans the FTS5 index matched. We push the MATCH
   // as a correlated subquery instead of materializing every matching spanId up
   // front — the latter is unbounded and gets slow as the spans table grows.
+  //
+  // The subquery selects ROWID, not spanId. spans_fts is an external-content
+  // index: every column it hands back other than the rowid is read out of the
+  // `spans` table one row at a time, so asking it for spanId only to look the
+  // same row up again is a wasted round trip per hit. The FTS rowid IS the span
+  // rowid by construction (see the trigger set in server/db.ts).
   if (opts.q) {
     const escaped = '"' + opts.q.replace(/"/g, '""') + '"';
-    conditions.push('s.spanId IN (SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?)');
+    conditions.push('s.rowid IN (SELECT rowid FROM spans_fts WHERE spans_fts MATCH ?)');
     params.push(escaped);
   }
 
@@ -38,18 +60,12 @@ function buildSearchQuery(opts: {
     params.push(opts.harness);
   }
   if (opts.from) {
-    try {
-      const nanoFrom = String(BigInt(new Date(opts.from).getTime()) * 1_000_000n);
-      conditions.push('s.startNano >= ?');
-      params.push(nanoFrom);
-    } catch {}
+    conditions.push('s.startNano >= ?');
+    params.push(boundToNano(opts.from, 'from'));
   }
   if (opts.to) {
-    try {
-      const nanoTo = String(BigInt(new Date(opts.to).getTime()) * 1_000_000n);
-      conditions.push('s.startNano <= ?');
-      params.push(nanoTo);
-    } catch {}
+    conditions.push('s.startNano <= ?');
+    params.push(boundToNano(opts.to, 'to'));
   }
 
   const where  = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -76,7 +92,17 @@ export function registerSearchRoutes(app: Express, _ctx: RouteContext): void {
     const page     = Math.max(1, Number(req.query.page ?? 1));
     const offset   = (page - 1) * limit;
 
-    const { spans, total } = buildSearchQuery({ q, severity, harness, from, to, tag, limit, offset });
+    let result;
+    try {
+      result = buildSearchQuery({ q, severity, harness, from, to, tag, limit, offset });
+    } catch (err) {
+      if (err instanceof BadSearchInput) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    const { spans, total } = result;
     res.json({ spans, total, page, pages: Math.ceil(total / limit), query: q });
   });
 
@@ -110,7 +136,7 @@ export function registerSearchRoutes(app: Express, _ctx: RouteContext): void {
       const rows = db.prepare(`
         SELECT s.*
         FROM   spans_fts f
-        JOIN   spans s ON s.spanId = f.spanId
+        JOIN   spans s ON s.rowid = f.rowid
         WHERE  spans_fts MATCH ?
         ORDER BY rank
         LIMIT ?

@@ -38,6 +38,7 @@ const TSX_BIN = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const PORT = 3212;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DB_PATH = path.join(os.tmpdir(), `csec-sessionstest-${process.pid}-${Date.now()}.db`);
+const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-sessionsroutetest-home-'));
 
 const REPO_A = '~/code/alpha'; // a real repo path
 const REPO_B = '~/code/beta';  // a second real repo path
@@ -77,6 +78,7 @@ function cleanupDb(): void {
   for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
     try { fs.rmSync(f, { force: true }); } catch {}
   }
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 }
 
 function killTree(child: ChildProcess): void {
@@ -105,6 +107,7 @@ interface SessionRow {
   threatHigh: number;
   threatMedium: number;
   threatLow: number;
+  alertCount: number;
   harnesses: string | null;
   repo: string | null;
   healthScore: number;
@@ -140,6 +143,13 @@ function seedSession(dbh: Database.Database, traceId: string, name: string): voi
     .run(traceId, name, new Date().toISOString());
 }
 
+function seedAlert(dbh: Database.Database, traceId: string, ruleLabel: string): void {
+  dbh
+    .prepare(`INSERT INTO alerts (ts, ruleLabel, severity, spanId, traceId, harness, spanName, matchedText, fingerprint, count)
+              VALUES (?, ?, 'high', 'span-x', ?, 'claude-code', 'n', 'm', ?, 1)`)
+    .run(new Date().toISOString(), ruleLabel, traceId, `${ruleLabel}::${traceId}`);
+}
+
 function seedDb(): void {
   // Open a second connection on the already-created (by the server) DB file.
   const dbh = new Database(DB_PATH);
@@ -149,6 +159,7 @@ function seedDb(): void {
   // DB, so wiping it here gives the seeded rows below exact, reproducible counts.
   dbh.prepare('DELETE FROM spans').run();
   dbh.prepare('DELETE FROM sessions').run();
+  dbh.prepare('DELETE FROM alerts').run();
 
   // Session 1: spans the agent touched TWO repos in (plus the unknown bucket) —
   // the case that breaks a DISTINCT-with-separator GROUP_CONCAT. Mixed severity.
@@ -161,6 +172,17 @@ function seedDb(): void {
   seedSession(dbh, 'traceClean', 'clean session');
   seedSpan(dbh, { traceId: 'traceClean', repo: REPO_A, harness: 'claude-code', severity: 'none' });
 
+  // Session 3: EXACTLY known counts alongside MORE THAN ONE alert — the shape
+  // that exposes a cartesian join. Joining spans and alerts to sessions repeats
+  // every span row once per alert, so each SUM(CASE …) comes back multiplied by
+  // the alert count: 6 threats read as 24, and the health score and grade
+  // derived from them were wrong for every session carrying ≥2 alerts.
+  seedSession(dbh, 'traceFanout', 'fan-out session');
+  for (const severity of ['high', 'high', 'high', 'medium', 'medium', 'low', 'none', 'none', 'none', 'none']) {
+    seedSpan(dbh, { traceId: 'traceFanout', repo: REPO_A, harness: 'claude-code', severity });
+  }
+  for (const label of ['rule-a', 'rule-b', 'rule-c', 'rule-d']) seedAlert(dbh, 'traceFanout', label);
+
   dbh.close();
 }
 
@@ -172,6 +194,10 @@ async function main(): Promise<void> {
       env: {
         ...process.env,
         CLAUDESEC_DB: DB_PATH,
+        // Keep the child off the operator's real ~/.claudesec: booting the
+        // server mirrors its hook artifacts (enforce-config, protected-paths,
+        // the rule snapshot, the control-plane pairing key) into CLAUDESEC_HOME.
+        CLAUDESEC_HOME: HOME_DIR,
         CLAUDESEC_PORT: String(PORT),
         PORT: String(PORT),
         CLAUDESEC_HOST: '127.0.0.1',
@@ -207,10 +233,30 @@ async function main(): Promise<void> {
 
     const byTrace = () => new Map(sessions.map(s => [s.traceId, s]));
 
-    await check('lists exactly the two seeded sessions', () => {
+    await check('lists exactly the seeded sessions', () => {
       const keys = sessions.map(s => s.traceId).sort();
-      assert.deepStrictEqual(keys, ['traceClean', 'traceMulti'].sort(),
+      assert.deepStrictEqual(keys, ['traceClean', 'traceFanout', 'traceMulti'].sort(),
         `unexpected session keys: ${JSON.stringify(keys)}`);
+    });
+
+    await check('alerts do not multiply the per-session threat counts', () => {
+      const f = byTrace().get('traceFanout')!;
+      assert.strictEqual(f.spanCount, 10, `spanCount expected 10, got ${f.spanCount}`);
+      assert.strictEqual(f.alertCount, 4, `alertCount expected 4, got ${f.alertCount}`);
+      // Each of these would come back ×4 if the alerts table were joined in.
+      assert.strictEqual(f.threatCount, 6, `threatCount expected 6, got ${f.threatCount}`);
+      assert.strictEqual(f.threatHigh, 3, `threatHigh expected 3, got ${f.threatHigh}`);
+      assert.strictEqual(f.threatMedium, 2, `threatMedium expected 2, got ${f.threatMedium}`);
+      assert.strictEqual(f.threatLow, 1, `threatLow expected 1, got ${f.threatLow}`);
+    });
+
+    await check('the health score is computed from the un-multiplied counts', () => {
+      const f = byTrace().get('traceFanout')!;
+      // healthFromCounts(3 high, 2 medium, 1 low, 4 alerts) — pinned so an
+      // inflated threat count can never slip through as a plausible-looking score.
+      // 100 − 3×15 − 2×8 − 1×3 − min(4×10, 30) = 6
+      assert.strictEqual(f.healthScore, 6, `healthScore expected 6, got ${f.healthScore}`);
+      assert.strictEqual(f.grade, 'F', `grade expected F, got ${f.grade}`);
     });
 
     await check('a multi-repo session carries its distinct repos newline-joined', () => {
