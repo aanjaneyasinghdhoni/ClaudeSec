@@ -29,10 +29,34 @@ curl http://localhost:3000/api/db-stats
   "oldestSession": "2026-04-01T08:00:00.000Z",
   "newestSession": "2026-04-09T14:32:00.000Z",
   "retentionConfig": {
-    "maxSpans": 50000,
-    "retentionDays": 183
+    "maxSpans": 1000000,
+    "retentionDays": 183,
+    "profile": "minimum",
+    "profileLabel": "Minimum",
+    "sources": { "retentionDays": "default", "maxSpans": "default" },
+    "envOverride": null,
+    "effective": {
+      "limitingFactor": "age",
+      "effectiveWindowDays": 183,
+      "spansPerDay": 3545,
+      "projectedSpansInWindow": 648735,
+      "ingestStopsAtSpans": 900000,
+      "ingestStopsAfterDays": 253,
+      "estimatedBytes": 1751584500,
+      "warning": null
+    }
   }
 }
+```
+
+`effective` reports what the configuration actually delivers at this install's own measured ingest rate. `limitingFactor` is `age` when the day window governs, `capacity` when the span ceiling stops ingestion first (in which case `warning` explains it and `effectiveWindowDays` is the real number of days), `none` for unbounded retention, or `unknown` when there is not yet enough history to measure a rate. `sources` says whether each value came from an environment variable, the dashboard, or the profile default — an environment variable overrides a value saved from the dashboard, and `envOverride` says so when that happens.
+
+### GET /api/db-stats/retention/profiles
+
+List the retention profiles and what each would deliver here, at the measured ingest rate.
+
+```bash
+curl http://localhost:3000/api/db-stats/retention/profiles
 ```
 
 ### POST /api/db-stats/prune
@@ -68,19 +92,24 @@ Update retention policy settings.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `profile` | string | No | `minimum`, `audit-year`, `forensic`, or `custom`. A named profile sets both values at once |
 | `maxSpans` | number | No | Maximum number of spans to keep (minimum: 100) |
 | `retentionDays` | number | No | Number of days to retain sessions (minimum: 1) |
 
-Both fields are optional; only provided fields are updated. Settings can also be controlled via `CLAUDESEC_MAX_SPANS` and `CLAUDESEC_RETENTION_DAYS` environment variables (env vars take precedence).
+All fields are optional; only provided fields are updated. Prefer a profile — setting the day window alone is what leaves a span ceiling too small to reach it. Settings can also be controlled via `CLAUDESEC_MAX_SPANS` and `CLAUDESEC_RETENTION_DAYS` environment variables (env vars take precedence over anything saved here).
 
 **Response:**
 ```json
 {
   "status": "ok",
+  "profile": "custom",
   "maxSpans": 100000,
-  "retentionDays": 14
+  "retentionDays": 14,
+  "warning": null
 }
 ```
 
+The response also carries an `effective` object in the same shape as `GET /api/db-stats`, so a save that produces an unreachable window says so immediately instead of silently.
+
 **Errors:**
-- `400` — `maxSpans` below 100 or `retentionDays` below 1
+- `400` — `maxSpans` below 100, `retentionDays` below 1, or an unknown `profile`

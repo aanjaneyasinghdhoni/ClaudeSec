@@ -6,7 +6,16 @@ services:
     ports:
       - "127.0.0.1:${PORT:-3000}:3000"
     volumes:
-      # Persist the SQLite database and custom rules outside the container
+      # Everything that must outlive an image upgrade: the SQLite ledger
+      # (/data/spans.db), the audit signing key and tail anchor
+      # (/data/claudesec/hooks), custom rules (/data/rules.json) and the hourly
+      # exports (/data/exports). The paths are set as ENV in the Dockerfile so
+      # they hold for a plain `docker run` too — do not rely on this file alone.
+      #
+      # NOTE for bind mounts: replacing this named volume with a host directory
+      # on macOS or Windows can silently drop the 0600 mode ClaudeSec sets on the
+      # database, because the file-sharing layer synthesises permissions. A named
+      # volume is stored on the Linux VM's own filesystem and keeps them.
       - claudesec-data:/data
     environment:
       NODE_ENV: production
@@ -33,13 +42,15 @@ services:
       # Webhook (optional — set in .env or shell)
       CLAUDESEC_WEBHOOK_URL: ${CLAUDESEC_WEBHOOK_URL:-}
       CLAUDESEC_WEBHOOK_THRESHOLD: ${CLAUDESEC_WEBHOOK_THRESHOLD:-high}
-      # Retention (optional)
-      CLAUDESEC_MAX_SPANS: ${CLAUDESEC_MAX_SPANS:-50000}
+      # Retention (optional). Set BOTH together: ingestion pauses at 90% of the
+      # span ceiling, and pruning cannot free spans still inside the window — so
+      # a ceiling below the window's own volume stops recording early. 200,000
+      # holds a 30-day window at up to ~6,000 spans/day. For the six-month
+      # (Minimum) profile use 183 days with 1000000; 0 on both means unbounded.
+      CLAUDESEC_MAX_SPANS: ${CLAUDESEC_MAX_SPANS:-200000}
       CLAUDESEC_RETENTION_DAYS: ${CLAUDESEC_RETENTION_DAYS:-30}
       # OTLP forwarding (optional — send traces to upstream collector)
       OTEL_FORWARD_URL: ${OTEL_FORWARD_URL:-}
-      # Auto-export directory
-      CLAUDESEC_AUTO_EXPORT_DIR: /data/exports
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
@@ -69,7 +80,10 @@ services:
       # so prod (:3000) and demo (:3001) can run side by side.
       - "127.0.0.1:${DEMO_PORT:-3001}:3000"
     volumes:
-      # Dedicated volume — physically isolated from prod's claudesec-data.
+      # Dedicated volume — physically isolated from prod's claudesec-data. The
+      # /data layout (database, audit key, rules, exports) is the same; the
+      # image's ENV points at it, so the demo's synthetic data persists in ITS
+      # volume and can never reach prod's.
       - claudesec-demo-data:/data
     environment:
       NODE_ENV: production
@@ -81,7 +95,6 @@ services:
       # Seed the synthetic demo scenarios on first boot (only when the DB is
       # empty — see server/index.ts). Persists in the demo volume thereafter.
       CLAUDESEC_SEED_DEMO: "1"
-      CLAUDESEC_AUTO_EXPORT_DIR: /data/exports
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]

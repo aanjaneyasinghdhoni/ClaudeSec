@@ -9,10 +9,35 @@ ClaudeSec is built to **keep your data**. There is no aggressive auto-delete: sp
 
 | Variable | Default | What it bounds |
 |----------|---------|----------------|
-| `CLAUDESEC_MAX_SPANS` | `50000` | Soft ceiling — the **oldest out-of-window** spans are reclaimed above this |
-| `CLAUDESEC_RETENTION_DAYS` | `183` | Sessions (and their spans and alerts) older than this are removed. Default is ~6 months, the EU AI Act minimum log-retention floor for high-risk AI systems |
+| `CLAUDESEC_MAX_SPANS` | `1000000` | Span ceiling — the **oldest out-of-window** spans are reclaimed above this, and ingestion pauses at 90% of it. `0` means unbounded |
+| `CLAUDESEC_RETENTION_DAYS` | `183` | Sessions (and their spans and alerts) older than this are removed. Default is ~6 months, the EU AI Act minimum log-retention floor for high-risk AI systems. `0` means unbounded |
 
-Both are generous defaults. Until you exceed them, nothing is deleted.
+Until you exceed them, nothing is deleted.
+
+<Note>
+  **Docker uses different values.** These are the server's built-in defaults, which is what you get
+  from a clone. The bundled `docker-compose.yml` sets `CLAUDESEC_MAX_SPANS=200000` and
+  `CLAUDESEC_RETENTION_DAYS=30` explicitly, sized so a 30-day window holds at up to ~6,000 spans a
+  day. Both are overridable from your environment or a `.env` file — set them to `1000000` and `183`
+  for the six-month **Minimum** profile in a container.
+</Note>
+
+## Set them together: retention profiles
+
+The two limits only mean what they say when they agree with each other, so they are configured as one policy:
+
+| Profile | Days | Span ceiling | What it is for |
+|---------|------|--------------|----------------|
+| **Minimum** (default) | 183 | 1,000,000 | A six-month window a normal workload can actually reach |
+| **Audit year** | 400 | 5,000,000 | A year plus a ~35-day tail, so day one of the period is still there at audit time |
+| **Forensic** | unbounded | unbounded | Keep everything; growth is bounded only by disk |
+| **Custom** | any | any | Both values explicit — the effective window is reported back to you |
+
+**Why this matters.** The day window is a hard floor: count-based pruning may only reclaim spans that are already past it. So a ceiling that is too small cannot shorten your window by deleting data — instead it stops new data arriving, because ingestion pauses at 90% of the ceiling and nothing is prunable to relieve it. A 50,000-span ceiling against a 183-day window ends recording after about twelve days at a typical rate of ~3,500 spans/day. Profiles size the ceiling to the window so that cannot happen.
+
+`GET /api/db-stats` reports the **effective window** — which limit governs, and the real number of days at your own measured ingest rate. `GET /api/db-stats/retention/profiles` shows what each profile would deliver on your install. Note that an environment variable overrides a value saved from the dashboard; that override is reported too.
+
+Existing installs are never changed: values you already set are kept exactly as they are and simply described through the new lens.
 
 ## How pruning actually works
 
@@ -27,7 +52,9 @@ Pruning runs on a **periodic background timer** (every five minutes), decoupled 
 
 ### The capacity circuit breaker
 
-To protect the database from runaway growth, OTLP ingestion has a circuit breaker: when the span table reaches **90% of `CLAUDESEC_MAX_SPANS`**, new ingestion is rejected with `503 Service Unavailable` until pruning brings the count back down. This is a safety valve, not the normal path — under default settings you are very unlikely to hit it.
+To protect the database from runaway growth, OTLP ingestion has a circuit breaker: when the span table reaches **90% of `CLAUDESEC_MAX_SPANS`**, new ingestion is rejected with `503 Service Unavailable` until pruning brings the count back down. Setting `CLAUDESEC_MAX_SPANS=0` (the Forensic profile) removes the ceiling and the breaker with it.
+
+This is a safety valve, not the normal path — but it is the sharp edge of the two limits. Pruning can only reclaim spans that are already outside the retention window, so if the ceiling is smaller than the window's own volume the breaker latches shut and nothing can reopen it. That is why the ceiling belongs to the profile rather than being tuned on its own.
 
 ## The graph window vs. your full history
 
@@ -61,4 +88,13 @@ See the [Configuration reference](/reference/config) for every retention and per
 
 ## Backups
 
-Independently of retention, ClaudeSec writes a **consistent binary snapshot** of the live database to `~/.claudesec/backups/` — once shortly after the server boots and daily thereafter, using SQLite's online backup API (which is safe to run while the database is open and being written, unlike a plain file copy under WAL). Backups are created `0600` and pruned to the **most recent 7**. They are a drop-in `.db` you can restore by pointing `CLAUDESEC_DB` at one. This is separate from the hourly human-readable JSON auto-export in `exports/`.
+Independently of retention, ClaudeSec writes a **consistent binary snapshot** of the live database to `~/.claudesec/backups/` — once shortly after the server boots and daily thereafter, using SQLite's online backup API (which is safe to run while the database is open and being written, unlike a plain file copy under WAL). Backups are created `0600` and pruned to the **most recent 7**. They are a drop-in `.db` you can restore by pointing `CLAUDESEC_DB` at one. This is separate from the hourly human-readable JSON auto-export in `exports/`. Note that the backup directory follows `CLAUDESEC_DB`, not `CLAUDESEC_HOME` — it is always `backups/` beside the database file.
+
+<Warning>
+  **A database backup on its own is not a complete backup of the record.** The Ed25519 key that signs
+  the audit chain, and the signed tail anchor that holds each chain's boundaries, live under
+  [`CLAUDESEC_HOME`](/reference/config#what-lives-in-claudesec-home-and-why-you-must-back-it-up), not
+  beside the database. Restore a snapshot without them and every row still reads, but the chain
+  cannot be verified and a truncated table can no longer be told apart from a short one. Back up
+  `CLAUDESEC_HOME` and the database together.
+</Warning>
