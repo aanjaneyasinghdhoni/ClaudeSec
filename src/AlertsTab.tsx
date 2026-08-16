@@ -1,8 +1,33 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Download, Trash2, ShieldOff, EyeOff, AlertCircle, Eye, Layers, Sparkles, Loader2, Undo2 } from 'lucide-react';
+/**
+ * AlertsTab — the alert log.
+ *
+ * This is the reference implementation of the dense-list pattern: severity
+ * spine, compact rows, sticky header, responsive columns, and the empty /
+ * loading / error states. Anything here that another tab would need lives in
+ * `src/components/data/` rather than in this file — see that folder's README
+ * comment for the API. The only things below are alert-specific: triage, the
+ * optional LLM judge, and the detail drawer.
+ *
+ * The screen it is designed for is a 1366×768 laptop. Once browser chrome, the
+ * app header, the toolbar and the status bar are paid for there is roughly
+ * 500px of table body left, so density is the whole game: 32px rows fit fifteen
+ * alerts where 40px rows fit twelve.
+ */
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  AlertTriangle, Download, Trash2, ShieldCheck, SearchX, EyeOff, AlertCircle,
+  Eye, Layers, Sparkles, Loader2, Undo2, Scale, X,
+} from 'lucide-react';
 import { socket } from './socket';
 import type { Severity } from './shared/types';
 import { AlertDetailDrawer, type AlertDetail } from './AlertDetailDrawer';
+import {
+  DataTable, type DataColumn,
+  RowDensityToggle, useRowDensity,
+  SeverityBadge, SEVERITY_META, normalizeSeverity,
+  EmptyState, ErrorState,
+} from './components/data';
 
 // How long a just-triaged row lingers (greyed, with an Undo affordance) before
 // it drops out of the list. Long enough to read "Dismissed — Undo" and react.
@@ -37,12 +62,6 @@ interface PendingTriage {
   fingerprint?: string;
 }
 
-const JUDGE_VERDICT_STYLE: Record<JudgeVerdict, string> = {
-  malicious:  'bg-red-900/40 text-red-300 border border-red-700/50',
-  suspicious: 'bg-orange-900/40 text-orange-300 border border-orange-700/50',
-  benign:     'bg-emerald-900/30 text-emerald-300 border border-emerald-700/40',
-};
-
 interface AlertRow {
   id: number;
   ts: string;
@@ -59,6 +78,8 @@ interface AlertRow {
   fingerprint: string;
 }
 
+// The agent that produced the span. These are identity, not risk, so they stay
+// out of the severity ramp — a small dot in a fixed hue, and the name in text.
 const HARNESS_COLORS: Record<string, string> = {
   'claude-code': '#f97316',
   'copilot':     '#22c55e',
@@ -73,20 +94,13 @@ const HARNESS_NAMES: Record<string, string> = {
   'unknown':     'Unknown',
 };
 
-const SEV_BADGE: Record<string, string> = {
-  critical: 'bg-rose-900/60 text-rose-200 border border-rose-500/60 animate-pulse',
-  high:   'bg-red-900/40 text-red-300 border border-red-700/40',
-  medium: 'bg-orange-900/40 text-orange-300 border border-orange-700/40',
-  low:    'bg-yellow-900/40 text-yellow-300 border border-yellow-700/40',
-  none:   'bg-slate-800 text-slate-400',
-};
-
-const SEV_COUNT_COLOR: Record<string, string> = {
-  critical: 'bg-rose-600 text-white',
-  high:   'bg-red-600 text-white',
-  medium: 'bg-orange-500 text-white',
-  low:    'bg-yellow-500 text-black',
-  none:   'bg-slate-600 text-white',
+// The judge's three verdicts reuse the severity ramp rather than inventing a
+// fourth colour language: malicious reads as critical, suspicious as medium,
+// benign as the accent (chrome — "nothing to do here").
+const JUDGE_VERDICT_COLOR: Record<JudgeVerdict, string> = {
+  malicious:  'var(--cs-sev-critical-fg)',
+  suspicious: 'var(--cs-sev-medium-fg)',
+  benign:     'var(--cs-text-muted)',
 };
 
 const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
@@ -97,6 +111,31 @@ const FILTER_BTNS: { label: string; value: SeverityFilter }[] = [
   { label: 'Low',      value: 'low'      },
 ];
 
+/** Toolbar buttons all share one shape, so the row reads as a single control strip. */
+function ToolButton({
+  active = false,
+  danger = false,
+  children,
+  ...props
+}: React.ComponentProps<'button'> & { active?: boolean; danger?: boolean }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors whitespace-nowrap"
+      style={{
+        background: active ? 'var(--cs-accent-soft)' : 'transparent',
+        color: active ? 'var(--cs-accent)'
+             : danger ? 'var(--cs-sev-critical-fg)'
+             : 'var(--cs-text-muted)',
+        fontSize: 'var(--cs-text-xs)',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 interface AlertsTabProps {
   // Navigate to the session that produced an alert and pre-select its span.
   // Optional with a safe no-op default so the tab still renders standalone.
@@ -104,8 +143,25 @@ interface AlertsTabProps {
 }
 
 export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
+  // The rule-label filter lives in the URL, not component state — that is
+  // what makes "View in Alert log" from a Govern policy a deep link rather
+  // than a one-shot navigation: the filtered view is shareable, survives a
+  // refresh, and there is exactly one place (?rule=) it can come from. Repeated
+  // `rule` params (not a comma-joined one) because a rule label is a sentence
+  // a human wrote for the rule metadata and may itself contain a comma.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const ruleLabels = searchParams.getAll('rule');
+  const ruleFilterActive = ruleLabels.length > 0;
+  const clearRuleFilter = () => setSearchParams(prev => {
+    const next = new URLSearchParams(prev);
+    next.delete('rule');
+    return next;
+  }, { replace: true });
+
   const [alerts,          setAlerts]          = useState<AlertRow[]>([]);
   const [total,           setTotal]           = useState(0);
+  const [loading,         setLoading]         = useState(true);
+  const [loadError,       setLoadError]       = useState<string | null>(null);
   const [severityFilter,  setSeverityFilter]  = useState<SeverityFilter>('all');
   const [showDismissed,   setShowDismissed]   = useState(false);
   const [groupByRule,     setGroupByRule]     = useState(false);
@@ -122,40 +178,62 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
   // place (honouring the "Select an alert to see details" hint) rather than
   // navigating straight to the timeline.
   const [selected,        setSelected]        = useState<AlertDetail | null>(null);
+  // Scanning hundreds of alerts is the job, so this list defaults to compact.
+  const [density, setDensity] = useRowDensity('alerts');
 
-  const fetchAlerts = (
+  const fetchAlerts = useCallback((
     sev: SeverityFilter = severityFilter,
     sd  = showDismissed,
     grp = groupByRule,
   ) => {
-    const params = new URLSearchParams({ limit: '200' });
+    // The server has no rule-label filter to hand this to, so it is applied
+    // client-side below — widen the page here so a policy's evidence isn't
+    // quietly clipped to the default 200-row page before that filter runs.
+    const params = new URLSearchParams({ limit: ruleFilterActive ? '1000' : '200' });
     if (sev !== 'all') params.set('severity', sev);
     if (sd)  params.set('showDismissed', 'true');
     if (grp) params.set('groupBy', 'rule');
     fetch(`/api/alerts?${params}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(({ alerts: a, total: t }: { alerts: AlertRow[]; total: number }) => {
         setAlerts(a ?? []);
         setTotal(t ?? 0);
+        setLoadError(null);
       })
-      .catch(() => {});
-  };
+      // A monitoring tool that silently shows zero rows during an outage is
+      // worse than one that shows nothing, so the failure is surfaced.
+      .catch((e: Error) => setLoadError(e.message || 'Request failed'))
+      .finally(() => setLoading(false));
+  }, [severityFilter, showDismissed, groupByRule, ruleFilterActive]);
 
   useEffect(() => {
     fetchAlerts(severityFilter, showDismissed, groupByRule);
-  }, [severityFilter, showDismissed, groupByRule]);
+  }, [fetchAlerts, severityFilter, showDismissed, groupByRule]);
 
   useEffect(() => {
     const handler = () => fetchAlerts(severityFilter, showDismissed, groupByRule);
     socket.on('alerts-update', handler);
     return () => { socket.off('alerts-update', handler); };
-  }, [severityFilter, showDismissed, groupByRule]);
+  }, [fetchAlerts, severityFilter, showDismissed, groupByRule]);
 
   // Clear any in-flight undo timers when the component unmounts.
   useEffect(() => {
     const timers = undoTimers.current;
     return () => { for (const t of Object.values(timers)) clearTimeout(t); };
   }, []);
+
+  // Escape closes the detail drawer. The drawer itself only offers a click
+  // target, and a triage loop that needs the mouse to get out of a detail view
+  // is a triage loop nobody uses.
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelected(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected]);
 
   const patchAlert = (id: number, body: { dismissed?: boolean; fp?: boolean; fingerprint?: string }) =>
     fetch(`/api/alerts/${id}`, {
@@ -255,301 +333,401 @@ export function AlertsTab({ onInvestigate }: AlertsTabProps = {}) {
   // back in (deduped by id) at their original position so they linger greyed.
   const fetchedIds  = new Set(alerts.map(a => a.id));
   const lingering   = Object.values(pending).filter(p => !fetchedIds.has(p.row.id)).map(p => p.row);
-  const displayAlerts = [...alerts, ...lingering];
+  const unfilteredAlerts = [...alerts, ...lingering];
+
+  // Arriving from a Govern policy's "View in Alert log" narrows straight to
+  // that policy's evidence — the exact rule labels it is backed by, no more.
+  const displayAlerts = ruleFilterActive
+    ? unfilteredAlerts.filter(a => ruleLabels.includes(a.ruleLabel))
+    : unfilteredAlerts;
+
+  // ── Columns ──────────────────────────────────────────────────────────────
+  // Ordered by how a row is read: when, how bad, what rule, from which agent,
+  // and finally the string that tripped it. Everything that is context rather
+  // than signal drops away as the viewport narrows; severity, rule, the matched
+  // text and the triage controls survive to the narrowest tier, because those
+  // four are what an operator actually acts on.
+  const columns: DataColumn<AlertRow>[] = [
+    {
+      id: 'time', header: 'Time', width: '72px', hideBelow: 'xl', mono: true,
+      cell: a => <span title={new Date(a.ts).toLocaleString()}>{formatTime(a.ts)}</span>,
+    },
+    {
+      id: 'severity', header: 'Severity', width: '118px',
+      cell: a => {
+        const sev = normalizeSeverity(a.severity);
+        const hits = a.count ?? 1;
+        return (
+          <span className="flex items-center gap-1.5 min-w-0">
+            <SeverityBadge severity={sev} />
+            {hits > 1 && (
+              <span
+                className="cs-mono shrink-0"
+                title={`Fired ${hits} times`}
+                style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-xs)' }}
+              >
+                {hits}×
+              </span>
+            )}
+            {!!a.fp && (
+              <span
+                className="shrink-0 uppercase"
+                title="Marked as a false positive"
+                style={{
+                  color: 'var(--cs-text-faint)',
+                  fontSize: 'var(--cs-text-2xs)',
+                  letterSpacing: 'var(--cs-tracking-wide)',
+                }}
+              >
+                FP
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      id: 'rule', header: 'Rule', width: 'minmax(0,1.5fr)',
+      // The rule label is a sentence written for a human, so it is sans, and it
+      // is the one thing in the row set at full text strength.
+      cell: a => (
+        <span
+          title={a.ruleLabel}
+          style={{
+            color: a.dismissed ? 'var(--cs-text-faint)' : 'var(--cs-text-strong)',
+            fontWeight: 'var(--cs-weight-medium)',
+            textDecoration: a.dismissed ? 'line-through' : undefined,
+          }}
+        >
+          {a.ruleLabel}
+        </span>
+      ),
+    },
+    {
+      id: 'agent', header: 'Agent', width: '112px', hideBelow: 'xl',
+      cell: a => (
+        <span className="flex items-center gap-1.5 min-w-0" title={HARNESS_NAMES[a.harness] ?? a.harness}>
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{ background: HARNESS_COLORS[a.harness] ?? HARNESS_COLORS.unknown }}
+            aria-hidden="true"
+          />
+          <span className="truncate">{HARNESS_NAMES[a.harness] ?? a.harness}</span>
+        </span>
+      ),
+    },
+    {
+      id: 'span', header: 'Span', width: 'minmax(0,0.8fr)', hideBelow: '2xl', mono: true,
+      cell: a => <span title={a.spanName}>{a.spanName || '—'}</span>,
+    },
+    {
+      id: 'match', header: 'Matched', width: 'minmax(0,1.6fr)', mono: true,
+      // The captured string, scrubbed server-side. Machine-authored, so mono —
+      // and left uncoloured, because a red block on every row would compete
+      // with the spine for the one thing allowed to mean "risk".
+      cell: a =>
+        a.matchedText
+          ? <span title={a.matchedText} style={{ color: 'var(--cs-text-body)' }}>{a.matchedText}</span>
+          : <span style={{ color: 'var(--cs-text-faint)' }}>—</span>,
+    },
+    {
+      id: 'session', header: 'Session', width: '92px', hideBelow: '3xl', mono: true,
+      cell: a => <span title={a.traceId}>{a.traceId ? a.traceId.slice(0, 8) : '—'}</span>,
+    },
+    {
+      id: 'triage', header: 'Triage', width: '84px', align: 'end',
+      // Stops propagation so the buttons never open the detail drawer as well.
+      cell: a => {
+        const pend       = pending[a.id];
+        const isDismissed = !!a.dismissed;
+        const isFP        = !!a.fp;
+        const isTriaging  = triaging.has(a.id);
+        const judgeState  = judgeStates[a.id];
+        return (
+          <span
+            className="flex items-center justify-end gap-0.5"
+            onClick={e => e.stopPropagation()}
+            onKeyDown={e => e.stopPropagation()}
+          >
+            {pend ? (
+              // Undo window: confirm the action took, and give a way back.
+              <button
+                type="button"
+                onClick={() => undoTriage(a.id)}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors"
+                style={{ color: 'var(--cs-accent)', fontSize: 'var(--cs-text-xs)' }}
+                title={pend.kind === 'fp' ? 'Undo — marked as false positive' : 'Undo — dismissed'}
+              >
+                <Undo2 className="w-3 h-3" aria-hidden="true" /> Undo
+              </button>
+            ) : (
+              <>
+                {judgeEnabled && (
+                  <button
+                    type="button"
+                    disabled={judgeState?.status === 'loading'}
+                    onClick={() => analyze(a)}
+                    className="p-1 rounded transition-colors disabled:opacity-50"
+                    style={{ color: 'var(--cs-text-faint)' }}
+                    title="Analyze with the LLM judge (semantic verdict)"
+                  >
+                    {judgeState?.status === 'loading'
+                      ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                      : <Sparkles className="w-3 h-3" aria-hidden="true" />}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={isTriaging}
+                  onClick={() => triage(a, { dismissed: !isDismissed })}
+                  className="p-1 rounded transition-colors disabled:opacity-50"
+                  style={{ color: isDismissed ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}
+                  title={isDismissed ? 'Restore alert' : 'Dismiss alert'}
+                >
+                  <EyeOff className="w-3 h-3" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  disabled={isTriaging}
+                  onClick={() => triage(a, { fp: !isFP })}
+                  className="p-1 rounded transition-colors disabled:opacity-50"
+                  style={{ color: isFP ? 'var(--cs-sev-medium-fg)' : 'var(--cs-text-faint)' }}
+                  title={isFP ? 'Unmark false positive' : 'Mark as a false positive'}
+                >
+                  <AlertCircle className="w-3 h-3" aria-hidden="true" />
+                </button>
+              </>
+            )}
+          </span>
+        );
+      },
+    },
+  ];
+
+  // The judge verdict for a row, rendered as a strip under it rather than as a
+  // popover, so several rows can be compared at once.
+  const renderJudge = (a: AlertRow) => {
+    const state = judgeStates[a.id];
+    if (!state) return null;
+    return (
+      <div
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5"
+        style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-muted)' }}
+      >
+        <span className="inline-flex items-center gap-1 shrink-0" style={{ color: 'var(--cs-text-faint)' }}>
+          <Sparkles className="w-3 h-3" aria-hidden="true" /> LLM judge
+        </span>
+        {state.status === 'loading' && (
+          <span className="inline-flex items-center gap-1.5">
+            <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" /> Analyzing…
+          </span>
+        )}
+        {state.status === 'error' && (
+          <span style={{ color: 'var(--cs-sev-critical-fg)' }}>Request failed — {state.message}</span>
+        )}
+        {state.status === 'done' && (() => {
+          const r = state.result;
+          if (!r.enabled) {
+            return <span>Judge not configured (set <code className="cs-mono">CLAUDESEC_JUDGE_URL</code>).</span>;
+          }
+          if (!r.verdict) {
+            return (
+              <span style={{ color: 'var(--cs-sev-medium-fg)' }}>
+                Judge unavailable — {r.error ?? 'no verdict'}{' '}
+                <span style={{ color: 'var(--cs-text-faint)' }}>(fail-open: detection unaffected)</span>
+              </span>
+            );
+          }
+          return (
+            <>
+              <span
+                className="uppercase"
+                style={{
+                  color: JUDGE_VERDICT_COLOR[r.verdict],
+                  fontWeight: 'var(--cs-weight-bold)',
+                  letterSpacing: 'var(--cs-tracking-wide)',
+                  fontSize: 'var(--cs-text-2xs)',
+                }}
+              >
+                {r.verdict}
+              </span>
+              {r.category && <span className="cs-mono">{r.category}</span>}
+              {typeof r.confidence === 'number' && (
+                <span className="cs-mono" style={{ color: 'var(--cs-text-faint)' }}>
+                  conf {(r.confidence * 100).toFixed(0)}%
+                </span>
+              )}
+              {r.reason && <span className="italic basis-full sm:basis-auto">“{r.reason}”</span>}
+              {r.model && <span className="cs-mono ml-auto shrink-0" style={{ color: 'var(--cs-text-faint)' }}>{r.model}</span>}
+            </>
+          );
+        })()}
+      </div>
+    );
+  };
+
+  const filtered = severityFilter !== 'all' || ruleFilterActive;
+  // A failed refresh with rows still on screen is the dangerous case: the list
+  // looks live but is stale. Say so in the toolbar rather than replacing data
+  // the operator may still be working through.
+  const staleWarning = loadError && displayAlerts.length > 0;
 
   return (
-    <div className="flex-1 flex flex-col min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
+    <div className="flex-1 flex flex-col min-h-0 min-w-0" style={{ background: 'var(--cs-bg-canvas)' }}>
 
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 px-5 py-3 shrink-0 flex-wrap" style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-border)' }}>
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-orange-400" />
-          <span className="text-sm font-bold" style={{ color: 'var(--cs-text-base)' }}>Alert Log</span>
-          <span className="text-[11px] font-mono" style={{ color: 'var(--cs-text-faint)' }}>{total} total</span>
-        </div>
-
-        <div className="flex gap-1 ml-2">
-          {FILTER_BTNS.map(btn => (
-            <button
-              key={btn.value}
-              onClick={() => setSeverityFilter(btn.value)}
-              className={`px-2.5 py-1 text-xs font-medium rounded-full transition-colors ${
-                severityFilter === btn.value
-                  ? ''
-                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-              }`}
-              style={severityFilter === btn.value ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
-            >
-              {btn.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-2 ml-auto">
-          {/* Group by rule toggle */}
-          <button
-            onClick={() => setGroupByRule(v => !v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors ${
-              groupByRule
-                ? ''
-                : 'bg-slate-800 border border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
-            }`}
-            style={groupByRule ? { background: 'rgba(var(--cs-accent-rgb),0.1)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)', color: 'var(--cs-accent)' } : undefined}
-            title={groupByRule ? 'Showing grouped view' : 'Group duplicate alerts by rule'}
+      {/* ── Toolbar ────────────────────────────────────────────────────────
+          One strip, one control shape. It is chrome, so it is quiet: no
+          outlines, no fills except on what is currently on. */}
+      <div
+        className="flex items-center gap-2 xl:gap-3 px-3 py-1.5 shrink-0 flex-wrap"
+        style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-rule)' }}
+      >
+        <div className="flex items-center gap-2 shrink-0">
+          <AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />
+          <h2 style={{ fontSize: 'var(--cs-text-base)', fontWeight: 'var(--cs-weight-semibold)', color: 'var(--cs-text-strong)' }}>
+            Alert log
+          </h2>
+          <span
+            className="cs-mono"
+            title={`Showing ${displayAlerts.length} of ${total} alerts`}
+            style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-xs)' }}
           >
-            <Layers className="w-3.5 h-3.5" />
-            {groupByRule ? 'Grouped' : 'Group'}
-          </button>
-          {/* Show/hide dismissed toggle */}
-          <button
+            {displayAlerts.length}/{total}
+          </span>
+          {staleWarning && (
+            <span
+              role="status"
+              title={`Last refresh failed (${loadError}). Detection is unaffected — this is only the view.`}
+              style={{ color: 'var(--cs-sev-medium-fg)', fontSize: 'var(--cs-text-xs)' }}
+            >
+              Stale
+            </span>
+          )}
+          {ruleFilterActive && (
+            // Arrived here from a Govern policy's "View in Alert log" — the
+            // one place this narrowing can come from, so it is named and
+            // removable rather than a silent, unexplained shrink of the list.
+            <span
+              className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5"
+              style={{ background: 'var(--cs-accent-soft)', color: 'var(--cs-accent)', fontSize: 'var(--cs-text-xs)' }}
+              title={ruleLabels.join(', ')}
+            >
+              <Scale className="w-3 h-3 shrink-0" aria-hidden="true" />
+              Policy filter · {ruleLabels.length} rule{ruleLabels.length === 1 ? '' : 's'}
+              <button
+                type="button"
+                onClick={clearRuleFilter}
+                aria-label="Clear policy filter"
+                className="rounded-full p-0.5 hover:opacity-70"
+              >
+                <X className="w-2.5 h-2.5" aria-hidden="true" />
+              </button>
+            </span>
+          )}
+        </div>
+
+        {/* Severity scale. The primary axis of this product, so it stays
+            permanently visible rather than hiding behind a menu. Each option
+            carries its own glyph, so the level is legible without the colour. */}
+        <div className="flex items-center gap-0.5" role="group" aria-label="Filter by severity">
+          {FILTER_BTNS.map(btn => {
+            const meta = btn.value === 'all' ? null : SEVERITY_META[btn.value as Severity];
+            const active = severityFilter === btn.value;
+            return (
+              <ToolButton
+                key={btn.value}
+                active={active}
+                aria-pressed={active}
+                onClick={() => setSeverityFilter(btn.value)}
+                title={meta ? `${meta.label} — ${meta.meaning}` : 'All severities'}
+              >
+                {meta && (
+                  <meta.Icon
+                    className="w-3 h-3"
+                    style={{ color: `var(--cs-sev-${btn.value})` }}
+                    aria-hidden="true"
+                  />
+                )}
+                {btn.label}
+              </ToolButton>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-1 ml-auto">
+          <RowDensityToggle density={density} onChange={setDensity} className="mr-1" />
+          <ToolButton
+            active={groupByRule}
+            aria-pressed={groupByRule}
+            onClick={() => setGroupByRule(v => !v)}
+            title={groupByRule ? 'Showing one row per rule' : 'Collapse duplicate alerts into one row per rule'}
+          >
+            <Layers className="w-3.5 h-3.5" aria-hidden="true" />
+            <span className="hidden xl:inline">{groupByRule ? 'Grouped' : 'Group'}</span>
+          </ToolButton>
+          <ToolButton
+            active={showDismissed}
+            aria-pressed={showDismissed}
             onClick={() => setShowDismissed(v => !v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
-              showDismissed
-                ? 'bg-slate-700 border-slate-600 text-slate-300'
-                : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700'
-            }`}
             title={showDismissed ? 'Hide dismissed alerts' : 'Show dismissed alerts'}
           >
-            {showDismissed ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-            Dismissed
-          </button>
-          <button
-            onClick={() => window.open('/api/alerts/export', '_blank')}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-xs text-slate-300 transition-colors"
-          >
-            <Download className="w-3.5 h-3.5" /> Export JSON
-          </button>
-          <button
-            onClick={handleClear}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-900/40 rounded-lg border border-slate-700 hover:border-red-700/40 text-xs text-slate-400 hover:text-red-400 transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" /> Clear
-          </button>
+            {showDismissed ? <Eye className="w-3.5 h-3.5" aria-hidden="true" /> : <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />}
+            <span className="hidden xl:inline">Dismissed</span>
+          </ToolButton>
+          <ToolButton onClick={() => window.open('/api/alerts/export', '_blank')} title="Download every alert as JSON">
+            <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            <span className="hidden 2xl:inline">Export</span>
+          </ToolButton>
+          <ToolButton danger onClick={handleClear} title="Delete every alert — cannot be undone">
+            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+            <span className="hidden 2xl:inline">Clear</span>
+          </ToolButton>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto p-4">
-        {displayAlerts.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
-            <ShieldOff className="w-8 h-8 text-slate-700" />
-            <p className="text-sm font-medium text-slate-500">No alerts yet</p>
-            <p className="text-xs text-slate-600 max-w-xs text-center leading-relaxed">
-              Alerts appear here when a span matches a threat detection rule.
-            </p>
-          </div>
+      {/* ── The list ───────────────────────────────────────────────────────── */}
+      <DataTable
+        rows={displayAlerts}
+        columns={columns}
+        rowKey={a => a.id}
+        label="Alerts"
+        density={density}
+        minWidth={620}
+        severity={a => normalizeSeverity(a.severity)}
+        muted={a => !!pending[a.id] || !!a.dismissed}
+        onActivate={a => setSelected(a)}
+        renderDetail={renderJudge}
+        loading={loading}
+        error={loadError && displayAlerts.length === 0 ? (
+          <ErrorState
+            description={`The alert feed did not respond (${loadError}). Detection is unaffected — this is only the view.`}
+            onRetry={() => { setLoading(true); fetchAlerts(); }}
+          />
+        ) : undefined}
+        empty={ruleFilterActive ? (
+          <EmptyState
+            icon={<SearchX className="w-6 h-6" aria-hidden="true" />}
+            title="No alerts for this policy"
+            description="Nothing in the current window matches the rules this policy is backed by. Clear the policy filter above to see everything, or turn on Dismissed to include alerts already triaged."
+          />
+        ) : filtered ? (
+          <EmptyState
+            icon={<SearchX className="w-6 h-6" aria-hidden="true" />}
+            title="Nothing matches this filter"
+            description="No alerts at this severity. Widen the severity scale above, or turn on Dismissed to include alerts you have already triaged."
+          />
         ) : (
-          <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cs-border)', background: 'var(--cs-bg-surface)' }}>
-          <div className="overflow-x-auto">
-          <table className="w-full text-xs min-w-[640px]">
-            <thead className="sticky top-0 z-10" style={{ background: 'var(--cs-bg-elevated)' }}>
-              <tr className="text-xs uppercase tracking-wider" style={{ color: 'var(--cs-text-muted)', borderBottom: '1px solid var(--cs-border)' }}>
-                <th className="px-4 py-2.5 text-left">Time</th>
-                <th className="px-4 py-2.5 text-left">Severity</th>
-                <th className="px-4 py-2.5 text-left">Rule</th>
-                <th className="px-4 py-2.5 text-left">Agent</th>
-                <th className="px-4 py-2.5 text-left">Span Name</th>
-                <th className="px-4 py-2.5 text-left">Snippet</th>
-                <th className="px-4 py-2.5 text-left w-20">Triage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayAlerts.map(alert => {
-                const pend        = pending[alert.id];
-                const isDismissed = !!alert.dismissed;
-                const isFP        = !!alert.fp;
-                const isTriaging  = triaging.has(alert.id);
-                const hitCount    = alert.count ?? 1;
-                const judgeState  = judgeStates[alert.id];
-                // Clicking a row opens the detail drawer in place — matching the
-                // panel's promise — instead of jumping away to the timeline. The
-                // drawer offers an explicit "Open in Timeline →" action. The triage
-                // cell stops propagation so its buttons don't open the drawer.
-                const openDetail = () => setSelected(alert);
-                return (
-                  <React.Fragment key={alert.id}>
-                  <tr
-                    onClick={openDetail}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(); }
-                    }}
-                    title="View alert details"
-                    className={`transition-colors cursor-pointer ${
-                      pend || isDismissed
-                        ? 'opacity-40 bg-slate-900/30'
-                        : 'hover:bg-slate-800/30'
-                    }`}
-                    style={{ borderBottom: judgeState ? 'none' : '1px solid var(--cs-border)' }}
-                  >
-                    <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
-                      {formatTime(alert.ts)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`px-1.5 py-0.5 rounded text-xs font-mono uppercase ${SEV_BADGE[alert.severity] ?? SEV_BADGE.none}`}>
-                          {alert.severity}
-                        </span>
-                        {hitCount > 1 && (
-                          <span
-                            className={`px-1.5 py-0.5 rounded-full text-[11px] font-bold tabular-nums ${SEV_COUNT_COLOR[alert.severity] ?? SEV_COUNT_COLOR.none}`}
-                            title={`Fired ${hitCount} times`}
-                          >
-                            {hitCount}×
-                          </span>
-                        )}
-                        {isFP && (
-                          <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-orange-900/30 text-orange-400 border border-orange-700/30">
-                            FP
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className={`px-4 py-2.5 font-medium max-w-[180px] truncate ${isDismissed ? 'line-through text-slate-600' : 'text-slate-200'}`} title={alert.ruleLabel}>
-                      {alert.ruleLabel}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ background: HARNESS_COLORS[alert.harness] ?? '#64748b' }}
-                        />
-                        <span className="text-slate-400 truncate max-w-[100px]" title={HARNESS_NAMES[alert.harness]}>
-                          {HARNESS_NAMES[alert.harness] ?? alert.harness}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-400 max-w-[160px] truncate" title={alert.spanName}>
-                      {alert.spanName}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {alert.matchedText ? (
-                        <code className="text-xs font-mono text-red-300 bg-red-900/20 px-1.5 py-0.5 rounded max-w-[200px] truncate block" title={alert.matchedText}>
-                          {alert.matchedText}
-                        </code>
-                      ) : (
-                        <span className="text-slate-700">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5" onClick={e => e.stopPropagation()}>
-                      {pend ? (
-                        // Undo window: confirm the action took, give a way back.
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] text-slate-500 whitespace-nowrap">
-                            {pend.kind === 'fp' ? 'Marked FP' : 'Dismissed'}
-                          </span>
-                          <button
-                            onClick={() => undoTriage(alert.id)}
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-sky-400 hover:bg-sky-900/30 hover:text-sky-300 transition-colors"
-                            title="Undo"
-                          >
-                            <Undo2 className="w-3 h-3" /> Undo
-                          </button>
-                        </div>
-                      ) : (
-                      <div className="flex items-center gap-1">
-                        {/* Analyze with LLM (only when the optional judge is configured) */}
-                        {judgeEnabled && (
-                          <button
-                            disabled={judgeState?.status === 'loading'}
-                            onClick={() => analyze(alert)}
-                            className="p-1 rounded transition-colors text-violet-400 hover:bg-violet-900/30 hover:text-violet-300 disabled:opacity-50"
-                            title="Analyze with LLM judge (semantic verdict)"
-                          >
-                            {judgeState?.status === 'loading'
-                              ? <Loader2 className="w-3 h-3 animate-spin" />
-                              : <Sparkles className="w-3 h-3" />}
-                          </button>
-                        )}
-                        {/* Dismiss toggle */}
-                        <button
-                          disabled={isTriaging}
-                          onClick={() => triage(alert, { dismissed: !isDismissed })}
-                          className={`p-1 rounded transition-colors ${
-                            isDismissed
-                              ? 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                              : 'text-slate-500 hover:bg-slate-700 hover:text-slate-300'
-                          }`}
-                          title={isDismissed ? 'Restore alert' : 'Dismiss alert'}
-                        >
-                          <EyeOff className="w-3 h-3" />
-                        </button>
-                        {/* False-positive toggle */}
-                        <button
-                          disabled={isTriaging}
-                          onClick={() => triage(alert, { fp: !isFP })}
-                          className={`p-1 rounded transition-colors ${
-                            isFP
-                              ? 'bg-orange-900/40 text-orange-400 hover:bg-orange-900/60'
-                              : 'text-slate-500 hover:bg-slate-700 hover:text-orange-400'
-                          }`}
-                          title={isFP ? 'Unmark false positive' : 'Mark as false positive'}
-                        >
-                          <AlertCircle className="w-3 h-3" />
-                        </button>
-                      </div>
-                      )}
-                    </td>
-                  </tr>
-                  {judgeState && (
-                    <tr style={{ borderBottom: '1px solid var(--cs-border)' }}>
-                      <td colSpan={7} className="px-4 pb-3 pt-0">
-                        <div
-                          className="rounded-lg px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1.5"
-                          style={{ background: 'var(--cs-bg-elevated)', border: '1px solid var(--cs-border)' }}
-                        >
-                          <span className="inline-flex items-center gap-1 text-violet-300 font-semibold shrink-0">
-                            <Sparkles className="w-3 h-3" /> LLM judge
-                          </span>
-                          {judgeState.status === 'loading' && (
-                            <span className="inline-flex items-center gap-1.5 text-slate-400">
-                              <Loader2 className="w-3 h-3 animate-spin" /> Analyzing…
-                            </span>
-                          )}
-                          {judgeState.status === 'error' && (
-                            <span className="text-red-400">Request failed — {judgeState.message}</span>
-                          )}
-                          {judgeState.status === 'done' && (() => {
-                            const r = judgeState.result;
-                            if (!r.enabled) return <span className="text-slate-500">Judge not configured (set <code className="font-mono">CLAUDESEC_JUDGE_URL</code>).</span>;
-                            if (!r.verdict) return <span className="text-amber-400">Judge unavailable — {r.error ?? 'no verdict'} <span className="text-slate-600">(fail-open: detection unaffected)</span></span>;
-                            return (
-                              <>
-                                <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold uppercase ${JUDGE_VERDICT_STYLE[r.verdict]}`}>
-                                  {r.verdict}
-                                </span>
-                                {r.category && (
-                                  <span className="font-mono text-slate-300">{r.category}</span>
-                                )}
-                                {typeof r.confidence === 'number' && (
-                                  <span className="text-slate-500">conf {(r.confidence * 100).toFixed(0)}%</span>
-                                )}
-                                {r.reason && (
-                                  <span className="text-slate-400 italic basis-full sm:basis-auto">“{r.reason}”</span>
-                                )}
-                                {r.model && (
-                                  <span className="text-slate-600 ml-auto shrink-0">{r.model}</span>
-                                )}
-                              </>
-                            );
-                          })()}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>{/* overflow-x-auto */}
-          </div>
+          <EmptyState
+            icon={<ShieldCheck className="w-6 h-6" aria-hidden="true" />}
+            title="No threats detected"
+            description="An alert lands here the moment an agent's command, file access or network call trips a detection rule. Nothing has tripped one yet."
+          />
         )}
-      </div>
+      />
 
-      {/* In-place alert detail — opened by clicking a row. "Open in Timeline →"
-          inside the drawer is the explicit, secondary path to the timeline. */}
+      {/* In-place alert detail — opened by clicking or pressing Enter on a row.
+          "Open in Timeline →" inside the drawer is the explicit, secondary path
+          to the timeline. */}
       <AlertDetailDrawer
         alert={selected}
         onClose={() => setSelected(null)}

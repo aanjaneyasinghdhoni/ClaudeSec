@@ -2,19 +2,38 @@
  * SpanAttributes — enriched display of OTel semantic convention attributes.
  * Groups attrs by namespace with icons + human-readable labels.
  * Replaces the raw key→value list in the span detail panel.
+ *
+ * This is where an operator reads a command, a file path, a token count — the
+ * DESIGN.md mono rule ("machine-authored strings you compare or copy") governs
+ * every value rendered here. Two truncation layers apply, and they are kept
+ * distinct rather than conflated:
+ *   - write-time: the server caps an attribute value at 4KiB and appends an
+ *     inline marker (see `capSpanAttributes` in server/db.ts). That marker is
+ *     rendered honestly, as its own line, never stripped or hidden.
+ *   - read-time: a value that fits within the cap can still be large enough to
+ *     make a row unreadable, so anything over the UI threshold collapses
+ *     behind a "Show full value" toggle rather than being cut off silently.
  */
 import React, { useState } from 'react';
-import { Bot, Globe, Database, FileText, Terminal, Wrench, Package, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  Bot, Globe, Database, FileText, Terminal, Wrench, Package, ShieldAlert,
+  ChevronDown, ChevronRight, Copy, Check,
+} from 'lucide-react';
 
 type AttrMap = Record<string, unknown>;
 
 // ── Semantic group definitions ──────────────────────────────────────────────
+//
+// Groups are a filing scheme, not a risk signal, so — unlike severity — they
+// deliberately do not each get their own hue. A rainbow of category colours is
+// exactly what DESIGN.md's audit called out ("purple badges, teal accents...
+// competing with severity"), so every group icon reads in one quiet tone and
+// the grouping itself carries the information.
 
 interface AttrGroup {
   prefix: string;
   label: string;
   icon: React.ReactNode;
-  color: string;
   humanLabel: Record<string, string>;
 }
 
@@ -22,8 +41,7 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'gen_ai',
     label: 'AI / LLM',
-    icon: <Bot className="w-3 h-3" />,
-    color: 'text-purple-400',
+    icon: <Bot className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'gen_ai.request.model':   'Model',
       'gen_ai.response.model':  'Response Model',
@@ -37,8 +55,7 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'llm',
     label: 'AI / LLM',
-    icon: <Bot className="w-3 h-3" />,
-    color: 'text-purple-400',
+    icon: <Bot className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'llm.request.model':   'Model',
       'llm.usage.input_tokens':  'Input Tokens',
@@ -49,8 +66,7 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'http',
     label: 'HTTP',
-    icon: <Globe className="w-3 h-3" />,
-    color: 'text-blue-400',
+    icon: <Globe className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'http.request.method':  'Method',
       'http.response.status_code': 'Status',
@@ -66,8 +82,7 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'db',
     label: 'Database',
-    icon: <Database className="w-3 h-3" />,
-    color: 'text-green-400',
+    icon: <Database className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'db.system':        'DB System',
       'db.name':          'Database',
@@ -79,8 +94,7 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'file',
     label: 'File I/O',
-    icon: <FileText className="w-3 h-3" />,
-    color: 'text-yellow-400',
+    icon: <FileText className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'file.path':        'Path',
       'file.name':        'Name',
@@ -91,8 +105,7 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'process',
     label: 'Process',
-    icon: <Terminal className="w-3 h-3" />,
-    color: 'text-orange-400',
+    icon: <Terminal className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'process.executable.name': 'Executable',
       'process.command_line':    'Command',
@@ -103,12 +116,23 @@ const GROUPS: AttrGroup[] = [
   {
     prefix: 'tool',
     label: 'Tool',
-    icon: <Wrench className="w-3 h-3" />,
-    color: 'text-cyan-400',
+    icon: <Wrench className="w-3 h-3" aria-hidden="true" />,
     humanLabel: {
       'tool.name':         'Name',
       'tool.input':        'Input',
       'tool.output':       'Output',
+    },
+  },
+  {
+    // Scoped to 'claudesec.threat' rather than the whole 'claudesec' namespace
+    // so it picks up only this attribute's sibling (claudesec.threat.rule,
+    // hidden below) and leaves claudesec.sequence.* / claudesec.outcome.*
+    // alone.
+    prefix: 'claudesec.threat',
+    label: 'Detection',
+    icon: <ShieldAlert className="w-3 h-3" aria-hidden="true" />,
+    humanLabel: {
+      'claudesec.threat.matches': 'Rules Matched',
     },
   },
 ];
@@ -120,6 +144,93 @@ const HIDDEN_KEYS = new Set([
   'reason',
 ]);
 
+// ── Value rendering: truncation (both layers) + copy ────────────────────────
+
+// The exact suffix `capSpanAttributes` (server/db.ts) appends when a value is
+// cut at write time. Matched verbatim so the marker can be split out and
+// rendered as its own honest line rather than read as part of the value.
+const WRITE_TIME_TRUNCATION =
+  /\n… \[ClaudeSec truncated (\d+) characters — detection ran on the full value\]$/;
+
+function splitWriteTimeTruncation(value: string): { kept: string; droppedChars: number | null } {
+  const m = value.match(WRITE_TIME_TRUNCATION);
+  if (!m) return { kept: value, droppedChars: null };
+  return { kept: value.slice(0, m.index), droppedChars: Number(m[1]) };
+}
+
+// Read-time collapse threshold. Independent of the 4KiB write-time cap — a
+// value well under 4KiB can still be too long to read as a table row.
+const UI_TRUNCATE_AT = 220;
+
+function AttrValue({ value }: { value: unknown }) {
+  const raw = typeof value === 'string' ? value : String(value);
+  const { kept, droppedChars } = splitWriteTimeTruncation(raw);
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const overLength = kept.length > UI_TRUNCATE_AT;
+  const shown = overLength && !expanded ? kept.slice(0, UI_TRUNCATE_AT) + '…' : kept;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(raw);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Clipboard can be unavailable (permissions, insecure context). Not
+      // worth surfacing — the value is still fully visible to select by hand.
+    }
+  };
+
+  return (
+    <div className="min-w-0 group/attr">
+      <div className="flex items-start gap-1.5">
+        <p
+          className="cs-mono flex-1 min-w-0"
+          style={{
+            color: 'var(--cs-text-body)',
+            fontSize: 'var(--cs-text-xs)',
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
+          }}
+        >
+          {shown}
+        </p>
+        <button
+          type="button"
+          onClick={copy}
+          className="shrink-0 p-0.5 rounded opacity-0 group-hover/attr:opacity-100 focus-visible:opacity-100 transition-opacity"
+          style={{ color: copied ? 'var(--cs-sev-low-fg)' : 'var(--cs-text-faint)' }}
+          title="Copy full value"
+          aria-label="Copy full value"
+        >
+          {copied ? <Check className="w-3 h-3" aria-hidden="true" /> : <Copy className="w-3 h-3" aria-hidden="true" />}
+        </button>
+      </div>
+      {overLength && (
+        <button
+          type="button"
+          onClick={() => setExpanded(e => !e)}
+          className="mt-0.5"
+          style={{ color: 'var(--cs-accent)', fontSize: 'var(--cs-text-2xs)' }}
+        >
+          {expanded ? 'Show less' : `Show full value (${kept.length.toLocaleString()} chars)`}
+        </button>
+      )}
+      {droppedChars != null && (
+        <p
+          className="italic mt-0.5"
+          style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-2xs)' }}
+        >
+          Truncated at write time — {droppedChars.toLocaleString()} more character{droppedChars === 1 ? '' : 's'} were
+          captured but not stored here; detection ran on the full value.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Token gauge ─────────────────────────────────────────────────────────────
 
 function TokenGauge({ input, output }: { input: number; output: number }) {
@@ -128,13 +239,13 @@ function TokenGauge({ input, output }: { input: number; output: number }) {
   const outPct = Math.round((output / total) * 100);
   return (
     <div className="mt-1.5">
-      <div className="flex h-2 rounded-full overflow-hidden bg-slate-800 mb-1">
-        <div className="bg-blue-500/80"   style={{ width: `${inPct}%` }}  title={`Input: ${input}`} />
-        <div className="bg-purple-500/80" style={{ width: `${outPct}%` }} title={`Output: ${output}`} />
+      <div className="flex h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--cs-bg-sunken)' }}>
+        <div style={{ width: `${inPct}%`,  background: 'rgba(var(--cs-accent-rgb), 0.65)' }} title={`Input: ${input}`} />
+        <div style={{ width: `${outPct}%`, background: 'rgba(var(--cs-accent-rgb), 0.28)' }} title={`Output: ${output}`} />
       </div>
-      <div className="flex justify-between text-[11px] text-slate-600">
-        <span className="text-blue-400">↓ {input.toLocaleString()} in</span>
-        <span className="text-purple-400">{output.toLocaleString()} out ↑</span>
+      <div className="flex justify-between mt-1" style={{ fontSize: 'var(--cs-text-2xs)' }}>
+        <span style={{ color: 'var(--cs-text-body)' }}>↓ {input.toLocaleString()} in</span>
+        <span style={{ color: 'var(--cs-text-faint)' }}>{output.toLocaleString()} out ↑</span>
       </div>
     </div>
   );
@@ -144,8 +255,20 @@ function TokenGauge({ input, output }: { input: number; output: number }) {
 
 function HttpStatusBadge({ code }: { code: number | string }) {
   const n = Number(code);
-  const color = n < 300 ? 'text-green-400 bg-green-900/40' : n < 500 ? 'text-yellow-400 bg-yellow-900/40' : 'text-red-400 bg-red-900/40';
-  return <span className={`px-1.5 py-0.5 rounded text-xs font-bold font-mono ${color}`}>{code}</span>;
+  // Reuses the severity ramp's foreground tokens rather than inventing a
+  // fourth colour language for "ok / client error / server error" — the same
+  // move AlertsTab makes for the LLM judge's verdict.
+  const color = n >= 500 ? 'var(--cs-sev-critical-fg)'
+              : n >= 400 ? 'var(--cs-sev-medium-fg)'
+              : 'var(--cs-text-body)';
+  return (
+    <span
+      className="cs-mono px-1.5 py-0.5 rounded"
+      style={{ background: 'var(--cs-bg-raised)', color, fontWeight: 'var(--cs-weight-bold)', fontSize: 'var(--cs-text-xs)' }}
+    >
+      {code}
+    </span>
+  );
 }
 
 // ── Attribute group section ──────────────────────────────────────────────────
@@ -162,19 +285,29 @@ function AttrSection({ group, entries }: { group: AttrGroup; entries: [string, u
   const httpStatus = entries.find(([k]) => k.includes('status_code') || k.includes('status'))?.[1];
 
   return (
-    <div className="border border-slate-700/60 rounded-lg overflow-hidden mb-2">
+    <div className="rounded-md overflow-hidden mb-2" style={{ background: 'var(--cs-bg-raised)' }}>
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-slate-800/60 hover:bg-slate-800 transition-colors text-left"
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 transition-colors text-left"
+        style={{ background: 'var(--cs-bg-surface)' }}
       >
-        <span className={group.color}>{group.icon}</span>
-        <span className="text-xs font-bold text-slate-300 uppercase tracking-wide flex-1">{group.label}</span>
-        <span className="text-[11px] text-slate-600">{entries.length}</span>
-        {open ? <ChevronDown className="w-3 h-3 text-slate-600" /> : <ChevronRight className="w-3 h-3 text-slate-600" />}
+        <span style={{ color: 'var(--cs-text-faint)' }}>{group.icon}</span>
+        <span
+          className="uppercase flex-1"
+          style={{ color: 'var(--cs-text-muted)', fontSize: 'var(--cs-text-2xs)', fontWeight: 'var(--cs-weight-bold)', letterSpacing: 'var(--cs-tracking-wide)' }}
+        >
+          {group.label}
+        </span>
+        <span className="cs-mono" style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-2xs)' }}>{entries.length}</span>
+        {open
+          ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />
+          : <ChevronRight className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />}
       </button>
 
       {open && (
-        <div className="px-2.5 py-2 space-y-1.5 bg-slate-900/40">
+        <div className="px-2.5 py-2 space-y-2">
           {hasTokens && (group.prefix === 'gen_ai' || group.prefix === 'llm') && (
             <TokenGauge input={tokensIn} output={tokensOut} />
           )}
@@ -185,10 +318,10 @@ function AttrSection({ group, entries }: { group: AttrGroup; entries: [string, u
               const isStatus = key.includes('status_code') || key.includes('status');
               return (
                 <div key={key}>
-                  <p className="text-[11px] text-slate-600 font-mono mb-0.5">{label}</p>
+                  <p className="cs-mono mb-0.5" style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-2xs)' }}>{label}</p>
                   {isStatus && httpStatus
                     ? <HttpStatusBadge code={String(value)} />
-                    : <p className="text-[11px] text-slate-300 font-mono break-all">{String(value)}</p>
+                    : <AttrValue value={value} />
                   }
                 </div>
               );
@@ -230,32 +363,42 @@ export function SpanAttributes({ attrs }: { attrs: AttrMap }) {
   );
 
   if (groupSections.length === 0 && otherEntries.length === 0) {
-    return <p className="text-[11px] text-slate-600 italic">No attributes</p>;
+    return <p className="italic" style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-xs)' }}>No attributes</p>;
   }
 
   return (
-    <div>
+    <div className="min-w-0">
       {groupSections.map(({ group, entries }) => (
         <AttrSection key={group.prefix + group.label} group={group} entries={entries} />
       ))}
 
       {otherEntries.length > 0 && (
-        <div className="border border-slate-700/60 rounded-lg overflow-hidden">
+        <div className="rounded-md overflow-hidden" style={{ background: 'var(--cs-bg-raised)' }}>
           <button
+            type="button"
             onClick={() => setOtherOpen(o => !o)}
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-slate-800/60 hover:bg-slate-800 transition-colors text-left"
+            aria-expanded={otherOpen}
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 transition-colors text-left"
+            style={{ background: 'var(--cs-bg-surface)' }}
           >
-            <Package className="w-3 h-3 text-slate-500" />
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wide flex-1">Other</span>
-            <span className="text-[11px] text-slate-600">{otherEntries.length}</span>
-            {otherOpen ? <ChevronDown className="w-3 h-3 text-slate-600" /> : <ChevronRight className="w-3 h-3 text-slate-600" />}
+            <Package className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />
+            <span
+              className="uppercase flex-1"
+              style={{ color: 'var(--cs-text-muted)', fontSize: 'var(--cs-text-2xs)', fontWeight: 'var(--cs-weight-bold)', letterSpacing: 'var(--cs-tracking-wide)' }}
+            >
+              Other
+            </span>
+            <span className="cs-mono" style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-2xs)' }}>{otherEntries.length}</span>
+            {otherOpen
+              ? <ChevronDown className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />
+              : <ChevronRight className="w-3 h-3" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />}
           </button>
           {otherOpen && (
-            <div className="px-2.5 py-2 space-y-1.5 bg-slate-900/40">
+            <div className="px-2.5 py-2 space-y-2">
               {otherEntries.map(([key, value]) => (
-                <div key={key} className="p-1.5 bg-slate-950 rounded border border-slate-800">
-                  <p className="text-[11px] text-slate-600 font-mono mb-0.5">{key}</p>
-                  <p className="text-[11px] text-slate-300 font-mono break-all">{String(value)}</p>
+                <div key={key} className="p-1.5 rounded" style={{ background: 'var(--cs-bg-sunken)' }}>
+                  <p className="cs-mono mb-0.5" style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-2xs)' }}>{key}</p>
+                  <AttrValue value={value} />
                 </div>
               ))}
             </div>
