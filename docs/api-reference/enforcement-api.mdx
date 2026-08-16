@@ -12,7 +12,7 @@ monitors silently or blocks — depending on the configured mode. These endpoint
 live event feed, query or update the active mode, and set per-rule action overrides.
 
 Enforcement log events are **persisted to a capped SQLite table** (pruned to the most recent 500)
-and carry a **tamper-evident hash chain** — each row links to the one before it, so the feed
+and carry a **hash chain** — each row links to the one before it, so the feed
 survives a restart and any later edit to an earlier row is detectable. A `Socket.io` `enforce-log`
 event is still broadcast to the dashboard on each new event, and an `enforce-config` event is
 broadcast whenever the config is changed. Use [`GET /api/audit/verify`](/api-reference/audit-log#get-apiauditverify)
@@ -193,3 +193,52 @@ Both fields are optional — send only what you want to change.
 
 **Errors:**
 - `400` — `mode` is not `"monitor"` or `"enforce"`, `overrides` is not a plain object, or any override value is not `"alert"` or `"block"`
+
+---
+
+### GET /api/enforce/impact
+
+Answers *"what would enforce mode actually have blocked?"* by replaying your own recorded history
+against the current rule set. Read-only: it evaluates stored spans and writes nothing.
+
+Turning on enforcement is a decision about **your** work, not about a rule count. This endpoint
+makes that decision measurable before you flip the toggle.
+
+#### Query parameters
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `days` | `30` | Size of the history window, clamped to `400` |
+
+#### Response
+
+Two separately-reported groups, because they mean different things:
+
+- **`enforceOnly`** — calls that would be denied *if you switched to enforce*. This is the cost of
+  the change.
+- **`blocksToday`** — calls the always-on floors deny **already**, in `monitor` mode, with no
+  per-action escape. This is happening now, and is usually the more urgent number.
+
+Each group ranks the **rules**, not just the total, because the total is rarely actionable and the
+distribution almost always is — a handful of rules typically account for most of the friction:
+
+| Field | Meaning |
+|---|---|
+| `count` / `distinctCalls` | Matching calls, and how many were distinct commands |
+| `share` / `cumulativeShare` | This rule's portion of the group, and the running total |
+| `examples` | Up to 3 real commands that matched, so you can judge true vs false positive |
+| `rulesToReach80` | How few rules account for 80% of the denials |
+| `top10Share` | Portion covered by the ten most frequent rules |
+
+Also returned: per-tool tallies (`Bash`, `Read`, `Edit`, `Write`, `WebFetch`), the evidence window,
+elapsed query time, and explicit caveats about what the replay can and cannot know.
+
+<Note>
+  The replay calls the same evaluation path the hook and the MCP proxy use, rather than
+  re-implementing pattern matching — a preview that matched differently from the enforcer would be
+  worse than no preview. Spans are scrubbed at ingest, so the home-directory placeholder is mapped
+  back **for matching only**; every label and example is re-scrubbed before it leaves the server.
+</Note>
+
+Results are memoized for 60 seconds. A full 400-day replay over a ~700 MB database takes a few
+seconds and is paged rather than streamed, so span ingestion is never blocked while it runs.
