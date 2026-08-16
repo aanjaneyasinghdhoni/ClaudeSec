@@ -15,6 +15,13 @@
  *   7. backfillRepos() sets `repo` from attributes.cwd for a NULL/unknown row,
  *      writes ONLY that column (every other column byte-identical), and is
  *      idempotent (a second run updates nothing).
+ *   8. A span with no cwd takes the repo its trace already carries.
+ *   9. A cwd-less span that landed BEFORE its trace's repo was known is settled
+ *      retroactively, and only within its own trace.
+ *  10. backfillRepos() attributes an already-scrubbed cwd (which can never be
+ *      verified against `.git` on disk) and rescues cwd-less rows from a trace
+ *      sibling, while leaving genuinely unattributable rows at 'unknown'.
+ *  11. backfillRepos({ dryRun: true }) reports the plan and writes nothing.
  *
  * Pure unit test: every filesystem and SQLite artifact lives under os.tmpdir(),
  * created and torn down by the test. The real ~/.claudesec is NEVER touched.
@@ -32,7 +39,9 @@ import Database from 'better-sqlite3';
 import {
   resolveRepo,
   backfillRepos,
+  attributeRepoForTrace,
   _resetRepoCache,
+  _resetTraceRepoCache,
   UNKNOWN_REPO,
 } from '../server/repoIdentity.js';
 
@@ -150,6 +159,26 @@ function applyRepoMigration(db: Database.Database): void {
   try { db.prepare(`ALTER TABLE spans ADD COLUMN repo TEXT NOT NULL DEFAULT 'unknown'`).run(); } catch {}
 }
 
+/** Insert one span row with sane defaults, mirroring the live ingest columns. */
+function insertRow(
+  db: Database.Database,
+  row: { spanId: string; traceId: string; name?: string; cwd?: string; repo?: string },
+): void {
+  db.prepare(`
+    INSERT INTO spans (spanId, traceId, parentId, name, protocol, reason, severity, harness, attributes, startNano, endNano, repo)
+    VALUES (@spanId, @traceId, 'p', @name, 'local', 'run', 'none', 'claude', @attributes, '0', '0', @repo)
+  `).run({
+    spanId: row.spanId,
+    traceId: row.traceId,
+    name: row.name ?? 'Bash',
+    attributes: JSON.stringify(row.cwd ? { cwd: row.cwd } : {}),
+    repo: row.repo ?? UNKNOWN_REPO,
+  });
+}
+
+const repoOf = (db: Database.Database, spanId: string): string =>
+  (db.prepare(`SELECT repo FROM spans WHERE spanId = ?`).get(spanId) as { repo: string }).repo;
+
 // ── 6. repo-column migration is additive + idempotent ────────────────────────
 check('repo column migration adds the column and is idempotent', () => {
   const { db } = makeSpansDb();
@@ -193,17 +222,16 @@ check('backfillRepos sets repo from cwd, touches only repo, is idempotent', () =
       reason: 'run', severity: 'none', harness: 'claude',
       attributes: JSON.stringify({ cwd, tool: 'Bash' }), startNano: '10', endNano: '20',
     });
-    // Row B: no cwd → must stay 'unknown'.
+    // Row B: no cwd, but a sibling in trace t1 has one → inherits row A's repo.
     insert.run({
       spanId: 'b', traceId: 't1', parentId: 'p', name: 'llm_request', protocol: 'local',
       reason: 'x', severity: 'none', harness: 'claude',
       attributes: JSON.stringify({ 'llm.model': 'sonnet' }), startNano: '30', endNano: '40',
     });
-    // Row C: a SCRUBBED / non-existent cwd (no .git reachable on disk). The
-    // backfill must leave it 'unknown' rather than write a subdir key that would
-    // not match how live spans for the same repo are grouped.
+    // Row C: a SCRUBBED cwd in a trace of its own. No `.git` can ever be found
+    // for it, so the stored path itself becomes the grouping key.
     insert.run({
-      spanId: 'c', traceId: 't1', parentId: 'p', name: 'Bash', protocol: 'local',
+      spanId: 'c', traceId: 't2', parentId: 'p', name: 'Bash', protocol: 'local',
       reason: 'run', severity: 'none', harness: 'claude',
       attributes: JSON.stringify({ cwd: '/Users/***/code/myrepo/src', tool: 'Bash' }),
       startNano: '50', endNano: '60',
@@ -214,7 +242,7 @@ check('backfillRepos sets repo from cwd, touches only repo, is idempotent', () =
     const beforeA = db.prepare(`SELECT * FROM spans WHERE spanId = 'a'`).get() as Record<string, unknown>;
 
     const r1 = backfillRepos(db, undefined, () => {});
-    assert.strictEqual(r1.updated, 1, `expected 1 update, got ${r1.updated}`);
+    assert.strictEqual(r1.updated, 3, `expected 3 updates, got ${r1.updated}`);
 
     const afterA = db.prepare(`SELECT * FROM spans WHERE spanId = 'a'`).get() as Record<string, unknown>;
     assert.strictEqual(afterA.repo, repoDir, `row A repo should be ${repoDir}, got ${afterA.repo}`);
@@ -224,10 +252,10 @@ check('backfillRepos sets repo from cwd, touches only repo, is idempotent', () =
     }
 
     const afterB = db.prepare(`SELECT repo FROM spans WHERE spanId = 'b'`).get() as { repo: string };
-    assert.strictEqual(afterB.repo, 'unknown', 'row B (no cwd) must stay unknown');
+    assert.strictEqual(afterB.repo, repoDir, 'row B (no cwd) should inherit from its trace sibling');
 
     const afterC = db.prepare(`SELECT repo FROM spans WHERE spanId = 'c'`).get() as { repo: string };
-    assert.strictEqual(afterC.repo, 'unknown', 'row C (scrubbed/non-resolvable cwd) must stay unknown');
+    assert.strictEqual(afterC.repo, '/Users/***/code/myrepo/src', 'row C should group under its stored path');
 
     // Idempotent: a second run finds nothing left to update.
     const r2 = backfillRepos(db, undefined, () => {});
@@ -237,6 +265,128 @@ check('backfillRepos sets repo from cwd, touches only repo, is idempotent', () =
     for (const c of cols) {
       assert.strictEqual(afterA2[c], beforeA[c], `column ${c} must be unchanged by the 2nd backfill`);
     }
+  } finally {
+    db.close();
+  }
+});
+
+// ── 8. trace attribution: sibling already known when the cwd-less span lands ─
+// `llm_request` spans never carry a cwd, so resolving from cwd alone orphans the
+// single largest span type. A sibling in the same trace already knows the repo.
+check('cwd-less span inherits the repo from an already-known trace sibling', () => {
+  _resetRepoCache(); _resetTraceRepoCache();
+  const { db } = makeSpansDb();
+  try {
+    applyRepoMigration(db);
+    // A Bash span carrying the cwd lands first and establishes the trace's repo.
+    const first = attributeRepoForTrace(db, 't1', '~/code/alpha');
+    assert.strictEqual(first, '~/code/alpha');
+    insertRow(db, { spanId: 's1', traceId: 't1', cwd: '~/code/alpha', repo: first });
+
+    // The cwd-less llm_request that follows must be stored with the same repo.
+    const second = attributeRepoForTrace(db, 't1', UNKNOWN_REPO);
+    assert.strictEqual(second, '~/code/alpha', `cwd-less span should inherit the trace repo, got ${second}`);
+    insertRow(db, { spanId: 's2', traceId: 't1', name: 'llm_request', repo: second });
+    assert.strictEqual(repoOf(db, 's2'), '~/code/alpha');
+
+    // A trace that has never carried a repo must stay honestly unknown.
+    assert.strictEqual(attributeRepoForTrace(db, 't-none', UNKNOWN_REPO), UNKNOWN_REPO);
+  } finally {
+    db.close();
+  }
+});
+
+// ── 9. trace attribution: the cwd-less span arrives BEFORE any sibling ───────
+// Span order is not guaranteed, so a lookup at insert time alone would miss the
+// common case where the llm_request is written before the tool span.
+check('a cwd-less span already on disk is settled once its trace repo is known', () => {
+  _resetRepoCache(); _resetTraceRepoCache();
+  const { db } = makeSpansDb();
+  try {
+    applyRepoMigration(db);
+    const orphan = attributeRepoForTrace(db, 't2', UNKNOWN_REPO);
+    assert.strictEqual(orphan, UNKNOWN_REPO, 'nothing is known about the trace yet');
+    insertRow(db, { spanId: 'o1', traceId: 't2', name: 'llm_request', repo: orphan });
+    // An unrelated trace's orphan must NOT be swept up by the settle.
+    insertRow(db, { spanId: 'x1', traceId: 't3', name: 'llm_request', repo: UNKNOWN_REPO });
+
+    const known = attributeRepoForTrace(db, 't2', '~/code/beta');
+    assert.strictEqual(known, '~/code/beta');
+    insertRow(db, { spanId: 'o2', traceId: 't2', cwd: '~/code/beta', repo: known });
+
+    assert.strictEqual(repoOf(db, 'o1'), '~/code/beta', 'earlier orphan should be settled retroactively');
+    assert.strictEqual(repoOf(db, 'x1'), UNKNOWN_REPO, 'another trace must be left alone');
+
+    // Only the repo column moves: the orphan's payload is untouched.
+    const row = db.prepare(`SELECT * FROM spans WHERE spanId = 'o1'`).get() as Record<string, unknown>;
+    assert.strictEqual(row.name, 'llm_request');
+    assert.strictEqual(row.attributes, '{}');
+  } finally {
+    db.close();
+  }
+});
+
+// ── 10. backfill: an already-scrubbed cwd can never be verified on disk ──────
+// Historical rows store the SCRUBBED cwd, so `.git` proof is unobtainable. The
+// backfill must still group them instead of parking real activity at 'unknown'.
+check('backfillRepos attributes scrubbed cwds and cwd-less trace siblings', () => {
+  _resetRepoCache(); _resetTraceRepoCache();
+  const { db } = makeSpansDb();
+  try {
+    applyRepoMigration(db);
+    // A live-ingested row that already established the grouping key for trace tk.
+    insertRow(db, { spanId: 'k', traceId: 'tk', cwd: '~/code/alpha', repo: '~/code/alpha' });
+    // Scrubbed cwd BELOW a known repo key → must fold into that key, not split.
+    insertRow(db, { spanId: 'x', traceId: 'tk', cwd: '~/code/alpha/src/deep' });
+    // Scrubbed cwd that matches no known key, but its trace does → use the trace.
+    insertRow(db, { spanId: 'v', traceId: 'tk', cwd: '/Users/***/alpha/src' });
+    // Scrubbed cwd with no known key and no sibling → the stored path is the key.
+    insertRow(db, { spanId: 'y', traceId: 'ty', cwd: '/Users/***/solo/pkg' });
+    // No cwd at all, but a trace sibling knows the repo.
+    insertRow(db, { spanId: 'w', traceId: 'tk', name: 'llm_request' });
+    // No cwd, no sibling → genuinely unattributable, stays unknown.
+    insertRow(db, { spanId: 'z', traceId: 'tz', name: 'llm_request' });
+
+    const r = backfillRepos(db, undefined, () => {});
+    assert.strictEqual(repoOf(db, 'x'), '~/code/alpha', `scrubbed sub-path should fold into the known repo key, got ${repoOf(db, 'x')}`);
+    assert.strictEqual(repoOf(db, 'y'), '/Users/***/solo/pkg', `stored path should become the key, got ${repoOf(db, 'y')}`);
+    assert.strictEqual(repoOf(db, 'w'), '~/code/alpha', `cwd-less row should inherit from its trace sibling, got ${repoOf(db, 'w')}`);
+    assert.strictEqual(repoOf(db, 'v'), '~/code/alpha', `unmatched scrubbed cwd should fall back to its trace, got ${repoOf(db, 'v')}`);
+    assert.strictEqual(repoOf(db, 'z'), UNKNOWN_REPO, 'unattributable row must stay unknown');
+    assert.strictEqual(r.updated, 4, `expected 4 updates, got ${r.updated}`);
+    assert.strictEqual(r.storedPathWithSibling, 2, `expected 2 overlap rows, got ${r.storedPathWithSibling}`);
+
+    // Still idempotent after the widened attribution.
+    assert.strictEqual(backfillRepos(db, undefined, () => {}).updated, 0);
+  } finally {
+    db.close();
+  }
+});
+
+// ── 11. backfill dry run reports the plan and writes nothing ────────────────
+check('backfillRepos dry run counts what would change without writing', () => {
+  _resetRepoCache(); _resetTraceRepoCache();
+  const { db } = makeSpansDb();
+  try {
+    applyRepoMigration(db);
+    insertRow(db, { spanId: 'k', traceId: 'tk', cwd: '~/code/alpha', repo: '~/code/alpha' });
+    insertRow(db, { spanId: 'x', traceId: 'tk', cwd: '~/code/alpha/src' });
+    insertRow(db, { spanId: 'w', traceId: 'tk', name: 'llm_request' });
+    insertRow(db, { spanId: 'z', traceId: 'tz', name: 'llm_request' });
+
+    const plan = backfillRepos(db, undefined, () => {}, { dryRun: true });
+    assert.strictEqual(plan.dryRun, true);
+    assert.strictEqual(plan.updated, 2, `dry run should plan 2 updates, got ${plan.updated}`);
+    assert.strictEqual(plan.fromStoredPath, 1, `expected 1 stored-path attribution, got ${plan.fromStoredPath}`);
+    assert.strictEqual(plan.fromTraceSibling, 1, `expected 1 sibling attribution, got ${plan.fromTraceSibling}`);
+    assert.strictEqual(plan.stillUnknown, 1, `expected 1 row left unknown, got ${plan.stillUnknown}`);
+    assert.strictEqual(plan.byRepo['~/code/alpha'], 2);
+
+    // Nothing may have moved on disk.
+    for (const id of ['x', 'w', 'z']) {
+      assert.strictEqual(repoOf(db, id), UNKNOWN_REPO, `dry run must not write row ${id}`);
+    }
+    assert.strictEqual(repoOf(db, 'k'), '~/code/alpha');
   } finally {
     db.close();
   }

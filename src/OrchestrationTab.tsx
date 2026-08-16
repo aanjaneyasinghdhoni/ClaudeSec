@@ -1,12 +1,32 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Cpu, Wrench, GitBranch, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check, ExternalLink, Info } from 'lucide-react';
+/**
+ * OrchestrationTab — the agent/subagent graph: who ran, what they called, and
+ * who spawned whom.
+ *
+ * The spawn tree mixes two node kinds. A `session` node is one trace; an
+ * `agent` node is one delegated sub-agent inside it, placed from the launch
+ * record its parent wrote. Sub-agents run under their parent's session id, so
+ * without that second kind the whole hierarchy collapses into a flat list.
+ *
+ * Where no launch record exists the server falls back to grouping sessions by
+ * harness and marks the result `synthetic`; this tab's job with that flag is to
+ * keep the guess visually distinct from an observed edge — dashed, hollow,
+ * labelled "estimated" — never to quietly promote a guess into a fact.
+ */
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { Cpu, Wrench, GitBranch, Bot, ChevronDown, ChevronRight, LayoutGrid, List, Copy, Check, ExternalLink, Info } from 'lucide-react';
 import { socket } from './socket';
 import { CommandAuditTab } from './CommandAuditTab';
 import { FileAccessPanel } from './FileAccessPanel';
 import { ExperimentalBadge } from './ExperimentalBadge';
+import { sessionDisplayLabel } from './dashboardTypes';
 import { useListControls, FilterBar, ListFooter, type FacetConfig } from './FilterControls';
 import { useDebouncedCallback } from './lib/useDebouncedCallback';
 import { SpanSearchDrawer, type SpanSearchTarget } from './SpanSearchDrawer';
+import {
+  DataTable, type DataColumn,
+  ToolButton,
+  EmptyState, ErrorState,
+} from './components/data';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -31,16 +51,34 @@ interface ToolEntry {
 }
 
 interface SpawnTreeNode {
+  /** 'session' → one trace; 'agent' → one delegated sub-agent within it. */
+  kind?: 'session' | 'agent';
   traceId: string;
+  agentId?: string;
+  agentType?: string;
   harness: string;
   sessionName: string;
+  /** Session nodes only — feeds sessionDisplayLabel() below. */
+  repo?: string | null;
+  /** Session nodes only — feeds sessionDisplayLabel() below. */
+  createdAt?: string;
   spanCount: number;
   threatCount: number;
-  // true → parentage was INFERRED by the server's fallback heuristic (no real
-  // cross-trace spawn edges existed). Rendered visually distinct so a viewer
-  // can't mistake a guessed grouping for an observed spawn edge.
+  // true → parentage was INFERRED by the server's fallback heuristic (no launch
+  // record existed). Rendered visually distinct so a viewer can't mistake a
+  // guessed grouping for an observed spawn edge.
   synthetic?: boolean;
   children: SpawnTreeNode[];
+}
+
+/** How much of the tree is measured rather than guessed. */
+interface LineageSummary {
+  /** Delegated agents seen working. */
+  agents: number;
+  /** Of those, how many had their launch call observed. */
+  resolved: number;
+  /** Whether the opt-in transcript recovery overlay contributed. */
+  recovered: boolean;
 }
 
 interface OrchData {
@@ -48,10 +86,13 @@ interface OrchData {
   edges: OrchEdge[];
   tools: ToolEntry[];
   spawnTree: SpawnTreeNode[];
+  lineage?: LineageSummary;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+// The agent's identity colour — fixed hue per harness, same set as every
+// other tab. Identity, not risk, so it stays outside the severity ramp.
 const HARNESS_COLORS: Record<string, string> = {
   'claude-code': '#f97316',
   'copilot':     '#22c55e',
@@ -95,6 +136,17 @@ function harnessShort(id: string) {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
+/** Section label shared by every panel in this tab — the eyebrow token plus
+ *  an icon, so the four panels read as one family without repeating markup. */
+function PanelHeading({ icon, children, badge }: { icon: React.ReactNode; children: React.ReactNode; badge?: React.ReactNode }) {
+  return (
+    <p className="cs-eyebrow flex items-center gap-1.5 mb-3">
+      {icon} {children}
+      {badge && <span className="ml-1 normal-case tracking-normal">{badge}</span>}
+    </p>
+  );
+}
+
 function SpawnTreeItem({
   node,
   depth = 0,
@@ -107,13 +159,23 @@ function SpawnTreeItem({
 }) {
   const [expanded, setExpanded] = useState(depth < 2);
   const [copied, setCopied] = useState(false);
-  const color = HARNESS_COLORS[node.harness] ?? '#64748b';
+  const color = HARNESS_COLORS[node.harness] ?? HARNESS_COLORS.unknown;
   const hasChildren = node.children.length > 0;
   const synthetic = node.synthetic === true;
+  const isAgent = node.kind === 'agent';
+  // Sub-agents share their parent's trace, so the session id on an agent row is
+  // the parent's — the agent's own identity is the one worth copying.
+  const copyValue = isAgent ? (node.agentId ?? node.traceId) : node.traceId;
+  // Same derivation as the session rail (src/shell/SessionList.tsx): trade the
+  // raw "<harness> · <time>" default for the repo that ran, and leave a real
+  // rename alone. Agent rows already carry their own label (the agent type).
+  const displayName = isAgent
+    ? node.sessionName
+    : sessionDisplayLabel({ name: node.sessionName, repo: node.repo ?? null, createdAt: node.createdAt ?? '' });
 
   const copyTrace = (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard?.writeText(node.traceId).then(() => {
+    navigator.clipboard?.writeText(copyValue).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     }).catch(() => {});
@@ -127,100 +189,122 @@ function SpawnTreeItem({
   return (
     <div>
       <div
-        className={`flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-800/50 cursor-pointer transition-colors select-none${synthetic ? ' opacity-60' : ''}`}
+        className="flex items-center gap-2 py-1.5 px-2 rounded transition-colors select-none"
         style={{
           paddingLeft: `${8 + depth * 20}px`,
-          // Inferred (synthetic) nodes get a dashed left accent so they read as
-          // "not an observed edge" at a glance.
-          ...(synthetic ? { borderLeft: '2px dashed #475569' } : {}),
+          cursor: hasChildren ? 'pointer' : 'default',
+          opacity: synthetic ? 0.7 : 1,
+          borderLeft: synthetic ? '2px dashed var(--cs-rule-strong)' : '2px solid transparent',
         }}
         onClick={() => hasChildren && setExpanded(e => !e)}
+        onMouseEnter={e => { e.currentTarget.style.background = 'var(--cs-bg-raised)'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
         title={synthetic ? 'Estimated grouping — a best guess, not an observed cross-trace spawn edge' : undefined}
       >
-        {/* Expand/collapse icon */}
-        <span className="w-4 h-4 shrink-0 text-slate-600">
+        <span className="w-4 h-4 shrink-0 flex items-center justify-center" style={{ color: 'var(--cs-text-faint)' }}>
           {hasChildren
-            ? (expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />)
-            : <span className="w-3 h-3 block" />}
+            ? (expanded ? <ChevronDown className="w-3 h-3" aria-hidden="true" /> : <ChevronRight className="w-3 h-3" aria-hidden="true" />)
+            : null}
         </span>
 
-        {/* Agent color dot — hollow ring when inferred, solid when observed */}
+        {isAgent ? (
+          <Bot className="w-3 h-3 shrink-0" style={{ color }} aria-hidden="true" />
+        ) : (
+          <span
+            className="w-2.5 h-2.5 rounded-full shrink-0"
+            style={synthetic
+              ? { border: `1.5px dashed ${color}`, background: 'transparent' }
+              : { background: color }}
+            aria-hidden="true"
+          />
+        )}
+
         <span
-          className="w-2.5 h-2.5 rounded-full shrink-0"
-          style={synthetic
-            ? { border: `1.5px dashed ${color}`, background: 'transparent' }
-            : { background: color }}
-        />
-
-        {/* Agent name */}
-        <span className={`text-xs font-medium shrink-0${synthetic ? ' text-slate-400 italic' : ' text-slate-200'}`}>
-          {HARNESS_NAMES[node.harness] ?? node.harness}
+          className="shrink-0"
+          style={{
+            fontSize: 'var(--cs-text-xs)',
+            fontWeight: 'var(--cs-weight-medium)',
+            color: synthetic ? 'var(--cs-text-muted)' : 'var(--cs-text-strong)',
+            fontStyle: synthetic ? 'italic' : 'normal',
+          }}
+        >
+          {isAgent ? (node.agentType ?? 'sub-agent') : (HARNESS_NAMES[node.harness] ?? node.harness)}
         </span>
 
-        {/* Session name */}
-        <span className="text-xs text-slate-500 font-mono truncate max-w-[160px]" title={node.sessionName}>
-          {node.sessionName}
+        <span
+          className="cs-mono truncate max-w-[160px]"
+          style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-faint)' }}
+          title={isAgent ? `Sub-agent ${node.agentId} · launched by the agent above` : node.sessionName}
+        >
+          {isAgent ? node.agentId : displayName}
         </span>
 
-        {/* Estimated marker — neutral, never a warning colour, so it reads as
-            "a best guess" rather than "a problem". */}
         {synthetic && (
           <span
-            className="inline-flex items-center gap-1 text-[10px] tracking-wide px-1.5 py-0.5 rounded shrink-0 cursor-help"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded shrink-0 cursor-help"
             style={{
+              fontSize: 'var(--cs-text-2xs)',
+              letterSpacing: 'var(--cs-tracking-wide)',
               color: 'var(--cs-info)',
               background: 'rgba(var(--cs-info-rgb),0.10)',
               border: '1px dashed rgba(var(--cs-info-rgb),0.40)',
             }}
             title="Estimated, not observed. No agent reported spawning this session; it was grouped here because it runs the same agent. This is a best-effort guess, not an error."
           >
-            <Info style={{ width: 10, height: 10 }} /> estimated
+            <Info className="w-2.5 h-2.5" aria-hidden="true" /> estimated
           </span>
         )}
 
-        {/* Stats pills */}
-        <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          {/* Navigate to the timeline for this session. */}
+        <span className="ml-auto flex items-center gap-1.5 shrink-0">
           {onSelectSession && (
             <button
               type="button"
               onClick={viewSession}
-              className="flex items-center gap-1 text-[10px] font-mono text-slate-400 hover:text-slate-100 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 px-1.5 py-0.5 rounded transition-colors"
-              title={`View session ${node.traceId} in the timeline`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded cs-mono transition-colors"
+              style={{ fontSize: 'var(--cs-text-2xs)', color: 'var(--cs-text-muted)', background: 'var(--cs-bg-raised)' }}
+              title={isAgent
+                ? `View session ${node.traceId} in the timeline — a sub-agent shares its parent's session`
+                : `View session ${node.traceId} in the timeline`}
             >
-              <ExternalLink className="w-3 h-3" />
-              view
+              <ExternalLink className="w-3 h-3" aria-hidden="true" /> view
             </button>
           )}
-          {/* Copy the raw trace ID as a secondary affordance. */}
           <button
             type="button"
             onClick={copyTrace}
-            className="flex items-center gap-1 text-[10px] font-mono text-slate-500 hover:text-slate-300 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 px-1.5 py-0.5 rounded transition-colors"
-            title={`Copy trace ID ${node.traceId}`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded cs-mono transition-colors"
+            style={{ fontSize: 'var(--cs-text-2xs)', color: 'var(--cs-text-faint)', background: 'var(--cs-bg-raised)' }}
+            title={isAgent ? `Copy agent ID ${copyValue}` : `Copy trace ID ${copyValue}`}
           >
-            {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-            {copied ? 'copied' : 'trace'}
+            {copied ? <Check className="w-3 h-3" style={{ color: 'var(--cs-accent)' }} aria-hidden="true" /> : <Copy className="w-3 h-3" aria-hidden="true" />}
+            {copied ? 'copied' : isAgent ? 'agent' : 'trace'}
           </button>
-          <span className="text-xs text-slate-500 font-mono">{node.spanCount} spans</span>
+          <span className="cs-mono" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-faint)' }}>{node.spanCount} spans</span>
           {node.threatCount > 0 && (
-            <span className="text-xs text-red-400 font-mono font-bold bg-red-950/40 px-1.5 py-0.5 rounded">
+            <span
+              className="cs-mono px-1.5 py-0.5 rounded"
+              style={{ fontSize: 'var(--cs-text-xs)', fontWeight: 'var(--cs-weight-bold)', color: 'var(--cs-sev-critical-fg)', background: 'var(--cs-sev-critical-bg)' }}
+            >
               {node.threatCount} threats
             </span>
           )}
           {node.children.length > 0 && (
-            <span className="text-xs font-mono bg-emerald-950/40 px-1.5 py-0.5 rounded" style={{ color: 'var(--cs-accent)' }}>
+            <span
+              className="cs-mono px-1.5 py-0.5 rounded"
+              style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-accent)', background: 'var(--cs-accent-soft)' }}
+            >
               {node.children.length} sub-agent{node.children.length !== 1 ? 's' : ''}
             </span>
           )}
-        </div>
+        </span>
       </div>
 
-      {/* Children */}
       {expanded && hasChildren && (
-        <div className="border-l border-slate-800 ml-[20px]">
+        <div style={{ borderLeft: '1px solid var(--cs-rule)', marginLeft: 20 }}>
           {node.children.map(child => (
-            <SpawnTreeItem key={child.traceId} node={child} depth={depth + 1} onSelectSession={onSelectSession} />
+            // A session can host many agents under one trace id, so the key has
+            // to be the agent's own identity where it has one.
+            <SpawnTreeItem key={child.agentId ?? child.traceId} node={child} depth={depth + 1} onSelectSession={onSelectSession} />
           ))}
         </div>
       )}
@@ -229,31 +313,31 @@ function SpawnTreeItem({
 }
 
 function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
-  // Build unique tool names and harness ids
   const toolNames = [...new Set(tools.map(t => t.toolName))];
   const harnesses = [...new Set(tools.map(t => t.harness))];
 
-  // Build lookup: toolName → harness → {count, threatCount}
   const cell = new Map<string, { count: number; threatCount: number }>();
   for (const t of tools) cell.set(`${t.toolName}::${t.harness}`, t);
 
-  // Max count for color intensity normalization
   const maxCount = Math.max(1, ...tools.map(t => t.count));
 
   return (
     <div className="overflow-x-auto">
-      <table className="text-xs border-collapse">
+      <table className="border-collapse" style={{ fontSize: 'var(--cs-text-xs)' }}>
         <thead>
           <tr>
-            <th className="px-3 py-2 text-left text-slate-500 font-medium sticky left-0 bg-slate-900 z-10 min-w-[120px]">
+            <th
+              className="px-3 py-2 text-left sticky left-0 z-10"
+              style={{ minWidth: 120, color: 'var(--cs-text-faint)', fontWeight: 'var(--cs-weight-medium)', background: 'var(--cs-bg-surface)' }}
+            >
               Tool ╲ Agent
             </th>
             {harnesses.map(h => (
               <th key={h} className="px-2 py-2 text-center" style={{ minWidth: 64 }}>
-                <div className="flex flex-col items-center gap-0.5">
-                  <span className="w-2 h-2 rounded-full" style={{ background: HARNESS_COLORS[h] ?? '#64748b' }} />
-                  <span className="text-slate-400 font-mono">{harnessShort(h)}</span>
-                </div>
+                <span className="flex flex-col items-center gap-0.5">
+                  <span className="w-2 h-2 rounded-full" style={{ background: HARNESS_COLORS[h] ?? HARNESS_COLORS.unknown }} aria-hidden="true" />
+                  <span className="cs-mono" style={{ color: 'var(--cs-text-muted)' }}>{harnessShort(h)}</span>
+                </span>
               </th>
             ))}
           </tr>
@@ -262,37 +346,39 @@ function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
           {toolNames.map(toolName => {
             const isSuspicious = SUSPICIOUS_TOOLS.has(toolName.toLowerCase());
             return (
-              <tr key={toolName} className="border-t border-slate-800/50">
-                <td className="px-3 py-1.5 sticky left-0 bg-slate-900 z-10">
-                  <div className="flex items-center gap-1.5">
-                    {isSuspicious && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />}
-                    <code className={`font-mono ${isSuspicious ? 'text-orange-300' : 'text-slate-300'}`}>
+              <tr key={toolName} style={{ borderTop: '1px solid var(--cs-rule)' }}>
+                <td className="px-3 py-1.5 sticky left-0 z-10" style={{ background: 'var(--cs-bg-surface)' }}>
+                  <span className="flex items-center gap-1.5">
+                    {isSuspicious && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--cs-sev-medium)' }} aria-hidden="true" />}
+                    <code className="cs-mono" style={{ color: isSuspicious ? 'var(--cs-sev-medium-fg)' : 'var(--cs-text-body)' }}>
                       {toolName}
                     </code>
-                  </div>
+                  </span>
                 </td>
                 {harnesses.map(h => {
-                  const data = cell.get(`${toolName}::${h}`);
-                  const count = data?.count ?? 0;
+                  const d = cell.get(`${toolName}::${h}`);
+                  const count = d?.count ?? 0;
                   const intensity = count / maxCount;
-                  const base = HARNESS_COLORS[h] ?? '#64748b';
-                  const hasThreat = (data?.threatCount ?? 0) > 0;
+                  const base = HARNESS_COLORS[h] ?? HARNESS_COLORS.unknown;
+                  const hasThreat = (d?.threatCount ?? 0) > 0;
                   return (
                     <td key={h} className="text-center py-1.5 px-2">
                       {count > 0 ? (
-                        <div
-                          className="inline-flex items-center justify-center rounded text-xs font-mono font-medium min-w-[28px] px-1.5 py-0.5 transition-all"
+                        <span
+                          className="inline-flex items-center justify-center rounded cs-mono font-medium"
                           style={{
+                            minWidth: 28,
+                            padding: '2px 6px',
                             background: `${base}${Math.round(intensity * 220).toString(16).padStart(2, '0')}`,
-                            color: intensity > 0.4 ? '#fff' : '#94a3b8',
-                            border: hasThreat ? '1px solid #ef4444' : '1px solid transparent',
+                            color: intensity > 0.4 ? 'var(--cs-text-invert)' : 'var(--cs-text-muted)',
+                            border: hasThreat ? '1px solid var(--cs-sev-critical)' : '1px solid transparent',
                           }}
-                          title={`${count} call${count !== 1 ? 's' : ''}${hasThreat ? ` · ${data!.threatCount} threat${data!.threatCount !== 1 ? 's' : ''}` : ''}`}
+                          title={`${count} call${count !== 1 ? 's' : ''}${hasThreat ? ` · ${d!.threatCount} threat${d!.threatCount !== 1 ? 's' : ''}` : ''}`}
                         >
                           {count}
-                        </div>
+                        </span>
                       ) : (
-                        <span className="text-slate-800">—</span>
+                        <span style={{ color: 'var(--cs-text-faint)' }}>—</span>
                       )}
                     </td>
                   );
@@ -309,15 +395,22 @@ function ToolHeatmap({ tools }: { tools: ToolEntry[] }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (traceId: string) => void }) {
-  const [data, setData] = useState<OrchData>({ agents: [], edges: [], tools: [], spawnTree: [] });
+  const [data, setData]     = useState<OrchData>({ agents: [], edges: [], tools: [], spawnTree: [] });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [toolView, setToolView] = useState<'table' | 'heatmap'>('table');
   const [drawer, setDrawer] = useState<SpanSearchTarget | null>(null);
 
-  const fetchData = () =>
+  const fetchData = useCallback(() => {
     fetch('/api/orchestration')
-      .then(r => r.json())
-      .then((d: OrchData) => setData(d))
-      .catch(() => {});
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d: OrchData) => { setData(d); setLoadError(null); })
+      .catch((e: Error) => setLoadError(e.message || 'Request failed'))
+      .finally(() => setLoading(false));
+  }, []);
 
   // `/api/orchestration` aggregates across all spans. Debounce the socket-driven
   // refresh so a burst of `graph-update` events triggers one refetch, not many;
@@ -328,9 +421,12 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
     fetchData();
     socket.on('graph-update', debouncedFetch);
     return () => { socket.off('graph-update', debouncedFetch); };
-  }, [debouncedFetch]);
+  }, [fetchData, debouncedFetch]);
 
-  const { agents, edges, tools, spawnTree } = data;
+  const { agents, edges, tools, spawnTree, lineage } = data;
+  // Delegation is "observed" the moment any agent's launch call was recorded.
+  // Until then the tree is the server's fallback grouping and says so.
+  const observedLineage = (lineage?.resolved ?? 0) > 0;
   const positions = agentPositions(agents.length);
 
   const posMap = new Map<string, { x: number; y: number }>();
@@ -353,34 +449,79 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
     visible: visibleTools, total: toolTotal, shown: toolShown, showMore: toolShowMore, showAll: toolShowAll,
   } = useListControls(tools, { searchText: toolSearchText, facets: toolFacets });
 
-  return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-auto p-5" style={{ background: 'var(--cs-bg-primary)' }}>
+  const toolColumns: DataColumn<ToolEntry>[] = [
+    {
+      id: 'tool', header: 'Tool', width: 'minmax(0,1.3fr)', mono: true,
+      cell: t => {
+        const suspicious = SUSPICIOUS_TOOLS.has(t.toolName.toLowerCase());
+        return (
+          <span className="flex items-center gap-1.5 min-w-0">
+            {suspicious && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--cs-sev-medium)' }} aria-hidden="true" />}
+            <span style={{ color: suspicious ? 'var(--cs-sev-medium-fg)' : 'var(--cs-text-body)' }}>{t.toolName}</span>
+          </span>
+        );
+      },
+    },
+    {
+      id: 'agent', header: 'Agent', width: 'minmax(0,1fr)', hideBelow: 'xl',
+      cell: t => (
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: HARNESS_COLORS[t.harness] ?? HARNESS_COLORS.unknown }} aria-hidden="true" />
+          <span className="truncate">{HARNESS_NAMES[t.harness] ?? t.harness}</span>
+        </span>
+      ),
+    },
+    {
+      id: 'calls', header: 'Calls', width: '80px', align: 'end', mono: true,
+      cell: t => <span style={{ color: 'var(--cs-text-body)' }}>{t.count}</span>,
+    },
+    {
+      id: 'threats', header: 'Threats', width: '80px', align: 'end', mono: true,
+      cell: t => t.threatCount > 0
+        ? <span style={{ color: 'var(--cs-sev-critical-fg)', fontWeight: 'var(--cs-weight-bold)' }}>{t.threatCount}</span>
+        : <span style={{ color: 'var(--cs-text-faint)' }}>0</span>,
+    },
+  ];
 
+  const hasOrchData = agents.length > 0 || spawnTree.length > 0 || tools.length > 0;
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-auto p-4 gap-4" style={{ background: 'var(--cs-bg-canvas)' }}>
+
+      {loadError && !hasOrchData ? (
+        <ErrorState
+          description={`The orchestration view did not respond (${loadError}).`}
+          onRetry={() => { setLoading(true); fetchData(); }}
+        />
+      ) : (
+      <>
       {/* ── Agent DAG ──────────────────────────────────────────────────────── */}
-      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
-          <Cpu className="w-3 h-3" /> Agent Orchestration Graph
-          <span className="ml-1">
+      <div className="rounded-lg p-4" style={{ background: 'var(--cs-bg-surface)' }}>
+        <PanelHeading
+          icon={<Cpu className="w-3 h-3" aria-hidden="true" />}
+          badge={
             <ExperimentalBadge
               label="Estimated"
               title="ClaudeSec infers agent relationships from timing and naming — a best-effort estimate, not an error. Cross-agent edges only appear when multiple agents share a trace."
             />
-          </span>
-        </p>
+          }
+        >
+          Agent orchestration graph
+        </PanelHeading>
 
-        {agents.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-44 gap-2 text-slate-700">
-            <Cpu className="w-8 h-8" />
-            <p className="text-sm text-slate-500">No agent data yet</p>
-            <p className="text-xs text-slate-600">Send traces to see agent interactions.</p>
-          </div>
+        {!loading && agents.length === 0 ? (
+          <EmptyState
+            icon={<Cpu className="w-6 h-6" aria-hidden="true" />}
+            title="No agent data yet"
+            description="Send traces to see agent interactions."
+          />
         ) : (
-          <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="w-full" style={{ maxHeight: 280 }}>
+          <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="w-full" style={{ maxHeight: 280 }} role="img" aria-label="Agent orchestration graph">
             <defs>
               {agents.map(a => (
                 <radialGradient key={a.harness} id={`grad-${a.harness}`} cx="50%" cy="50%" r="50%">
-                  <stop offset="0%"   stopColor={HARNESS_COLORS[a.harness] ?? '#64748b'} stopOpacity={0.25} />
-                  <stop offset="100%" stopColor={HARNESS_COLORS[a.harness] ?? '#64748b'} stopOpacity={0.05} />
+                  <stop offset="0%"   stopColor={HARNESS_COLORS[a.harness] ?? HARNESS_COLORS.unknown} stopOpacity={0.25} />
+                  <stop offset="100%" stopColor={HARNESS_COLORS[a.harness] ?? HARNESS_COLORS.unknown} stopOpacity={0.05} />
                 </radialGradient>
               ))}
               <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
@@ -388,7 +529,6 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
               </marker>
             </defs>
 
-            {/* Edges */}
             {edges.map(edge => {
               const src = posMap.get(edge.from);
               const tgt = posMap.get(edge.to);
@@ -418,15 +558,14 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
               );
             })}
 
-            {/* Agent nodes */}
             {agents.map((agent, i) => {
               const pos      = positions[i];
-              const color    = HARNESS_COLORS[agent.harness] ?? '#64748b';
+              const color    = HARNESS_COLORS[agent.harness] ?? HARNESS_COLORS.unknown;
               const isThreat = agent.threatCount > 0;
               return (
                 <g key={agent.harness} transform={`translate(${pos.x},${pos.y})`}>
                   {isThreat && (
-                    <circle r={R + 8} fill="none" stroke="#ef4444" strokeWidth={1.5} strokeOpacity={0.5} strokeDasharray="4 3">
+                    <circle r={R + 8} fill="none" stroke="var(--cs-sev-critical)" strokeWidth={1.5} strokeOpacity={0.5} strokeDasharray="4 3">
                       <animate attributeName="r"              values={`${R+6};${R+12};${R+6}`} dur="2s" repeatCount="indefinite" />
                       <animate attributeName="stroke-opacity" values="0.6;0.1;0.6"              dur="2s" repeatCount="indefinite" />
                     </circle>
@@ -439,7 +578,7 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
                     {agent.spanCount} span{agent.spanCount !== 1 ? 's' : ''}
                   </text>
                   {isThreat && (
-                    <text y={19} fill="#ef4444" fontSize={9} textAnchor="middle" fontFamily="monospace" fontWeight="bold">
+                    <text y={19} fill="var(--cs-sev-critical)" fontSize={9} textAnchor="middle" fontFamily="monospace" fontWeight="bold">
                       {agent.threatCount} threat{agent.threatCount !== 1 ? 's' : ''}
                     </text>
                   )}
@@ -451,46 +590,64 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
       </div>
 
       {/* ── Sub-Agent Spawn Tree ───────────────────────────────────────────── */}
-      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-3">
-          <GitBranch className="w-3 h-3" /> Sub-Agent Spawn Tree
-          <span className="ml-1">
-            <ExperimentalBadge
-              label="Estimated hierarchy"
-              title="ClaudeSec infers the agent hierarchy from timing and naming — it's a best-effort estimate, not an error. Agents don't emit cross-trace spawn parentage yet."
-            />
-          </span>
-        </p>
-        {/* Always-visible, neutral caption so the "estimate, not a problem"
-            framing is clear without relying on a hover or a particular theme. */}
-        <p className="text-[11px] -mt-1.5 mb-3 normal-case font-normal tracking-normal" style={{ color: 'var(--cs-text-muted)' }}>
-          Estimated grouping of related sessions, inferred from timing and naming — a best guess, not an error.
+      <div className="rounded-lg p-4" style={{ background: 'var(--cs-bg-surface)' }}>
+        <PanelHeading
+          icon={<GitBranch className="w-3 h-3" aria-hidden="true" />}
+          badge={
+            observedLineage ? undefined : (
+              <ExperimentalBadge
+                label="Estimated hierarchy"
+                title="No agent here recorded launching another, so ClaudeSec groups sessions by agent as a best-effort estimate. Not an error."
+              />
+            )
+          }
+        >
+          Sub-agent spawn tree
+        </PanelHeading>
+        <p className="-mt-1.5 mb-3" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-muted)' }}>
+          Every session in the database, not scoped to whatever is selected in the
+          session rail — pick a row below and use "view" to jump into that one
+          session's timeline. {observedLineage ? (
+            <>
+              Built from launch records: {lineage!.resolved} of {lineage!.agents} sub-agent
+              {lineage!.agents !== 1 ? 's' : ''} placed under the exact call that started
+              {lineage!.resolved !== 1 ? ' them' : ' it'}. Agents whose launch was never
+              recorded — an interrupted run, a transcript already rotated away — are listed
+              under the session they ran in rather than invented a parent.
+            </>
+          ) : (
+            <>
+              Shown honestly: no agent here recorded launching another, so sessions are grouped
+              by agent as a best guess. Those rows are marked "estimated" below, never presented
+              as an observed hierarchy.
+            </>
+          )}
         </p>
 
-        {spawnTree.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 gap-2">
-            <GitBranch className="w-7 h-7 text-slate-800" />
-            <p className="text-sm text-slate-500">No sub-agent spawns detected</p>
-            <p className="text-xs text-slate-600">
-              Detected when spans reference parent spans from a different trace (cross-trace spawning).
-            </p>
-          </div>
-        ) : (
-          <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
+        {!loading && spawnTree.length === 0 ? (
+          <EmptyState
+            icon={<GitBranch className="w-6 h-6" aria-hidden="true" />}
+            title="No sub-agent spawns detected"
+            description="Appears once an agent delegates work — the launch record ties the sub-agent's spans back to the call that started it."
+          />
+        ) : spawnTree.length > 0 && (
+          <div className="rounded-md overflow-hidden" style={{ background: 'var(--cs-bg-sunken)' }}>
             {spawnTree.some(r => r.synthetic) && (
               <div
-                className="flex items-start gap-2 px-3 py-2 text-[11px] border-b border-dashed"
+                className="flex items-start gap-2 px-3 py-2"
                 style={{
+                  fontSize: 'var(--cs-text-xs)',
                   color: 'var(--cs-info)',
                   background: 'rgba(var(--cs-info-rgb),0.08)',
-                  borderColor: 'rgba(var(--cs-info-rgb),0.30)',
+                  borderBottom: '1px dashed rgba(var(--cs-info-rgb),0.30)',
                 }}
               >
-                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
                 <span style={{ color: 'var(--cs-text-muted)' }}>
-                  <span style={{ color: 'var(--cs-info)' }} className="font-medium">Estimated:</span> no agent here
-                  reported spawning another, so ClaudeSec grouped sessions from the same agent together as a best
-                  guess. Dashed/greyed rows are that estimate — not a confirmed spawn link, and not an error.
+                  <span style={{ color: 'var(--cs-info)', fontWeight: 'var(--cs-weight-medium)' }}>Estimated: </span>
+                  no agent here reported spawning another, so ClaudeSec grouped sessions from the same
+                  agent together as a best guess. Dashed/greyed rows are that estimate — not a
+                  confirmed spawn link, and not an error.
                 </span>
               </div>
             )}
@@ -502,130 +659,76 @@ export function OrchestrationTab({ onSelectSession }: { onSelectSession?: (trace
       </div>
 
       {/* ── Tool Inventory ────────────────────────────────────────────────── */}
-      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
-        <div className="flex items-center gap-2 mb-3">
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-            <Wrench className="w-3 h-3" /> Tool Inventory
+      <div className="rounded-lg p-4" style={{ background: 'var(--cs-bg-surface)' }}>
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <p className="cs-eyebrow flex items-center gap-1.5">
+            <Wrench className="w-3 h-3" aria-hidden="true" /> Tool inventory
           </p>
           {tools.length > 0 && (
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
               <FilterBar
                 query={query}
                 setQuery={setQuery}
                 facetValues={facetValues}
                 setFacet={setFacet}
                 facets={toolFacets}
-                placeholder="Filter tools..."
+                placeholder="Filter tools…"
               />
-            </div>
-          )}
-          {/* View toggle */}
-          {tools.length > 0 && (
-            <div className="flex items-center bg-slate-800 rounded-lg p-0.5">
-              <button
-                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'table' ? 'text-slate-400 hover:text-slate-200' : ''}`}
-                style={toolView === 'table' ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
-                onClick={() => setToolView('table')}
-                title="Table view"
-              >
-                <List className="w-3 h-3" /> Table
-              </button>
-              <button
-                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${toolView !== 'heatmap' ? 'text-slate-400 hover:text-slate-200' : ''}`}
-                style={toolView === 'heatmap' ? { background: 'var(--cs-accent)', color: '#fff' } : undefined}
-                onClick={() => setToolView('heatmap')}
-                title="Heatmap view"
-              >
-                <LayoutGrid className="w-3 h-3" /> Heatmap
-              </button>
+              <div className="flex items-center gap-0.5" role="group" aria-label="Tool inventory view">
+                <ToolButton active={toolView === 'table'} aria-pressed={toolView === 'table'} onClick={() => setToolView('table')} title="Table view">
+                  <List className="w-3.5 h-3.5" aria-hidden="true" />
+                </ToolButton>
+                <ToolButton active={toolView === 'heatmap'} aria-pressed={toolView === 'heatmap'} onClick={() => setToolView('heatmap')} title="Heatmap view">
+                  <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />
+                </ToolButton>
+              </div>
             </div>
           )}
         </div>
 
-        {tools.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 gap-2">
-            <Wrench className="w-7 h-7 text-slate-800" />
-            <p className="text-sm text-slate-500">No tool calls recorded</p>
-            <p className="text-xs text-slate-600">
-              Tools appear when spans include{' '}
-              <code className="font-mono bg-slate-800 px-1 rounded">gen_ai.tool.name</code>.
-            </p>
-          </div>
+        {!loading && tools.length === 0 ? (
+          <EmptyState
+            icon={<Wrench className="w-6 h-6" aria-hidden="true" />}
+            title="No tool calls recorded"
+            description="Tools appear when spans include gen_ai.tool.name."
+          />
         ) : toolTotal === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 gap-2">
-            <Wrench className="w-7 h-7 text-slate-800" />
-            <p className="text-sm text-slate-500">No matching tools</p>
-          </div>
+          <EmptyState
+            icon={<Wrench className="w-6 h-6" aria-hidden="true" />}
+            title="Nothing matches this filter"
+            description="No tool calls match the current search or agent filter."
+          />
         ) : toolView === 'heatmap' ? (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden p-2">
+          <div className="rounded-md p-2" style={{ background: 'var(--cs-bg-sunken)' }}>
             <ToolHeatmap tools={visibleTools} />
             <ListFooter shown={toolShown} total={toolTotal} showMore={toolShowMore} showAll={toolShowAll} noun="tools" />
           </div>
         ) : (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
-                  <th className="px-4 py-2.5 text-left">Tool</th>
-                  <th className="px-4 py-2.5 text-left">Agent</th>
-                  <th className="px-4 py-2.5 text-right">Calls</th>
-                  <th className="px-4 py-2.5 text-right">Threats</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleTools.map(tool => {
-                  const isSuspicious  = SUSPICIOUS_TOOLS.has(tool.toolName.toLowerCase());
-                  const harnessColor  = HARNESS_COLORS[tool.harness] ?? '#64748b';
-                  return (
-                    <tr
-                      key={`${tool.toolName}::${tool.harness}`}
-                      onClick={() => setDrawer({ query: tool.toolName, title: tool.toolName, kind: 'Tool' })}
-                      className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors cursor-pointer"
-                      title="View spans for this tool"
-                    >
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-2">
-                          {isSuspicious && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" title="Suspicious tool" />
-                          )}
-                          <code className={`font-mono text-[11px] ${isSuspicious ? 'text-orange-300' : 'text-slate-200'}`}>
-                            {tool.toolName}
-                          </code>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: harnessColor }} />
-                          <span className="text-slate-400 text-xs">
-                            {HARNESS_NAMES[tool.harness] ?? tool.harness}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-slate-300">{tool.count}</td>
-                      <td className="px-4 py-2.5 text-right font-mono">
-                        {tool.threatCount > 0
-                          ? <span className="text-red-400 font-bold">{tool.threatCount}</span>
-                          : <span className="text-slate-700">0</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <>
+            <DataTable
+              rows={visibleTools}
+              columns={toolColumns}
+              rowKey={t => `${t.toolName}::${t.harness}`}
+              label="Tool inventory"
+              minWidth={480}
+              onActivate={t => setDrawer({ query: t.toolName, title: t.toolName, kind: 'Tool' })}
+            />
             <ListFooter shown={toolShown} total={toolTotal} showMore={toolShowMore} showAll={toolShowAll} noun="tools" />
-          </div>
+          </>
         )}
       </div>
 
-      {/* ── Command Audit Trail ─────────────────────────────────────────── */}
-      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+      {/* ── Command Audit Trail — hosted here, owned by another engineer ────── */}
+      <div className="rounded-lg p-4" style={{ background: 'var(--cs-bg-surface)' }}>
         <CommandAuditTab />
       </div>
 
-      {/* ── File Access Heatmap ─────────────────────────────────────────── */}
-      <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }}>
+      {/* ── File Access Heatmap — hosted here, owned by another engineer ────── */}
+      <div className="rounded-lg p-4" style={{ background: 'var(--cs-bg-surface)' }}>
         <FileAccessPanel />
       </div>
+      </>
+      )}
 
       {/* Tool drill-down drawer — opened by clicking a tool-inventory row. */}
       <SpanSearchDrawer target={drawer} onClose={() => setDrawer(null)} />
