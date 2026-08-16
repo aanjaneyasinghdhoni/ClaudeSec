@@ -6,7 +6,7 @@ icon: "scroll"
 
 ## Overview
 
-The operator audit log is a tamper-evident, append-only record of every config-mutating or
+The operator audit log is an append-only record of every config-mutating or
 security-relevant action taken through the ClaudeSec API: enforcement mode changes, rule
 enable/disable, honeytoken updates, suppression creation, and more.
 
@@ -17,43 +17,136 @@ intervention.
 
 The log is ordered newest-first and supports cursor pagination via the `before` parameter.
 
-## How "tamper-evident" works
+## What the integrity mechanism actually proves
 
-Each row is **hash-chained** to the previous one: a row's hash is computed over its content plus
-the hash of the row before it. Editing, reordering, or deleting any earlier row breaks every hash
-from that point on, so a recomputation can pinpoint the first row that no longer matches. By
-default the chain is a plain SHA-256. If a local key file exists at `~/.claudesec/hooks/audit-key`
-(minted owner-only on first run when writable), the chain is an HMAC-SHA256 keyed by that secret
-instead. The key lives **under the self-protected hooks directory**, so the enforcement
-self-protection floor guards it from agent reads and overwrites. (Installs that minted the key at
-the older `~/.claudesec/audit-key` location are migrated in place on first run — the existing
-bytes are preserved, so the chain keeps verifying.)
+Start with the limits, because they bound everything that follows.
 
-### Pruning re-anchors the chain
+<Warning>
+  **Detection, never prevention.** Schneier & Kelsey put it plainly in 1998: *"no cryptographic
+  method can be used to actually prevent the deletion of log entries … the only thing cryptographic
+  protocols can do is guarantee detection."* Everything below detects. Nothing prevents.
+
+  **Completeness cannot be proven.** An event that was never written leaves no cryptographic
+  residue, so no verifier — ours or a third party's — can tell a quiet hour from a silenced writer.
+  A passing verification says *what was recorded has not been altered*. It never says *everything
+  was recorded*.
+
+  **A key on this machine does not bind this machine's owner.** Whoever controls the host controls
+  the signing key and can therefore produce a history that verifies. Signing raises the bar for
+  everyone else. It does not turn a local log into a statement against the operator's own interest.
+</Warning>
+
+### The row chain
+
+Each row is **hash-chained** to the previous one: `rowHash = sha256(canonical content + previous
+rowHash)`. Editing, reordering, or deleting any earlier row breaks every hash from that point on,
+and `verify` reports the first row that no longer matches. The hash is deliberately **keyless**, so
+anyone can recompute it — see [external verification](#verifying-without-a-secret).
+
+<Warning>
+  **Two span fields are outside the hash, on purpose: `endNano` and `repo`.** Both are written by
+  a follow-up `UPDATE` from this same server, after the row is already inserted and chained —
+  `endNano` when a tool call finishes, `repo` when a working directory that started as `unknown`
+  resolves. A hash that covered them would break on the server's own ordinary writes. So a span's
+  identity, its content, and its place in the sequence are tamper-evident; **its duration and its
+  repository attribution are not** on a row hashed under the current scheme — an edit to either
+  after the fact will not be caught by that row's chain link. Everything else about the record
+  still is. Rows written before this fix are hashed under a legacy scheme that *did* cover both
+  fields (so they're still caught there); `GET /api/audit/verify`'s `spansFieldCoverage` reports
+  how much of your record is on each scheme.
+</Warning>
+
+### The tail anchor
+
+A hash chain cannot see its own boundaries. An empty table is a valid empty chain, and cutting the
+newest rows off the end leaves a perfectly valid prefix. So the boundaries live **outside the table
+they guard**: a small signed JSON file under `CLAUDESEC_HOME/hooks/audit-anchor.json` (written
+atomically, `0600`) records, per record, how many rows were ever written and the id and hash of the
+newest one.
+
+The counts are kept honest by SQLite itself. Every guarded table uses `AUTOINCREMENT`, so
+`sqlite_sequence` holds the highest id ever allocated — a number that does not go down when rows
+are deleted. The anchor takes the **maximum** of what it already recorded and what it just read, so
+an attacker who deletes rows can lower what the database reports but not what was already signed.
+That difference is the detection.
+
+Because of the anchor, `verify` distinguishes outcomes an operator has to tell apart:
+
+| `status` | What happened |
+| --- | --- |
+| `ok` | Every hashed row recomputes and the counts match the signed anchor. |
+| `row_mismatch` | A row's content no longer hashes to its stored value. `brokenAtId` names it. |
+| `truncated` | Fewer rows than the anchor accounts for — including rows cut off the tail. |
+| `wiped` | The anchor accounts for rows and the table is empty (or every hash was blanked). |
+| `tail_mismatch` | The row the anchor pinned is present but carries a different hash. |
+| `anchor_missing` | Chained rows exist but no anchor accounts for them — the anchor was removed. |
+| `anchor_unsigned` | An anchor exists but its signature does not verify. |
+| `unanchored` | Nothing chained and nothing claimed. |
+
+### Verifying without a secret
+
+The chain is signed with **Ed25519**, and the signature covers the anchor rather than each row —
+the rows are already bound to each other by the chain. The private key stays `0600` under
+`CLAUDESEC_HOME/hooks/`; the public key is exported next to it and served by
+`GET /api/audit/public-key`.
+
+That is the concrete gain over the HMAC this replaced. An HMAC recipient who can verify can also
+forge, because verifying and signing use the same secret. A public-key recipient can only verify.
+It also means a remote or different-UID attacker cannot produce a valid anchor. It does **not**
+defeat this machine's owner — see the warning above. Its real value is that it is the prerequisite
+for anchoring the tail somewhere we do not control, which is the only thing that could bind the
+owner.
+
+`GET /api/audit/verify` reports a `keyId` — the fingerprint of the public key. **Record it off this
+machine.** Deleting the database and the key and letting ClaudeSec mint a fresh one rebuilds a
+history that verifies against itself; what it cannot do is keep the same `keyId`.
+
+### External anchoring (off by default)
+
+The Ed25519 signature above proves the anchor wasn't altered *after* it was signed — it says
+nothing about *when* it was signed, because the signing clock is this same machine's clock, set
+by whoever controls the host. **External anchoring** closes that specific gap by timestamping the
+anchor with an independent third party, so its creation time can't be backdated:
+
+- **RFC 3161** — an external Timestamp Authority countersigns a hash of the anchor.
+- **OpenTimestamps** — the anchor's hash is submitted to independent calendar servers for
+  eventual Bitcoin-blockchain timestamping, and the anchor is wrapped in a **COSE_Sign1**
+  envelope (the format the IETF SCITT effort uses for signed, transparency-log-able statements).
+
+This is **off unless you explicitly turn it on** with `CLAUDESEC_ANCHOR_METHOD=tsa` or `=ots` (see
+the [Configuration reference](/reference/config#external-audit-anchoring)) — it depends on
+reaching a public TSA or calendar server, which is exactly the kind of outbound call ClaudeSec
+otherwise avoids by default. Turning it on trades a small, occasional, operator-chosen network
+call for a stronger claim about *when* the record existed.
+
+### Migrating from the HMAC chain
+
+Rows written by the previous HMAC-SHA256 scheme are **not re-signed** — history keeps the hashes it
+was written with. Each row is checked against SHA-256 first and, on mismatch, retried against the
+legacy key at `~/.claudesec/hooks/audit-key` if it is still present. The cutover point is simply the
+first row whose hash is a plain SHA-256, and `verify` reports `legacyHmacRows`: the count of rows a
+third party **cannot** check without the local secret. Once those age out of the capped log, the
+whole record is externally verifiable.
+
+### Pruning re-anchors the capped logs
 
 Retention prunes the **oldest** rows once a log passes its cap. A naive chain would then report a
-false "tampered," because the new oldest row still pointed at a hash that no longer exists. ClaudeSec
-**re-anchors** instead: after a prune, the surviving rows are re-threaded from a fresh seed in the
-same transaction, so a verify never sees a half-pruned state and a pruned-but-otherwise-intact log
-reports as **intact**. Pruning a long-lived log does not make `verify` cry tamper.
+false "tampered," because the new oldest row still pointed at a hash that no longer exists.
+ClaudeSec **re-anchors** instead: the surviving rows are re-threaded from a fresh seed in the same
+transaction. The expected row count is then exactly `min(rows ever written, cap)`, which is why the
+capped logs need no deletion bookkeeping — any shortfall against the cap is a deletion the cap does
+not explain.
 
-### Reset detection
+The spans ledger handles retention differently, because re-threading 269,000 rows on every sweep is
+not an option and would destroy the original hashes. See
+[Architecture](/architecture#the-spans-chain-and-retention).
 
-Verify also catches a **wholesale wipe**. A genuinely empty log (no rows) is fine, but a log that
-has rows where **none** carry a hash is reported as **broken** — that is the signature of someone
-blanking every hash or swapping in an all-unhashed database to defeat the check. Rows that predate
-hashing (a real legacy upgrade) are skipped cleanly; only an all-rows-unhashed table trips reset
-detection.
+### The boundary, stated plainly
 
-<Note>
-  **Honest limitation — tamper-*evident*, not tamper-*proof*.** The chain makes after-the-fact
-  edits, reordering, deletion, and a wholesale wipe *detectable*; it does not make them *impossible*.
-  A same-user attacker who can read the local HMAC key (or, without a key, anyone with database write
-  access) can recompute the whole chain and forge a self-consistent history; truncating the newest
-  rows off the tail is the residual gap the chain cannot detect on its own. Storing the key under the
-  self-protected hooks directory raises that bar but does not eliminate it. Keep the key readable only
-  by the owner, and back it up separately if you rely on it.
-</Note>
+Changes made **outside** this server's database handle — an `sqlite3` session against the file, an
+offline edit, restoring an older copy — are detected, because the anchor never saw them. Changes
+made **by** the server are recorded as legitimate. Code execution inside ClaudeSec is game over for
+the local record, as it is for any local logging scheme.
 
 ## Endpoints
 
@@ -137,14 +230,19 @@ curl "http://localhost:3000/api/audit-log?limit=25&before=40"
 
 ### GET /api/audit/verify
 
-Recompute the [hash chains](#how-tamper-evident-works) for **both** append-only logs — the
-operator audit log and the persisted [enforcement feed](/api-reference/enforcement-api) — and
-report whether each is intact. This is a read-only check; it never mutates anything. A log that has
-only been **pruned** (re-anchored, see above) reports `ok: true`; a log that has been **wiped**
-(rows present, none hashed) reports `ok: false`.
+Recompute the [hash chains](#what-the-integrity-mechanism-actually-proves) for all three
+append-only records — the operator audit log, the persisted
+[enforcement feed](/api-reference/enforcement-api), and the **spans ledger** — and compare each
+against the signed tail anchor. Read-only; it never mutates anything.
+
+The spans check is windowed by default (position and link continuity across every span and
+tombstone, plus content hashes for the newest few thousand spans), because recomputing every
+content hash reads every stored attribute back off disk. Pass `?deep=1` for all of them — measured
+on a real 269,737-span database that is 1.9 s.
 
 ```bash
 curl http://localhost:3000/api/audit/verify
+curl "http://localhost:3000/api/audit/verify?deep=1"
 ```
 
 **Response:**
@@ -152,17 +250,81 @@ curl http://localhost:3000/api/audit/verify
 ```json
 {
   "ok": true,
-  "audit":   { "ok": true, "rows": 42, "hashedRows": 42, "signed": true },
-  "enforce": { "ok": true, "rows": 18, "hashedRows": 18, "signed": true }
+  "audit":   { "ok": true, "status": "ok", "rows": 42, "hashedRows": 42,
+               "legacyHmacRows": 0, "attested": true, "signed": true,
+               "expectedRows": 42, "detail": "Chain intact; …" },
+  "enforce": { "ok": true, "status": "ok", "rows": 500, "hashedRows": 500, "…": "…" },
+  "spans":   { "ok": true, "status": "ok", "totalSpans": 269737, "chainedSpans": 269737,
+               "unchainedSpans": 0, "tombstones": 1204, "checkedHashes": 5000,
+               "deep": false, "backfillComplete": true },
+  "key": { "keyId": "…", "algorithm": "ed25519", "anchorPresent": true, "anchorSigned": true },
+  "limits": ["Detection, never prevention: …", "Completeness cannot be proven. …"]
 }
 ```
 
 | Field | Description |
 |---|---|
-| `ok` | `true` only when **both** chains verify |
-| `audit` / `enforce` | Per-log result |
-| `*.ok` | Whether this chain is intact |
-| `*.rows` | Total rows scanned |
-| `*.hashedRows` | Rows that participate in the chain (rows that predate hashing are skipped) |
-| `*.signed` | `true` when an HMAC key is in use (otherwise a plain SHA-256 chain) |
-| `*.brokenAtId` | Present only on failure — the `id` of the first row whose stored hash no longer matches a recomputation, i.e. where the log was tampered with. Absent when failure is a wholesale wipe (rows present, none hashed) rather than an in-place edit |
+| `ok` | `true` only when **all three** records verify |
+| `*.status` | The verdict — see the [status table](#the-tail-anchor). `ok/not ok` alone is not enough to act on |
+| `*.detail` | One line an operator can read without knowing the internals |
+| `*.rows` / `*.hashedRows` | Rows scanned, and rows participating in the chain (rows that predate hashing are skipped) |
+| `*.expectedRows` | How many rows the signed anchor accounts for |
+| `*.legacyHmacRows` | Rows still on the pre-cutover HMAC — a third party cannot verify these without the local secret |
+| `*.attested` | The record's boundaries are covered by a valid Ed25519 signature |
+| `*.signed` | A signing key is available on this install |
+| `*.brokenAtId` / `spans.brokenAtSeq` | Present on failure — where the record stops matching |
+| `spans.tombstones` | Deleted spans whose chain link was retained (see [retention](/architecture#the-spans-chain-and-retention)) |
+| `key.keyId` | Fingerprint of the public key. **Record it off this machine** — a changed `keyId` means the record was re-founded |
+| `limits` | The standing limits on what any result can mean, returned with every response so they cannot be read past |
+
+### GET /api/audit/anchor
+
+Cheap, synchronous status of [external anchoring](#external-anchoring-off-by-default) — no chain
+recomputation, just the current queue and the last external witness received. Useful for a
+dashboard widget or poller that only wants "is this on, and how stale is the last receipt."
+
+```bash
+curl http://localhost:3000/api/audit/anchor
+```
+
+```json
+{
+  "enabled": false,
+  "method": null,
+  "endpoint": null,
+  "intervalMs": null,
+  "queueDepth": 0,
+  "pendingCount": 0,
+  "errorCount": 0,
+  "lastCheckpoint": null,
+  "lastReceipted": null,
+  "truncationWindowMs": null,
+  "truncationWindowDetail": "no external anchoring configured — the exposure window is unbounded",
+  "limits": ["…"]
+}
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | Whether `CLAUDESEC_ANCHOR_METHOD` is set to `tsa` or `ots` |
+| `method` / `endpoint` | Which external service, and where |
+| `lastCheckpoint` / `lastReceipted` | The most recent submission, and the most recent one that came back with an external receipt |
+| `truncationWindowMs` | How far back the last externally-countersigned checkpoint reaches — the window that is still only as trustworthy as this machine's own signing key. `null` when anchoring is off (unbounded exposure) |
+
+### GET /api/audit/public-key
+
+The public half of the Ed25519 signing key, so a third party can verify the anchor without being
+handed anything secret.
+
+```bash
+curl http://localhost:3000/api/audit/public-key
+```
+
+```json
+{
+  "keyId": "…",
+  "algorithm": "ed25519",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\n…\n-----END PUBLIC KEY-----\n",
+  "limits": ["…"]
+}
+```

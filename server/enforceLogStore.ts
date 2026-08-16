@@ -14,7 +14,8 @@
 
 import { db } from './db.js';
 import {
-  canonicalString, computeRowHash, reanchorChain, verifyChain, type ChainStatus,
+  canonicalString, chainReadError, computeRowHash, reanchorChain, verifyChain,
+  type ChainStatus,
 } from './auditChain.js';
 import type { EnforceLogEvent } from './routes/context.js';
 
@@ -196,8 +197,11 @@ export function verifyEnforceChain(): ChainStatus {
         rowHash: r.rowHash,
         canonical: enforceCanonical(r),
       })),
+      // Capped log — see the note in server/auditLog.ts on why the cap is all
+      // the deletion bookkeeping a pruned-on-insert table needs.
+      { chain: 'enforce_log', cap: ENFORCE_LOG_MAX },
     );
-  } catch {
-    return { ok: false, rows: 0, hashedRows: 0, signed: false };
+  } catch (e) {
+    return chainReadError(`The enforcement feed could not be read for verification: ${(e as Error).message}`);
   }
 }

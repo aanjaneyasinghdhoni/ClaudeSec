@@ -17,7 +17,8 @@ import type { Request } from 'express';
 import { db } from './db.js';
 import { scrubText, type ScrubOptions } from './scrub.js';
 import {
-  canonicalString, computeRowHash, reanchorChain, verifyChain, type ChainStatus,
+  canonicalString, chainReadError, computeRowHash, reanchorChain, verifyChain,
+  type ChainStatus,
 } from './auditChain.js';
 
 // Hard cap on retained rows. The oldest rows are pruned on insert once the
@@ -118,9 +119,12 @@ export function verifyAuditChain(): ChainStatus {
         rowHash: r.rowHash,
         canonical: auditCanonical(r),
       })),
+      // Capped log: the expected retained count is exactly min(everWritten, cap),
+      // so pruning needs no bookkeeping and any shortfall is a real deletion.
+      { chain: 'operator_audit_log', cap: MAX_AUDIT_ROWS },
     );
-  } catch {
-    return { ok: false, rows: 0, hashedRows: 0, signed: false };
+  } catch (e) {
+    return chainReadError(`The operator audit log could not be read for verification: ${(e as Error).message}`);
   }
 }
 
