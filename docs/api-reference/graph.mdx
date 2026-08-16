@@ -8,6 +8,7 @@ description: "GET /api/graph — retrieve span dependency graph data for program
 ```
 GET /api/graph
 GET /api/graph?session={traceId}
+GET /api/graph?repo=…&sev=…&harness=…&t=…&q=…
 ```
 
 Returns node and edge data for the span dependency graph. This is a headless API endpoint — there is no graph tab in the dashboard UI. Use this endpoint for programmatic access, custom integrations, or to feed data into external visualization tools.
@@ -20,9 +21,21 @@ Returns node and edge data for the span dependency graph. This is a headless API
 
 ## Query parameters
 
+The filter parameter names intentionally match the URL keys the dashboard's own filter state
+uses, so a filtered view can forward its state to this route almost verbatim. `session` is
+mutually exclusive with the rest — a session-scoped graph loads that trace in full and ignores
+the other filters.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `session` | string | No | Filter graph to spans belonging to a specific `traceId`. If omitted, all spans across all sessions are included. |
+| `session` | string | No | Filter graph to spans belonging to a specific `traceId`. Loads the full session (not subject to the window below). |
+| `repo` | string | No | Comma-separated list of repo values to match (as scrubbed and stored, e.g. `/Users/***/myproject`) |
+| `sev` | string | No | Comma-separated severities: `none`, `low`, `medium`, `high`, `critical`. Unrecognized values are dropped |
+| `harness` | string | No | Comma-separated harness IDs, e.g. `claude-code,codex` |
+| `t` | string | No | Time window: `1h`, `24h`, or `7d`. Any other value is ignored (no time filter) |
+| `q` | string | No | Full-text search over span content, same term-splitting behavior as [`/api/spans`](/api-reference/spans) |
+
+When no filter is given (bare `GET /api/graph`), the response is the most-recent `CLAUDESEC_GRAPH_LIMIT` spans across all sessions (default `2000`) — see [Data retention](/explanation/retention#the-graph-window-vs-your-full-history). Filtered queries apply the same limit to the filtered set.
 
 ---
 
@@ -81,9 +94,26 @@ Returns node and edge data for the span dependency graph. This is a headless API
       "animated": true,
       "style": {}
     }
-  ]
+  ],
+  "windowed": false,
+  "shown": 2,
+  "total": 2,
+  "limit": 2000
 }
 ```
+
+### Windowing metadata
+
+Present on every response (older consumers can ignore these fields — they're additive):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `windowed` | boolean | `true` when there are more matching spans than were returned — the graph is showing only the most-recent `limit` |
+| `shown` | number | Spans actually returned in this response |
+| `total` | number | Spans matching the filter in total (ignoring the window). For a `session`-scoped graph this equals `shown`, since a single session always loads in full |
+| `limit` | number | The window size applied — `CLAUDESEC_GRAPH_LIMIT` (default `2000`) |
+
+Older data is never deleted by windowing — it's still reachable through **Search** and **Sessions**. Narrow with `repo`/`sev`/`harness`/`t`/`q` to bring a specific slice back within the window.
 
 ### Node object
 
@@ -143,6 +173,12 @@ curl http://localhost:3000/api/graph
 curl "http://localhost:3000/api/graph?session=4bf92f3577b34da6a3ce929d0e0e4736"
 ```
 
+### Fetch a filtered graph
+
+```bash
+curl "http://localhost:3000/api/graph?sev=high,critical&harness=claude-code&t=24h"
+```
+
 ### JavaScript (fetch)
 
 ```javascript
@@ -167,6 +203,10 @@ If no spans have been ingested, the response is:
       "type": "input"
     }
   ],
-  "edges": []
+  "edges": [],
+  "windowed": false,
+  "shown": 0,
+  "total": 0,
+  "limit": 2000
 }
 ```

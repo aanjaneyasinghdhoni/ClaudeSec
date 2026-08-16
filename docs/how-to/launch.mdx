@@ -1,21 +1,28 @@
 ---
 title: "Launch the full platform"
-description: "Run ClaudeSec three ways — npx, a pnpm clone, or Docker — and connect your first agent. Defaults to a loopback dashboard on port 3000, with all data stored locally."
+description: "Run ClaudeSec two ways — a pnpm clone, or Docker — and connect your first agent. Defaults to a loopback dashboard on port 3000, with all data stored locally."
 ---
 
-ClaudeSec runs as a single local service: an Express backend that ingests agent activity, evaluates threat rules, and serves the dashboard. There are three ways to launch it. Pick the one that matches how you work.
+ClaudeSec runs as a single local service: an Express backend that ingests agent activity, evaluates threat rules, and serves the dashboard. There are two ways to launch it. Pick the one that matches how you work.
 
 | Path | Best for | Agent capture |
 |---|---|---|
-| **npx** | A quick, zero-clone trial | Local transcript watcher + OTLP |
 | **pnpm** (clone) | Local development and self-hosting | Local transcript watcher + OTLP |
 | **Docker** | Servers, CI, and Windows | **OTLP only** (no host transcript watching) |
 
-All three serve the dashboard at **http://localhost:3000** and bind to loopback (`127.0.0.1`) by default. Your data lives in a local SQLite file — see [Where your data lives](#where-your-data-lives).
+<Note type="warning">
+  **Do not run `npx claudesec`.** ClaudeSec is not published to npm — the package is
+  `private: true` — and the `claudesec` name on the public npm registry belongs to an
+  unrelated project by a different author. Running `npx claudesec` would download and
+  execute someone else's code, never something to do on the word of a security tool's
+  own documentation. There is no npx path; install from source (below) or use Docker.
+</Note>
+
+Both serve the dashboard at **http://localhost:3000** and bind to loopback (`127.0.0.1`) by default. Your data lives in a local SQLite file — see [Where your data lives](#where-your-data-lives).
 
 ## Prerequisites
 
-- **Node.js 22.13+** (Node 22 LTS recommended) — required for the npx and pnpm paths. The Docker path needs only Docker.
+- **Node.js 22.13+** (Node 22 LTS recommended) — required for the pnpm path. The Docker path needs only Docker.
 - **pnpm** via corepack (`corepack enable`) — required for the clone path.
 - At least one supported agent: [Claude Code](/harnesses/claude-code), [GitHub Copilot CLI](/harnesses/copilot), or [Codex](/harnesses/codex).
 
@@ -25,22 +32,25 @@ All three serve the dashboard at **http://localhost:3000** and bind to loopback 
 
 ---
 
-## Option A — npx (zero-clone quick run)
+## Option A — the background service (after cloning)
 
-The fastest way to try ClaudeSec without cloning anything:
+Once you have a clone (Option B), install the user-level background service —
+launchd on macOS, a systemd user service on Linux — so ClaudeSec starts with your
+machine and keeps tailing agent sessions in the background:
 
 ```bash
-npx claudesec
+node cli/init.mjs
 ```
 
-This installs the user-level background service (launchd on macOS, a systemd user service on Linux, a Scheduled Task on Windows), starts it, and opens the dashboard at [http://localhost:3000](http://localhost:3000). The local watcher begins tailing every agent session on your machine immediately.
+This starts the service and opens the dashboard at [http://localhost:3000](http://localhost:3000).
+The local watcher begins tailing every agent session on your machine immediately.
 
 Manage the service the same way:
 
 ```bash
-npx claudesec status     # health, span/session/alert counts, uptime
-npx claudesec stop       # stop and remove the service
-npx claudesec reset      # wipe stored data in ~/.claudesec/spans.db
+node cli/init.mjs status   # health, span/session/alert counts, uptime
+node cli/init.mjs stop     # stop and remove the service
+node cli/init.mjs reset    # wipe stored data in ~/.claudesec/spans.db
 ```
 
 ---
@@ -106,8 +116,8 @@ The demo runs on its own port and a separate, physically isolated volume seeded 
 
 | Platform | Recommended path | Notes |
 |---|---|---|
-| **macOS** | npx or pnpm | Background service via launchd is **verified**. Native local watcher. |
-| **Linux** | npx or pnpm | Background service via systemd user service (experimental). Native local watcher. |
+| **macOS** | pnpm | Background service via launchd is **verified**. Native local watcher. |
+| **Linux** | pnpm | Background service via systemd user service (experimental). Native local watcher. |
 | **Windows** | **Docker** | The local transcript watcher and the Scheduled Task service are experimental on Windows; the supported path is Docker with OTLP capture. |
 
 The watcher and dashboard run anywhere Node 22.13+ runs; only the auto-start *service* layer is platform-specific. On any platform you can always run the foreground server.
@@ -118,7 +128,7 @@ The watcher and dashboard run anywhere Node 22.13+ runs; only the auto-start *se
 
 ClaudeSec has two intakes, and both land in the same dashboard.
 
-### Local agents — zero config (npx / pnpm paths)
+### Local agents — zero config (pnpm path)
 
 If the agent runs on the **same machine** as ClaudeSec, you do nothing. The watcher tails the transcript directories your agents already write to:
 
@@ -151,7 +161,28 @@ Full details, including reaching the server from another machine, are in [Captur
 
 ## Where your data lives
 
-ClaudeSec stores everything in one local SQLite database — by default `~/.claudesec/spans.db`, created with `0600` (owner-only) permissions. Override the path with `CLAUDESEC_DB`. Under Docker it lives in the `claudesec-data` volume.
+Agent activity goes into one local SQLite database — by default `~/.claudesec/spans.db`, created with `0600` (owner-only) permissions. Override the path with `CLAUDESEC_DB`.
+
+Everything else lives under `CLAUDESEC_HOME` (`~/.claudesec` by default): the Ed25519 audit signing key, the signed tail anchor, the control-plane pairing key, and the installed hook's config. **Back that directory up together with the database** — the hash chain cannot be verified without the signing key. See [What lives in `CLAUDESEC_HOME`](/reference/config#what-lives-in-claudesec-home-and-why-you-must-back-it-up).
+
+Under Docker both live on the `claudesec-data` volume: the image sets `CLAUDESEC_DB=/data/spans.db` and `CLAUDESEC_HOME=/data/claudesec` as `ENV`, so a plain `docker run -v claudesec-data:/data` persists correctly without a Compose file.
+
+<Warning>
+  **If you built an image from a development commit, rescue your data before upgrading.** Images built from `master` or `feat/launch-hardening` between 2026-06-15 and the 2.0.0 release wrote the database *and* the audit signing key to `/home/node/.claudesec/` inside the container's writable layer, which is on no volume. Upgrading does not recover them, and removing the old container destroys both. Copy them out first:
+
+```bash
+docker cp claudesec:/home/node/.claudesec/spans.db ./spans.db
+docker cp claudesec:/home/node/.claudesec/hooks ./claudesec-hooks
+```
+
+  Then put them on the volume at `/data/spans.db` and `/data/claudesec/hooks`. Upgrading from the released **1.3.0** image needs none of this — that data is already at `/data/spans.db`, where the new configuration points.
+</Warning>
+
+<Note>
+  Replacing the named volume with a **host bind mount** on macOS or Windows can silently drop the `0600` mode on the database and the key files, because the file-sharing layer synthesises permissions. A named volume is stored on the Linux VM's own filesystem and keeps them.
+</Note>
+
+Upgrading a **clone** from 1.3.0 or earlier: the database used to be a bare `spans.db` resolved against your working directory, so it normally sat in the checkout. On first start it is moved once to `~/.claudesec/spans.db`, provided the new location is empty, `CLAUDESEC_DB` is unset, the file is a real SQLite database, and no other ClaudeSec process holds it. Otherwise it is left where it is and the server logs why. Set `CLAUDESEC_DB` to the old path if you would rather keep it there.
 
 Nothing is sent anywhere by default. The dashboard binds to loopback, the database stays on your disk, and outbound sinks (webhooks, OTLP forwarding) are off unless you explicitly set them. See [Privacy & Security](/security/privacy) for the full data-handling model.
 

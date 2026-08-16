@@ -5,6 +5,32 @@ info:
     Local AI Agent Observatory — ingests OpenTelemetry traces from CLI agent
     harnesses (Claude Code, GitHub Copilot CLI, Codex)
     and surfaces suspicious activity in real-time.
+
+    ## Authentication
+
+    On loopback, reads are open and **mutations require the control token**. A
+    TCP connection to 127.0.0.1 carries no identity, so "it came from localhost"
+    cannot stand in for "it came from the operator".
+
+    The dashboard is paired once, out of band: `claudesec open` sends the browser
+    to `/?ct=<pairing-key>`, and the server exchanges that key for an HttpOnly,
+    SameSite=Strict `claudesec_ct` cookie, then redirects the key out of the URL.
+    No HTTP request of any shape mints a token. The pairing key lives at
+    `~/.claudesec/hooks/control-token` (mode 0600), inside the directory the
+    enforcement floor protects from writes.
+
+    Operations marked with the `controlToken` security requirement return **403**
+    on loopback without an accepted credential. `CLAUDESEC_TOKEN` is accepted
+    everywhere the pairing key is, and `CLAUDESEC_TRUST_LOCAL=1` (Docker) waives
+    the check entirely.
+
+    Three mutating endpoints stay open on loopback because their callers are
+    machine clients with nowhere safe to hold a secret: `POST /v1/traces`,
+    `POST /mcp`, and `POST /api/enforce-log`. The last is bounded by an entry cap
+    and a hash chain instead of a token. See `GET /api/audit/verify`.
+
+    Off loopback every route needs `CLAUDESEC_TOKEN`, reads included; the server
+    refuses to bind a non-loopback host without it.
   version: 1.3.0
   license:
     name: GNU Affero General Public License v3.0
@@ -44,6 +70,24 @@ tags:
     description: Canary string management
   - name: Scrub
     description: Inline secret-redaction pipeline status
+  - name: Security
+    description: Command audit trail, file access and the operator audit log
+  - name: Audit
+    description: Hash-chain verification and the Ed25519 signing key
+  - name: Governance
+    description: Control coverage and signed evidence packs
+  - name: Retention
+    description: Database size, retention policy and pruning
+  - name: Costs
+    description: Token spend by model and session
+  - name: Bookmarks
+    description: Saved spans
+  - name: Annotations
+    description: Span notes and tags
+  - name: Processes
+    description: Agent processes running on this host
+  - name: Webhooks
+    description: Outbound alert delivery and its history
 
 paths:
   /v1/traces:
@@ -53,7 +97,7 @@ paths:
       description: |
         Accepts OpenTelemetry trace data in OTLP JSON format. Each span is:
         - Classified by source harness (claude-code, github-copilot, etc.)
-        - Scanned against 31+ built-in threat detection rules
+        - Scanned against the full built-in threat detection rule set
         - Persisted to SQLite
         - Broadcast to connected dashboard clients via Socket.io
       requestBody:
@@ -135,7 +179,13 @@ paths:
   /api/sessions/{traceId}:
     patch:
       tags: [Sessions]
-      summary: Rename a session
+      security:
+        - controlToken: []
+      summary: Update session metadata
+      description: |
+        Rename, pin, label or annotate a session. Every field is optional and only
+        the ones supplied are written, so a partial update cannot clear the rest.
+        At most ten sessions may be pinned at once.
       parameters:
         - name: traceId
           in: path
@@ -148,20 +198,30 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name]
               properties:
                 name:
                   type: string
                   minLength: 1
+                pinned:
+                  type: boolean
+                label:
+                  type: string
+                  enum: [normal, incident, investigation, automated, other]
+                notes:
+                  type: string
       responses:
         '200':
-          description: Session renamed
+          description: Session updated
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StatusOk'
         '400':
-          description: Name is required
+          description: name was empty, or label is not one of the accepted values
+        '404':
+          description: Session not found
+        '409':
+          description: Ten sessions are already pinned; unpin one first
 
   /api/spans:
     get:
@@ -207,6 +267,8 @@ paths:
                 $ref: '#/components/schemas/RuleList'
     post:
       tags: [Rules]
+      security:
+        - controlToken: []
       summary: Create custom rule
       requestBody:
         required: true
@@ -240,6 +302,8 @@ paths:
   /api/rules/{id}:
     delete:
       tags: [Rules]
+      security:
+        - controlToken: []
       summary: Delete custom rule
       parameters:
         - name: id
@@ -282,6 +346,8 @@ paths:
                 $ref: '#/components/schemas/AlertList'
     delete:
       tags: [Alerts]
+      security:
+        - controlToken: []
       summary: Clear all alerts
       responses:
         '200':
@@ -506,6 +572,8 @@ paths:
   /api/rule-overrides/{label}:
     put:
       tags: [Rules]
+      security:
+        - controlToken: []
       summary: Enable or disable a rule by label
       description: Persists an enable/disable override. Catastrophic-floor rules can never be disabled.
       parameters:
@@ -572,6 +640,8 @@ paths:
   /api/processes/kill-all:
     post:
       tags: [Orchestration]
+      security:
+        - controlToken: []
       summary: Kill all agent processes
       description: Sends SIGTERM to every detected agent process. macOS/Linux only.
       responses:
@@ -589,6 +659,8 @@ paths:
   /api/processes/pause-all:
     post:
       tags: [Orchestration]
+      security:
+        - controlToken: []
       summary: Pause all agent processes
       description: Sends SIGSTOP to every detected agent process. Resume with /resume-all.
       responses:
@@ -598,6 +670,8 @@ paths:
   /api/processes/resume-all:
     post:
       tags: [Orchestration]
+      security:
+        - controlToken: []
       summary: Resume all paused agent processes
       description: Sends SIGCONT to every detected agent process.
       responses:
@@ -645,6 +719,8 @@ paths:
   /api/reset:
     post:
       tags: [Export]
+      security:
+        - controlToken: []
       summary: Reset all data
       description: |
         Permanently deletes all spans, sessions, and alerts.
@@ -830,6 +906,8 @@ paths:
                       scopes:    { type: array, items: { type: string } }
     put:
       tags: [Enforcement]
+      security:
+        - controlToken: []
       summary: Update enforcement configuration
       description: |
         Set the global mode and/or per-rule action overrides. Changes are written
@@ -859,6 +937,8 @@ paths:
   /api/judge:
     post:
       tags: [Rules]
+      security:
+        - controlToken: []
       summary: LLM-as-judge semantic classification
       description: |
         Classifies agent activity as malicious/suspicious/benign using a configured
@@ -923,6 +1003,8 @@ paths:
                   envOverride: { type: boolean }
     post:
       tags: [Honeytokens]
+      security:
+        - controlToken: []
       summary: Replace honeytoken list
       description: Replaces the full honeytoken list. Values under 6 characters are dropped.
       requestBody:
@@ -952,6 +1034,8 @@ paths:
           description: CLAUDESEC_HONEYTOKENS env var is set — manage via env instead
     delete:
       tags: [Honeytokens]
+      security:
+        - controlToken: []
       summary: Clear all honeytokens
       responses:
         '200':
@@ -984,7 +1068,1739 @@ paths:
                   honeytokens: { type: integer, description: Number of honeytoken patterns active }
                   description: { type: string }
 
+  /api/activity:
+    get:
+      tags: [Health]
+      summary: Rolling ingest activity
+      description: |
+        A ring buffer of recent ingest activity, advanced to the current time on
+        every read. Backs the dashboard sparkline.
+      responses:
+        '200':
+          description: Activity buckets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ts:        { type: integer, description: Bucket start, epoch milliseconds }
+                        spans:     { type: integer }
+                        tokensIn:  { type: integer }
+                        tokensOut: { type: integer }
+
+  /api/tail:
+    get:
+      tags: [Spans]
+      summary: Live span stream (SSE)
+      description: |
+        Server-Sent Events stream of spans as they are ingested. Sends a
+        `: heartbeat` comment every 15 seconds so idle proxies do not close the
+        connection. Socket.io carries the same data for the dashboard; this
+        endpoint exists for shell and script consumers.
+      parameters:
+        - name: harness
+          in: query
+          description: Only stream spans from this harness
+          schema:
+            type: string
+        - name: severity
+          in: query
+          description: Only stream spans at this severity
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/import:
+    post:
+      tags: [Export]
+      security:
+        - controlToken: []
+      summary: Bulk import spans
+      description: |
+        Accepts either a ClaudeSec export (`{ spans: [...] }`) or a raw OTLP
+        payload (`{ resourceSpans: [...] }`). Imported spans run through the same
+        detection and scrub pipeline as live ingest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                spans:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SpanRecord'
+                resourceSpans:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/OTLPResourceSpans'
+      responses:
+        '200':
+          description: Import complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:      { type: string, example: ok }
+                  imported:    { type: integer }
+                  alertsAdded: { type: integer }
+        '400':
+          description: Batch exceeds CLAUDESEC_MAX_SPANS_BATCH, or the payload matches neither shape
+        '503':
+          description: Span ceiling exhausted; prune or raise CLAUDESEC_MAX_SPANS first
+
+  /api/collector-config:
+    get:
+      tags: [Health]
+      summary: Generated OpenTelemetry Collector config
+      description: |
+        A ready-to-use Collector configuration that forwards to this instance,
+        served as a file download. Embeds the running version and port.
+      responses:
+        '200':
+          description: Collector configuration
+          content:
+            text/yaml:
+              schema:
+                type: string
+
+  /api/config:
+    get:
+      tags: [Health]
+      summary: Effective runtime limits
+      description: |
+        The retention, rate-limit and batch settings currently in force. The
+        webhook URL is masked; use `GET /api/webhook` for its configured state.
+      responses:
+        '200':
+          description: Runtime configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  maxSpans:          { type: integer }
+                  retentionDays:     { type: integer }
+                  rateLimitRps:      { type: integer }
+                  rateLimitBurst:    { type: integer }
+                  maxSpansBatch:     { type: integer }
+                  webhookUrl:        { type: string, nullable: true, example: "***" }
+                  webhookThreshold:  { type: string }
+
+  /api/config/env-reference:
+    get:
+      tags: [Health]
+      summary: Environment variable reference
+      description: |
+        Every environment variable ClaudeSec reads, with its description, default
+        and current state. Values of variables marked `sensitive` are returned as
+        `***` when set.
+      responses:
+        '200':
+          description: Environment reference
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  envVars:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:          { type: string }
+                        description:  { type: string }
+                        default:      { type: string }
+                        category:     { type: string }
+                        sensitive:    { type: boolean }
+                        currentValue: { type: string }
+                        isSet:        { type: boolean }
+
+  /api/config/status:
+    get:
+      tags: [Health]
+      summary: Effective state of each setting
+      description: |
+        What each setting is actually doing right now, not merely what the
+        environment says. Enforcement mode, for example, resolves through the
+        config file, then the environment, then the default, and this endpoint
+        reports the winner. Secrets are masked.
+      responses:
+        '200':
+          description: Setting status list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:            { type: string }
+                        category:       { type: string }
+                        description:    { type: string }
+                        isSet:          { type: boolean }
+                        effectiveValue: { type: string }
+                        enabled:        { type: boolean }
+                        state:          { type: string, enum: [active, default, off, caution] }
+                        detail:         { type: string }
+
+  /api/demo/clear:
+    post:
+      tags: [Export]
+      security:
+        - controlToken: []
+      summary: Remove the synthetic demo dataset
+      description: |
+        Deletes only rows whose traceId begins with `demo-`, leaving real
+        telemetry untouched. Unlike `POST /api/reset` this needs no
+        `CLAUDESEC_ALLOW_RESET`, because it cannot destroy captured data. Recorded
+        in the operator audit log.
+      responses:
+        '200':
+          description: Demo rows cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:          { type: string, example: ok }
+                  clearedSpans:    { type: integer }
+                  clearedSessions: { type: integer }
+
+  /api/spans/{spanId}/match:
+    get:
+      tags: [Spans]
+      summary: Where a rule matched inside a span
+      description: |
+        The exact byte range the matching rule fired on, so the UI can highlight
+        the offending text instead of restating the rule label.
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Match location
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spanId:       { type: string }
+                  severity:     { type: string }
+                  matchedLabel: { type: string }
+                  matchedText:  { type: string }
+                  matchStart:   { type: integer }
+                  matchEnd:     { type: integer }
+                  ruleKey:      { type: string }
+        '404':
+          description: Span not found
+
+  /api/graph/mermaid:
+    get:
+      tags: [Graph]
+      summary: Export the graph as Mermaid
+      description: A `flowchart TD` document for pasting into Markdown.
+      parameters:
+        - name: session
+          in: query
+          description: Filter by traceId (session). Omit for all spans.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Mermaid source
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/graph/dot:
+    get:
+      tags: [Graph]
+      summary: Export the graph as Graphviz DOT
+      description: A `digraph` with per-severity fill and border colors.
+      parameters:
+        - name: session
+          in: query
+          description: Filter by traceId (session). Omit for all spans.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: DOT source
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/alerts/{id}:
+    patch:
+      tags: [Alerts]
+      security:
+        - controlToken: []
+      summary: Triage an alert
+      description: |
+        Marks an alert dismissed or a false positive. Passing `fingerprint` equal
+        to the target alert's own fingerprint applies the same verdict to every
+        alert sharing it, which is what the grouped rule view needs so a single
+        decision does not have to be repeated per duplicate.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dismissed:   { type: boolean }
+                fp:          { type: boolean }
+                fingerprint: { type: string, description: Apply to the whole fingerprint group }
+      responses:
+        '200':
+          description: Alert updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '400':
+          description: Neither dismissed nor fp was supplied
+        '404':
+          description: Alert not found
+
+  /api/audit/verify:
+    get:
+      tags: [Audit]
+      summary: Verify the hash chains
+      description: |
+        Recomputes the audit-log, enforcement-log and span hash chains and reports
+        whether each still verifies. A break means rows were altered or removed
+        after the fact. The default span check is windowed; `deep=1` recomputes
+        the whole chain and is correspondingly slower.
+      parameters:
+        - name: deep
+          in: query
+          description: Set to `1` to recompute the full span chain instead of a window
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Verification report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  audit:   { type: object }
+                  enforce: { type: object }
+                  spans:   { type: object }
+                  key:
+                    type: object
+                    properties:
+                      keyId:         { type: string }
+                      algorithm:     { type: string, example: ed25519 }
+                      anchorPresent: { type: boolean }
+                      anchorSigned:  { type: boolean }
+                  anchor:                 { type: object }
+                  backfillComplete:       { type: boolean }
+                  mutableFieldFixComplete:{ type: boolean }
+                  spansFieldCoverage:     { type: object }
+                  limits:                 { type: object }
+                  spanLimits:             { type: object }
+        '500':
+          description: Verification could not complete
+
+  /api/audit/anchor:
+    get:
+      tags: [Audit]
+      summary: Anchor status
+      description: |
+        The current chain anchor without recomputing anything. Cheap enough to
+        poll, unlike `GET /api/audit/verify`.
+      responses:
+        '200':
+          description: Anchor status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  truncationWindowMs: { type: integer }
+
+  /api/audit/public-key:
+    get:
+      tags: [Audit]
+      summary: Ed25519 public key
+      description: |
+        The public half of the signing key, so an evidence pack from
+        `GET /api/governance/evidence` can be verified by someone who does not
+        trust this server. The private key never leaves the host.
+      responses:
+        '200':
+          description: Public key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keyId:        { type: string }
+                  algorithm:    { type: string, example: ed25519 }
+                  publicKeyPem: { type: string }
+                  limits:       { type: object }
+        '503':
+          description: No signing key available on this install
+
+  /api/bookmarks:
+    get:
+      tags: [Bookmarks]
+      summary: List bookmarks
+      description: Bookmarks joined onto their spans. Without `session`, the 200 most recent.
+      parameters:
+        - name: session
+          in: query
+          description: Filter by traceId (session)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Bookmark list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookmarks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:        { type: integer }
+                        spanId:    { type: string }
+                        traceId:   { type: string }
+                        note:      { type: string }
+                        createdAt: { type: string }
+                        spanName:  { type: string, nullable: true }
+                        severity:  { type: string, nullable: true }
+                        harness:   { type: string, nullable: true }
+    post:
+      tags: [Bookmarks]
+      security:
+        - controlToken: []
+      summary: Create a bookmark
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spanId]
+              properties:
+                spanId:  { type: string }
+                traceId: { type: string }
+                note:    { type: string }
+      responses:
+        '201':
+          description: Bookmark created
+        '400':
+          description: spanId is required
+
+  /api/bookmarks/{id}:
+    patch:
+      tags: [Bookmarks]
+      security:
+        - controlToken: []
+      summary: Edit a bookmark note
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string }
+      responses:
+        '200':
+          description: Note updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '400':
+          description: note is required
+        '404':
+          description: Bookmark not found
+    delete:
+      tags: [Bookmarks]
+      security:
+        - controlToken: []
+      summary: Delete a bookmark
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Bookmark deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Bookmark not found
+
+  /api/bookmarks/span/{spanId}:
+    delete:
+      tags: [Bookmarks]
+      security:
+        - controlToken: []
+      summary: Unbookmark a span
+      description: |
+        The toggle-off counterpart to `POST /api/bookmarks`. Succeeds whether or
+        not a bookmark existed, so a double-click cannot produce a spurious error.
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Bookmark removed, or none existed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+
+  /api/costs:
+    get:
+      tags: [Costs]
+      summary: Cost rollup
+      description: |
+        Token spend by model and session against the current pricing table.
+        `rawTotalTokensIn` is the unfiltered sum; `excludedUnreliableInputTokens`
+        and `unreliableInputRows` account for rows whose reported input counts
+        cannot be trusted, so a total and its caveats arrive together.
+      responses:
+        '200':
+          description: Cost rollup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rawTotalTokensIn:              { type: integer }
+                  excludedUnreliableInputTokens: { type: integer }
+                  unreliableInputRows:           { type: integer }
+                  sessions:                      { type: array, items: { type: object } }
+                  pricingTable:                  { type: array, items: { type: object } }
+
+  /api/db-stats:
+    get:
+      tags: [Retention]
+      summary: Database size and retention posture
+      description: |
+        Row counts and on-disk size, plus what retention will actually deliver at
+        this install's measured ingest rate. `effective.limitingFactor` names
+        whichever of the day window or the span ceiling binds first, which is the
+        number that matters when someone asks how far back the record goes.
+      responses:
+        '200':
+          description: Database statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spansTotal:       { type: integer }
+                  sessionsTotal:    { type: integer }
+                  alertsTotal:      { type: integer }
+                  dbSizeBytes:      { type: integer }
+                  dbSizeHuman:      { type: string }
+                  oldestSession:    { type: string, nullable: true }
+                  newestSession:    { type: string, nullable: true }
+                  retentionConfig:  { type: object }
+                  retentionProfiles: { type: array, items: { type: object } }
+
+  /api/db-stats/prune:
+    post:
+      tags: [Retention]
+      security:
+        - controlToken: []
+      summary: Prune now
+      description: Applies the configured retention limits immediately instead of waiting for the next sweep.
+      responses:
+        '200':
+          description: Prune complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/db-stats/retention:
+    post:
+      tags: [Retention]
+      security:
+        - controlToken: []
+      summary: Set retention
+      description: |
+        Either name a `profile`, which sets the day window and the span ceiling
+        together, or set `maxSpans` and `retentionDays` directly. Recorded in the
+        operator audit log, because shortening retention destroys evidence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile:       { type: string, description: A profile id, or `custom` to use the two values below }
+                maxSpans:      { type: integer, minimum: 100 }
+                retentionDays: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Retention updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:        { type: string, example: ok }
+                  profile:       { type: string }
+                  maxSpans:      { type: integer }
+                  retentionDays: { type: integer }
+                  effective:     { type: object }
+                  warning:       { type: string }
+        '400':
+          description: Unknown profile, or maxSpans below 100 / retentionDays below 1
+
+  /api/db-stats/retention/profiles:
+    get:
+      tags: [Retention]
+      summary: Retention profiles
+      description: |
+        The available profiles and what each would actually deliver here.
+        `deliversDays` is measured against this install's ingest rate, so a
+        400-day profile on a busy host may report far fewer. `null` means unbounded.
+      responses:
+        '200':
+          description: Profile list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current:     { type: string }
+                  spansPerDay: { type: number }
+                  profiles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:           { type: string }
+                        label:        { type: string }
+                        days:         { type: integer, nullable: true }
+                        maxSpans:     { type: integer, nullable: true }
+                        summary:      { type: string }
+                        active:       { type: boolean }
+                        deliversDays: { type: integer, nullable: true }
+
+  /api/enforce/impact:
+    get:
+      tags: [Enforcement]
+      summary: Preview what enforce mode would block
+      description: |
+        Replays historical spans against the compiled block set and reports what
+        switching to `enforce` would have stopped. Strictly read-only: it opens no
+        transaction, writes no row, and never touches the enforcement control
+        plane, so it is safe to run before committing to the mode. Results are
+        memoized for 60 seconds per window. Read `caveats` before quoting the
+        numbers.
+      parameters:
+        - name: days
+          in: query
+          description: Look-back window in days. Default 30, capped at 400.
+          schema:
+            type: integer
+            default: 30
+            maximum: 400
+      responses:
+        '200':
+          description: Impact preview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window:
+                    type: object
+                    properties:
+                      days:    { type: integer }
+                      sinceMs: { type: integer }
+                  blockRulesCompiled: { type: integer }
+                  effectiveMode:      { type: string, enum: [monitor, enforce] }
+                  timing:
+                    type: object
+                    properties:
+                      totalMs: { type: number }
+                      pages:   { type: integer }
+                  computedAtMs: { type: integer }
+                  cached:       { type: boolean }
+                  caveats:      { type: array, items: { type: string } }
+        '500':
+          description: Preview failed
+
+  /api/governance/policies:
+    get:
+      tags: [Governance]
+      summary: Control coverage snapshot
+      description: |
+        Each policy statement with the evidence behind it: the backing rules, the
+        enforcement class, and whether the data needed to support the claim is
+        actually held for the requested window. `coverage.dataHeld.warning` fires
+        when retention is shorter than the period being reported on, which is the
+        difference between a supported claim and an unsupported one.
+      parameters:
+        - name: days
+          in: query
+          description: Reporting window in days
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Coverage snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generatedAt: { type: string }
+                  period:
+                    type: object
+                    properties:
+                      days: { type: integer }
+                      from: { type: string }
+                      to:   { type: string }
+                  coverage:          { type: object }
+                  policies:          { type: array, items: { type: object } }
+                  frameworkCoverage: { type: object }
+        '500':
+          description: Snapshot failed
+
+  /api/governance/evidence:
+    get:
+      tags: [Governance]
+      summary: Download a signed evidence pack
+      description: |
+        A single JSON file containing the coverage manifest, a Markdown summary,
+        and CSV extracts of the alert, enforcement and audit records for the
+        window. The Ed25519 signature covers the canonicalized bundle, so an
+        auditor can verify it with the key from `GET /api/audit/public-key`
+        without trusting this server. `verification.reason` explains any pack that
+        could not be signed.
+      parameters:
+        - name: days
+          in: query
+          description: Reporting window in days
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Evidence pack (file download)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  manifest:        { type: object }
+                  summaryMarkdown: { type: string }
+                  alertsCsv:       { type: string }
+                  enforceCsv:      { type: string }
+                  auditCsv:        { type: string }
+                  verification:
+                    type: object
+                    properties:
+                      signed:            { type: boolean }
+                      algorithm:         { type: string, example: ed25519 }
+                      keyId:             { type: string }
+                      signature:         { type: string }
+                      reason:            { type: string }
+                      publicKeyEndpoint: { type: string, example: /api/audit/public-key }
+                      howToVerify:       { type: string }
+        '500':
+          description: Pack generation failed
+
+  /api/heatmap:
+    get:
+      tags: [Graph]
+      summary: Activity heatmap
+      description: |
+        Span and threat counts bucketed by hour. The default groups by weekday;
+        `mode=calendar` returns the last 14 calendar days. Buckets are computed in
+        the server's local time, so the grid lines up with the operator's day.
+      parameters:
+        - name: mode
+          in: query
+          description: Set to `calendar` for a 14-day grid instead of a weekday grid
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Heatmap grid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode:       { type: string, example: calendar }
+                  days:       { type: array, items: { type: string } }
+                  grid:       { type: array, items: { type: array, items: { type: object } } }
+                  maxThreats: { type: integer }
+                  maxSpans:   { type: integer }
+                  totalSpans: { type: integer }
+
+  /api/mcp-scan:
+    get:
+      tags: [MCP]
+      summary: Scan configured MCP servers
+      description: |
+        Inspects the MCP server definitions on this machine for risky
+        configuration. The scan only reads files; it never launches a server and
+        never writes to anything it scanned. Results are cached for 30 seconds.
+      parameters:
+        - name: force
+          in: query
+          description: Set to `1` or `true` to bypass the cache
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Scan result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cached: { type: boolean }
+        '500':
+          description: Scan failed
+
+  /api/repos:
+    get:
+      tags: [Sessions]
+      summary: Per-repository rollup
+      description: |
+        Activity and health grouped by repository. Spans recorded before the
+        repository field existed, or whose working directory was scrubbed, land in
+        a bucket named `unknown`; that is expected rather than a fault. Critical
+        findings are counted in `threatHigh`.
+      responses:
+        '200':
+          description: Repository rollup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repos:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        repo:         { type: string }
+                        spanCount:    { type: integer }
+                        sessionCount: { type: integer }
+                        harnesses:    { type: string, nullable: true }
+                        threatHigh:   { type: integer }
+                        threatMedium: { type: integer }
+                        threatLow:    { type: integer }
+                        firstSeen:    { type: string }
+                        lastSeen:     { type: string }
+                        healthScore:  { type: integer }
+                        grade:        { type: string }
+
+  /api/processes:
+    get:
+      tags: [Processes]
+      summary: List agent processes
+      description: |
+        Agent processes visible on this host, each with the recent sessions it can
+        be tied to. `supported` is false on Windows, where the scan is unavailable.
+      responses:
+        '200':
+          description: Process list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processes: { type: array, items: { type: object } }
+                  total:     { type: integer }
+                  scannedAt: { type: string }
+                  platform:  { type: string }
+                  supported: { type: boolean }
+
+  /api/processes/{pid}:
+    delete:
+      tags: [Processes]
+      security:
+        - controlToken: []
+      summary: Terminate an agent process
+      description: |
+        Sends SIGTERM. The PID must appear in the current agent-process scan; any
+        other PID is refused with 403, so this cannot be used as a general
+        process-kill primitive.
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Signal sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean }
+                  pid:    { type: integer }
+                  signal: { type: string, example: SIGTERM }
+        '400':
+          description: Invalid PID
+        '403':
+          description: The PID is not a scanned agent process, or the OS refused the signal
+        '404':
+          description: No such process
+        '501':
+          description: Not supported on Windows
+
+  /api/protected-paths:
+    get:
+      tags: [Enforcement]
+      summary: List protected paths
+      responses:
+        '200':
+          description: Protected path list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protectedPaths: { type: array, items: { type: object } }
+    post:
+      tags: [Enforcement]
+      security:
+        - controlToken: []
+      summary: Protect a path
+      description: |
+        Adds a path the enforcement hook refuses to write. Symlinks are resolved at
+        add time and the target is stored alongside the original, so protecting a
+        link cannot be sidestepped by writing through its real path. Recorded in
+        the operator audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:  { type: string, maxLength: 4096 }
+                label: { type: string }
+      responses:
+        '201':
+          description: Path protected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:        { type: string }
+                  path:      { type: string }
+                  label:     { type: string }
+                  createdAt: { type: string }
+                  forms:     { type: array, items: { type: string }, description: Every spelling that matches, including the resolved symlink target }
+        '400':
+          description: path is missing, empty, or longer than 4096 characters
+        '409':
+          description: The path is already protected
+
+  /api/protected-paths/{id}:
+    delete:
+      tags: [Enforcement]
+      security:
+        - controlToken: []
+      summary: Stop protecting a path
+      description: Recorded in the operator audit log, since it weakens enforcement.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Path removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Protected path not found
+
+  /api/search:
+    get:
+      tags: [Spans]
+      summary: Filtered span search
+      parameters:
+        - name: q
+          in: query
+          description: Free-text query
+          schema: { type: string }
+        - name: severity
+          in: query
+          schema: { type: string }
+        - name: harness
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Start of the time range
+          schema: { type: string }
+        - name: to
+          in: query
+          description: End of the time range
+          schema: { type: string }
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spans: { type: array, items: { $ref: '#/components/schemas/SpanRecord' } }
+                  total: { type: integer }
+                  page:  { type: integer }
+                  pages: { type: integer }
+                  query: { type: string }
+        '400':
+          description: Malformed search input
+
+  /api/search/export:
+    get:
+      tags: [Export]
+      summary: Export search results
+      description: The same filters as `GET /api/search`, unpaged, as a file download capped at 5000 spans.
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: severity
+          in: query
+          schema: { type: string }
+        - name: harness
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Export file
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exportedAt: { type: string }
+                  query:      { type: string }
+                  count:      { type: integer }
+                  spans:      { type: array, items: { $ref: '#/components/schemas/SpanRecord' } }
+
+  /api/search/fts:
+    get:
+      tags: [Spans]
+      summary: Full-text span search
+      description: |
+        SQLite FTS5 search over the span mirror. Each whitespace-separated term
+        becomes a prefix match, so typing continues to narrow results as it is
+        entered. Queries under two characters return nothing rather than the whole
+        corpus.
+      parameters:
+        - name: q
+          in: query
+          description: Query string, minimum 2 characters
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spans: { type: array, items: { $ref: '#/components/schemas/SpanRecord' } }
+                  total: { type: integer }
+                  query: { type: string }
+        '400':
+          description: Invalid FTS query
+
+  /api/sessions/compare:
+    get:
+      tags: [Sessions]
+      summary: Compare two sessions
+      description: |
+        Side-by-side statistics for two sessions. Token totals use the deduped,
+        cache-aware basis rather than raw span sums, so the comparison is not
+        skewed by prompt-cache reads. Critical findings are counted in `threatHigh`.
+      parameters:
+        - name: a
+          in: query
+          required: true
+          description: First traceId
+          schema: { type: string }
+        - name: b
+          in: query
+          required: true
+          description: Second traceId, distinct from `a`
+          schema: { type: string }
+      responses:
+        '200':
+          description: Comparison
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  a: { type: object }
+                  b: { type: object }
+        '400':
+          description: Two distinct traceId values are required
+        '404':
+          description: One or both sessions not found
+
+  /api/sessions/{traceId}/health:
+    get:
+      tags: [Sessions]
+      summary: Session health score
+      description: The score, its letter grade, and the breakdown that produced it.
+      parameters:
+        - name: traceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Health score
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  score:     { type: integer }
+                  grade:     { type: string }
+                  breakdown: { type: object }
+        '404':
+          description: Session not found
+
+  /api/sessions/{traceId}/report:
+    get:
+      tags: [Export]
+      summary: Download a session incident report
+      description: |
+        A self-contained HTML report for one session: the span table, the alerts
+        it raised, and token totals on the deduped basis. No external assets, so it
+        renders from a file share or an email attachment.
+      parameters:
+        - name: traceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: HTML report (file download)
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          description: Session not found
+
+  /api/spans/{spanId}/annotations:
+    get:
+      tags: [Annotations]
+      summary: List span annotations
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Annotation list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  annotations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:        { type: integer }
+                        spanId:    { type: string }
+                        text:      { type: string }
+                        author:    { type: string }
+                        createdAt: { type: string }
+    post:
+      tags: [Annotations]
+      security:
+        - controlToken: []
+      summary: Annotate a span
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:   { type: string }
+                author: { type: string, default: analyst }
+      responses:
+        '201':
+          description: Annotation created
+        '400':
+          description: text is required
+
+  /api/spans/{spanId}/annotations/{id}:
+    delete:
+      tags: [Annotations]
+      security:
+        - controlToken: []
+      summary: Delete an annotation
+      description: Scoped by both the annotation id and the span, so an id alone cannot delete another span's note.
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Annotation deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Annotation not found on this span
+
+  /api/spans/{spanId}/tags:
+    get:
+      tags: [Annotations]
+      summary: List span tags
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags: { type: array, items: { type: string } }
+    post:
+      tags: [Annotations]
+      security:
+        - controlToken: []
+      summary: Tag a span
+      description: |
+        Tags are normalized before storage: lowercased, restricted to
+        `a-z 0-9 _ : . -`, and truncated to 64 characters. The response returns the
+        stored form, which may differ from what was sent.
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              properties:
+                tag: { type: string }
+      responses:
+        '201':
+          description: Tag added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tag: { type: string, description: The normalized form actually stored }
+        '400':
+          description: tag is missing, or contains no valid characters after normalization
+        '409':
+          description: The span already carries this tag
+
+  /api/spans/{spanId}/tags/{tag}:
+    delete:
+      tags: [Annotations]
+      security:
+        - controlToken: []
+      summary: Remove a span tag
+      parameters:
+        - name: spanId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: tag
+          in: path
+          required: true
+          description: Matched against the normalized (lowercased) form
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tag removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Tag not found on this span
+
+  /api/suppressions:
+    get:
+      tags: [Rules]
+      summary: List active suppressions
+      description: Only suppressions that have not yet expired are returned.
+      responses:
+        '200':
+          description: Suppression list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suppressions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:            { type: integer }
+                        ruleKey:       { type: string }
+                        suppressUntil: { type: string }
+                        reason:        { type: string }
+                        createdAt:     { type: string }
+    post:
+      tags: [Rules]
+      security:
+        - controlToken: []
+      summary: Suppress a rule temporarily
+      description: |
+        Silences one rule until `now + durationMs`. Suppressions expire on their
+        own rather than persisting silently, and every create is recorded in the
+        operator audit log, because a suppressed rule is a detection gap.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ruleKey, durationMs]
+              properties:
+                ruleKey:    { type: string }
+                durationMs: { type: integer, minimum: 1 }
+                reason:     { type: string }
+      responses:
+        '201':
+          description: Suppression created
+        '400':
+          description: ruleKey is missing, or durationMs is not greater than zero
+
+  /api/suppressions/{id}:
+    delete:
+      tags: [Rules]
+      security:
+        - controlToken: []
+      summary: Lift a suppression
+      description: Recorded in the operator audit log.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Suppression removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Suppression not found
+
+  /api/threshold-rules:
+    get:
+      tags: [Rules]
+      summary: List threshold rules
+      description: Rules that alert on an aggregate crossing a bound, rather than on a single span's text.
+      responses:
+        '200':
+          description: Threshold rule list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:         { type: integer }
+                        name:       { type: string }
+                        metric:     { type: string }
+                        operator:   { type: string }
+                        value:      { type: number }
+                        window_min: { type: integer }
+                        enabled:    { type: boolean }
+                        createdAt:  { type: string }
+    post:
+      tags: [Rules]
+      security:
+        - controlToken: []
+      summary: Create a threshold rule
+      description: Recorded in the operator audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, metric, operator, value]
+              properties:
+                name:     { type: string }
+                metric:   { type: string, enum: [tokens_in, tokens_out, threat_count, span_count, high_threat_count] }
+                operator: { type: string, enum: ['>', '>=', '<', '<=', '='] }
+                value:    { type: number }
+                window_min: { type: integer, default: 60 }
+                enabled:    { type: boolean, default: true }
+      responses:
+        '201':
+          description: Rule created
+        '400':
+          description: A required field is missing, or metric/operator is not one of the accepted values
+
+  /api/threshold-rules/{id}:
+    patch:
+      tags: [Rules]
+      security:
+        - controlToken: []
+      summary: Enable or disable a threshold rule
+      description: |
+        `enabled` is the only mutable field. Changing a rule's bound means creating
+        a new rule, so the history of what was in force stays readable. Recorded in
+        the operator audit log.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Rule updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '400':
+          description: enabled is required
+        '404':
+          description: Rule not found
+    delete:
+      tags: [Rules]
+      security:
+        - controlToken: []
+      summary: Delete a threshold rule
+      description: Recorded in the operator audit log.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Rule deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '404':
+          description: Rule not found
+
+  /api/webhook:
+    get:
+      tags: [Webhooks]
+      summary: Webhook status
+      description: |
+        Whether an outbound webhook is configured, and a masked preview of its URL.
+        The full URL is never returned, because it commonly carries a token in its
+        path.
+      responses:
+        '200':
+          description: Webhook status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:  { type: boolean }
+                  urlPreview:  { type: string, nullable: true }
+                  threshold:   { type: string }
+                  envOverride: { type: boolean }
+    post:
+      tags: [Webhooks]
+      security:
+        - controlToken: []
+      summary: Configure the webhook
+      description: |
+        The URL is checked by the DNS-resolving SSRF guard before it is stored, so
+        a hostname that resolves to a private or link-local address is rejected
+        rather than turned into an outbound request from inside the network. The
+        audit-log entry records only the redacted URL. Returns 409 when
+        `CLAUDESEC_WEBHOOK_URL` is set, since the environment owns the value then.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:       { type: string }
+                threshold: { type: string, enum: [low, medium, high, critical] }
+      responses:
+        '200':
+          description: Webhook saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:     { type: string, example: ok }
+                  urlPreview: { type: string }
+                  threshold:  { type: string }
+        '400':
+          description: url is required, or the SSRF guard rejected the target
+        '409':
+          description: CLAUDESEC_WEBHOOK_URL is set; manage the webhook through the environment
+    delete:
+      tags: [Webhooks]
+      security:
+        - controlToken: []
+      summary: Remove the webhook
+      description: Recorded in the operator audit log.
+      responses:
+        '200':
+          description: Webhook removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+        '409':
+          description: CLAUDESEC_WEBHOOK_URL is set; manage the webhook through the environment
+
+  /api/webhook/test:
+    post:
+      tags: [Webhooks]
+      security:
+        - controlToken: []
+      summary: Send a test alert
+      description: Delivers a synthetic high-severity alert so the receiving end can be confirmed before a real one fires.
+      responses:
+        '200':
+          description: Test delivered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  url:    { type: string, description: Masked }
+        '404':
+          description: No webhook URL configured
+
+  /api/webhook-deliveries:
+    get:
+      tags: [Webhooks]
+      summary: Delivery history
+      description: Per-attempt outcome for recent webhook deliveries, so a silent integration failure is visible.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        '200':
+          description: Delivery list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:            { type: integer }
+                        ruleLabel:     { type: string }
+                        severity:      { type: string }
+                        status:        { type: string }
+                        httpCode:      { type: integer, nullable: true }
+                        latencyMs:     { type: integer, nullable: true }
+                        error:         { type: string, nullable: true }
+                        attempts:      { type: integer }
+                        lastAttemptAt: { type: string }
+                  total: { type: integer }
+    delete:
+      tags: [Webhooks]
+      security:
+        - controlToken: []
+      summary: Clear the delivery history
+      responses:
+        '200':
+          description: History cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOk'
+
+  /api/webhook-deliveries/{id}/retry:
+    post:
+      tags: [Webhooks]
+      security:
+        - controlToken: []
+      summary: Retry a failed delivery
+      description: |
+        The SSRF guard runs again on retry rather than trusting the check made when
+        the webhook was saved, because DNS may have been repointed in between. A
+        blocked retry is recorded as a failure on the delivery row. Every attempt
+        increments `attempts`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Retry attempted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:   { type: string, enum: [success, failed] }
+                  httpCode: { type: integer, nullable: true }
+        '400':
+          description: The SSRF guard rejected the target on retry
+        '404':
+          description: Delivery not found
+        '409':
+          description: That delivery already succeeded
+        '502':
+          description: The receiving end could not be reached
+        '503':
+          description: No webhook URL configured
+
 components:
+  securitySchemes:
+    controlToken:
+      type: http
+      scheme: bearer
+      description: |
+        The control-plane credential for mutations. Present the pairing key from
+        `~/.claudesec/hooks/control-token` as `Authorization: Bearer <key>`, or
+        in any of the equivalent slots the gate reads: the `X-Api-Key` header,
+        the `X-Claudesec-Token` header, the `claudesec_ct` cookie (which the
+        paired browser sends automatically and which holds an HMAC of the key
+        rather than the key itself), or a `?token=` query parameter.
+        `CLAUDESEC_TOKEN` is accepted in all of the same places.
+
   schemas:
     StatusOk:
       type: object
