@@ -9,7 +9,7 @@
 //   CORE_SEVERITY_RULES  — the ~194 hand-authored core rule literals (no EXTRA spread).
 //                          Used by tests/ruleSelfTest.ts to dedup EXTRA rules against
 //                          core built-ins only.
-//   SEVERITY_RULES       — combined array (core + EXTRA), length ~671.
+//   SEVERITY_RULES       — combined array (core + EXTRA), length ~673.
 //                          Used by server/index.ts, scripts/build-enforcement-rules.ts,
 //                          and any consumer that needs the full rule set.
 
@@ -146,16 +146,42 @@ export const CORE_SEVERITY_RULES: SeverityRule[] = [
   // guard script's own fixture — refusing those refuses reading and reviewing
   // schema work, which is most of what schema work is.
   //
-  // So the act blocks and the mention alerts. This first rule is the act: a
-  // database client on the command line with a destructive statement behind it,
-  // which is the shape every real drop took (`psql … -c "DROP TABLE …"`, a
-  // heredoc into `docker exec … psql`, `sqlite3 db "TRUNCATE …"`). The left
-  // boundary is `[^\w-]` rather than `\b` so the `sqlite3` inside
-  // `better-sqlite3` — a dependency name, not an invocation — does not qualify.
-  // `TRUNCATE` is also the name of a Postgres PRIVILEGE, so `GRANT TRUNCATE ON
-  // …` and `REVOKE TRUNCATE ON …` — routine, and the opposite of destructive —
-  // must not be read as the statement. The target cannot be `ON` or `FROM`.
-  { pattern: /(?:^|[^\w-])(?:psql|mysql|mariadb|sqlite3|mongosh|clickhouse-client|cockroach|sqlcmd|pgcli|mycli|supabase\s+db|prisma\s+db)\b[^\n]{0,400}\b(?:DROP\s+(?:TABLE|DATABASE|SCHEMA|KEYSPACE)\b|TRUNCATE\s+(?:TABLE\s+)?(?!ON\b|FROM\b)\w)/i, severity: 'high', label: 'SQL destructive statement executed through a database client' },
+  // So the act blocks and the mention alerts. This first rule is the act in its
+  // commonest shape: a database client and its destructive statement on ONE
+  // line (`psql … -c "DROP TABLE …"`, `sqlite3 db "TRUNCATE …"`). It cannot see
+  // the other two shapes, because `[^\n]` stops at the end of the line and the
+  // client is not always on the left:
+  //   • the statement arrives on stdin  — `echo "DROP TABLE x;" | psql …`
+  //   • the statement arrives by heredoc — `psql … <<'SQL'` then the body
+  // Those are severityRulesExtra.ts's `SQL destructive statement piped into a
+  // database client` and `… fed to a database client by heredoc`. All three
+  // carry the same tier because they are the same act; only the plumbing differs.
+  //
+  // Four boundary conditions, each paid for by a real false denial:
+  //   • The left boundary is `[^\w|-]`, not `\b`. `-` keeps the `sqlite3` inside
+  //     `better-sqlite3` — a dependency name, not an invocation — from
+  //     qualifying; `|` keeps a client NAMED INSIDE a grep alternation
+  //     (`grep -E "…|psql|drop table…"`) from qualifying, which is a search, not
+  //     a session. A real shell pipe puts a space before the client, so
+  //     `… | psql` is unaffected.
+  //   • `TRUNCATE` is also the name of a Postgres PRIVILEGE, so `GRANT TRUNCATE
+  //     ON …` and `REVOKE TRUNCATE ON …` — routine, and the opposite of
+  //     destructive — must not be read as the statement. The target cannot be
+  //     `ON` or `FROM`.
+  //   • The statement may not be preceded by `%`. `'%DROP TABLE%'` is a LIKE
+  //     pattern; the one place it shows up is a read-only query COUNTING
+  //     destructive commands, which is the purest mention there is.
+  //   • `supabase db` and `prisma db` are not in the client list. Neither takes
+  //     a raw SQL statement as an argument, so the token can only ever
+  //     co-occur with a mention — and it did, matching a design note that
+  //     quoted `supabase db diff` output 287 characters above a DDL example.
+  //
+  // DELETE and DROP COLUMN join DROP and TRUNCATE here, but only in the shape
+  // that destroys everything. `DELETE FROM t;` with no WHERE is a table wipe;
+  // `DELETE FROM t WHERE id = …` is how test rows get cleaned up, and it is 48
+  // of the 64 client-side deletes in local history. Scoping a delete is the
+  // operator saying which rows they meant, so a scoped delete never blocks.
+  { pattern: /(?:^|[^\w|-])(?:psql|mysql|mariadb|sqlite3|mongosh|clickhouse-client|cockroach|sqlcmd|pgcli|mycli)\b[^\n]{0,400}(?:^|[^\w\n%])(?:DROP\s+(?:TABLE|DATABASE|SCHEMA|KEYSPACE)\b|TRUNCATE\s+(?:TABLE\s+)?(?!ON\b|FROM\b)\w|ALTER\s+TABLE\s+[^;\n]{1,120}\bDROP\s+COLUMN\b|DELETE\s+FROM\s+[\w."\[\]`]{1,80}\s*;|DELETE\s+FROM\s+[\w.\[\]`]{1,80}\s*["'](?:\s|[;&|)]|$))/i, severity: 'high', label: 'SQL destructive statement executed through a database client' },
   // …and these are the mention: still detected, still on the record, but at the
   // alert tier, because a keyword in a search pattern is not a dropped table.
   { pattern: /DROP\s+(TABLE|DATABASE|SCHEMA)/i,             severity: 'medium', label: 'SQL destructive operation' },
@@ -509,7 +535,7 @@ export const CORE_SEVERITY_RULES: SeverityRule[] = [
 
 ];
 
-// Combined rule set: CORE built-ins + EXTRA expansion rules (~671 total).
+// Combined rule set: CORE built-ins + EXTRA expansion rules (~673 total).
 // This is the array used by server/index.ts and scripts/build-enforcement-rules.ts.
 export const SEVERITY_RULES: SeverityRule[] = [
   ...CORE_SEVERITY_RULES,

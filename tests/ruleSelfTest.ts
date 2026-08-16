@@ -642,6 +642,21 @@ const BENIGN: string[] = [
   'pg_restore --clean --if-exists -d appdb backup.dump',
   'sqlite3 app.db ".schema users"',
   'sqlite3 -header -column app.db "SELECT id, email FROM users LIMIT 10;"',
+  // A DELETE the operator has SCOPED is them saying which rows they meant, and
+  // it is how test fixtures and stale rows get cleaned up — 48 of the 64
+  // client-side deletes in local history look like these two. Only the
+  // unrestricted, whole-table form is the destructive act.
+  'psql "$DB" -c "DELETE FROM sessions WHERE created_at < now() - interval \'7 days\';"',
+  'docker exec -i pg psql -U postgres -c "DELETE FROM archived_rows WHERE id = 42;"',
+  // Running a migration FILE names no statement at all; the client rules read
+  // the command text, and there is nothing destructive in it to read.
+  'psql "$DB" -f supabase/migrations/0042_drop_legacy.sql',
+  // A heredoc into a read-only client that COUNTS destructive commands. The
+  // keyword lives inside a LIKE pattern, which is the purest mention there is.
+  'sqlite3 "file:$HOME/app.db?mode=ro" <<\'SQL\'\nSELECT SUM(command LIKE \'%DROP TABLE%\') AS drops FROM audit;\nSQL',
+  // A grep whose BRE alternation happens to name a database client next to a
+  // destructive keyword. `\\|` is alternation, not a shell pipe.
+  'grep -n -i "drop table\\|truncate\\|psql" server/rules.ts | head -20',
   'CREATE INDEX CONCURRENTLY idx_users_email ON users (email);',
   'ALTER TABLE orders ADD COLUMN shipped_at timestamptz;',
   'CREATE TABLE IF NOT EXISTS audit_log (id bigserial primary key);',
@@ -875,6 +890,18 @@ const EXPECTED_BENIGN_MATCHES: Record<string, BenignAllowance> = {
       'Residual after the drop from high to medium: still fires on prose, but ' +
       'now only alerts. The anchored eval rules in severityRulesExtra.ts (decode-' +
       'then-eval, fetch-then-eval, char-code obfuscation) carry the blocking tier.',
+  },
+  'SQL destructive operation': {
+    strings: [
+      'sqlite3 "file:$HOME/app.db?mode=ro" <<\'SQL\'\nSELECT SUM(command LIKE \'%DROP TABLE%\') AS drops FROM audit;\nSQL',
+      'grep -n -i "drop table\\|truncate\\|psql" server/rules.ts | head -20',
+    ],
+    why:
+      'Correct, and the whole point of the act/mention split: the unanchored ' +
+      'keyword matcher is SUPPOSED to see these and record them at the alert ' +
+      'tier. Both strings are in the corpus to prove the three client-anchored ' +
+      'rules — same-line, piped and heredoc — do NOT block them. If either one ' +
+      'ever reports high, a blocking rule has re-broadened into keyword matching.',
   },
   'Environment variable access': {
     strings: [
@@ -1451,6 +1478,43 @@ async function main(): Promise<void> {
     // revoking it is the opposite of destroying data.
     { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -c "REVOKE TRUNCATE ON public.audit_logs FROM authenticated;"', shouldMatch: false },
     { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -c "GRANT TRUNCATE ON public.events TO app_owner;"', shouldMatch: false },
+    // A client NAMED INSIDE a grep alternation is a search, not a session. This
+    // shipped as a false denial: `\|psql\|drop table` inside one quoted pattern
+    // put a client and a keyword within the same 400 characters.
+    { label: 'SQL destructive statement executed through a database client', cmd: 'grep -rn "supabase\\|psql\\|drop table" docs/ | head -20', shouldMatch: false },
+    // Running a migration FILE names no statement — nothing to read, nothing to
+    // refuse. Reviewing schema work must stay possible.
+    { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -f supabase/migrations/0042_drop_legacy.sql', shouldMatch: false },
+    // DELETE and DROP COLUMN, on the same act/mention line. A SCOPED delete is
+    // routine cleanup and must not be refused; an unrestricted one is a wipe.
+    { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -c "DELETE FROM sessions WHERE created_at < now() - interval \'7 days\';"', shouldMatch: false },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -c "DELETE FROM public.users WHERE id = 42"', shouldMatch: false },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'rg "ALTER TABLE .* DROP COLUMN" supabase/migrations/', shouldMatch: false },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'psql -c "DELETE FROM users;"', shouldMatch: true },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -c "DELETE FROM users"', shouldMatch: true },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'sqlite3 app.db "DELETE FROM public.events ;"', shouldMatch: true },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'psql "$DB" -c "ALTER TABLE users DROP COLUMN email;"', shouldMatch: true },
+    { label: 'SQL destructive statement executed through a database client', cmd: 'mysql -u root -e "ALTER TABLE users DROP COLUMN email"', shouldMatch: true },
+
+    // The statement on stdin. The client is to the RIGHT of it, so the same-line
+    // rule above reads past the statement and never sees the client.
+    { label: 'SQL destructive statement piped into a database client', cmd: 'grep -n -i "drop table\\|truncate\\|DELETE FROM\\|psql" server/rules.ts | head -60', shouldMatch: false },
+    { label: 'SQL destructive statement piped into a database client', cmd: 'grep -rn "DROP TABLE" migrations/ | grep psql', shouldMatch: false },
+    { label: 'SQL destructive statement piped into a database client', cmd: 'echo "DROP TABLE x;" | psql "$DB"', shouldMatch: true },
+    { label: 'SQL destructive statement piped into a database client', cmd: 'echo "TRUNCATE TABLE events;" | psql -U postgres app', shouldMatch: true },
+    { label: 'SQL destructive statement piped into a database client', cmd: 'printf \'DELETE FROM users;\' | docker exec -i pg psql -U postgres', shouldMatch: true },
+
+    // The statement on a later line. This is the one shape that has to cross the
+    // newline, and it earns that by requiring the heredoc operator on the
+    // client's own line.
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'sqlite3 "file:$HOME/app.db?mode=ro" <<\'SQL\'\nSELECT SUM(command LIKE \'%DROP TABLE%\') AS drops FROM audit;\nSQL', shouldMatch: false },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'cat > notes.md <<\'EOF\'\nThe migration will DROP TABLE legacy_users; run psql afterwards.\nEOF', shouldMatch: false },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'psql "$DB" <<\'SQL\'\nDELETE FROM sessions WHERE created_at < now();\nSQL', shouldMatch: false },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'psql "$DB" <<EOF\nDROP TABLE users;\nEOF', shouldMatch: true },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'psql "$DB" <<\'SQL\'\nTRUNCATE TABLE events;\nSQL', shouldMatch: true },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'docker exec -i db psql -U postgres <<EOF\nDELETE FROM users;\nEOF', shouldMatch: true },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'sqlite3 app.db <<-SQL\n  ALTER TABLE t DROP COLUMN c;\nSQL', shouldMatch: true },
+    { label: 'SQL destructive statement fed to a database client by heredoc', cmd: 'docker exec -i pg psql -U postgres -v ON_ERROR_STOP=1 <<\'SQL\' 2>&1\n-- undo the partial migration\nDROP TABLE IF EXISTS _probe_backup;\nSQL', shouldMatch: true },
 
     // 'curl pipe to node' — the EXTRA twin of the python rule. All ten matches
     // were `| node -e '…JSON.parse(d)…'`, which reads the download as data.
@@ -1547,6 +1611,11 @@ async function main(): Promise<void> {
     // first-wins over core-then-extra, so promoting any ONE of them back to high
     // silently re-blocks everything the split was meant to release.
     { label: 'SQL destructive statement executed through a database client', severity: 'high', why: 'a database client with a destructive statement behind it is the executed act, and every real drop in local history took this shape' },
+    // The same act reached two other ways. These three move together: the plumbing
+    // between the statement and the client is not a severity, so a shape that
+    // blocks on one line must block through a pipe and through a heredoc too.
+    { label: 'SQL destructive statement piped into a database client', severity: 'high', why: 'stdin is how the statement reaches the client here; the act is identical to the same-line form' },
+    { label: 'SQL destructive statement fed to a database client by heredoc', severity: 'high', why: 'a heredoc is how the real drops in local history were actually executed — six of the seven, against psql and sqlite3' },
     { label: 'SQL destructive operation',                  severity: 'medium', why: 'unanchored DROP keyword matches grep patterns, commit messages and migration files under review' },
     { label: 'SQL table truncation',                       severity: 'medium', why: 'same unanchored keyword problem as SQL destructive operation' },
     { label: 'SQL unrestricted DELETE',                    severity: 'medium', why: 'same — every match in local history was a heredoc against a local scratch database' },

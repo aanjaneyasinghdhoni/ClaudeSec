@@ -81,11 +81,12 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // These four, and the Cassandra keyspace rule further down, are the same
   // unanchored keyword matchers that detection.ts demoted to the alert tier —
   // see the note beside `SQL destructive operation` there. They have to move
-  // together: matching is first-wins over core-then-extra, so leaving a
-  // duplicate here at `high` would simply re-block everything the core demotion
-  // was meant to stop refusing. The act still blocks, through
-  // `SQL destructive statement executed through a database client` and the
-  // `psql`/`mysql` inline rules below.
+  // together: the enforcement hook blocks on ANY rule that bakes to
+  // `action: block`, so leaving a duplicate here at `high` would simply
+  // re-block everything the core demotion was meant to stop refusing —
+  // demoting one of a pair achieves nothing. The act still blocks, through
+  // `SQL destructive statement executed through a database client`, its piped
+  // and heredoc siblings below, and the `psql`/`mysql` inline rules.
   { pattern: /DROP\s+DATABASE\s+\w/i,                                                     severity: 'medium', label: 'SQL DROP DATABASE statement' },
   { pattern: /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?\w/i,                                    severity: 'medium', label: 'SQL DROP TABLE (with optional IF EXISTS)' },
   { pattern: /DROP\s+SCHEMA\s+(?:IF\s+EXISTS\s+)?\w/i,                                   severity: 'medium', label: 'SQL DROP SCHEMA statement' },
@@ -106,6 +107,30 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /mysql\s+.*-e\s+["']DROP\s+DATABASE/i,                                       severity: 'high',   label: 'mysql CLI inline DROP DATABASE' },
   { pattern: /psql\s+.*-c\s+["']DROP\s+DATABASE/i,                                        severity: 'high',   label: 'psql CLI inline DROP DATABASE' },
   { pattern: /psql\s+.*-c\s+["']TRUNCATE/i,                                               severity: 'high',   label: 'psql CLI inline TRUNCATE' },
+  // The two shapes detection.ts's `SQL destructive statement executed through a
+  // database client` structurally cannot reach — see the note beside it. Same
+  // act, same tier; only the plumbing between the statement and the client is
+  // different, and both carry the same act-versus-mention guards (no `%` before
+  // the keyword, so a `LIKE '%DROP TABLE%'` audit query stays a mention; DELETE
+  // only in its unrestricted, whole-table form, so scoped cleanup stays allowed).
+  //
+  // Piped: the client is on the RIGHT of the statement, so the same-line rule
+  // reads past it and finds nothing. The pipe must be a real shell pipe with
+  // whitespace in front of it, which is what separates `echo "DROP TABLE x;" |
+  // psql` from `grep -E "drop table\|truncate\|psql"` — a BRE alternation writes
+  // `\|` with no space, and both of local history's would-be denials here were
+  // exactly that grep.
+  { pattern: /(?:^|[^\w\n%])(?:DROP\s+(?:TABLE|DATABASE|SCHEMA|KEYSPACE)\b|TRUNCATE\s+(?:TABLE\s+)?(?!ON\b|FROM\b)\w|ALTER\s+TABLE\s+[^;\n]{1,120}\bDROP\s+COLUMN\b|DELETE\s+FROM\s+[\w."\[\]`]{1,80}\s*;)[^\n]{0,200}\s\|\s*(?:sudo\s+)?(?:docker\s+(?:exec|run)\s+[^\n|]{0,120}\s)?(?:psql|mysql|mariadb|sqlite3|mongosh|clickhouse-client|cockroach|sqlcmd|pgcli|mycli)\b/i, severity: 'high', label: 'SQL destructive statement piped into a database client' },
+  // Heredoc: the statement is on a LATER line than the client, so a character
+  // class that stops at the newline can never see it — this is the one shape
+  // that has to cross the line boundary, and it earns that by requiring the
+  // heredoc operator itself on the client's own line. `<<'SQL'` beside a
+  // database client is not something a grep or a commit message produces; it is
+  // a session being fed a script. The body window is bounded (no unbounded
+  // `[\s\S]*`), so a heredoc that merely CONTAINS a client name further down —
+  // a shell script being written to disk, say — does not qualify: the client
+  // has to introduce the heredoc, not appear inside it.
+  { pattern: /(?:^|[^\w|-])(?:psql|mysql|mariadb|sqlite3|mongosh|clickhouse-client|cockroach|sqlcmd|pgcli|mycli)\b[^\n]{0,200}<<-?\s*['"]?\w{1,20}['"]?[^\n]{0,60}[\s\S]{0,600}?[^\w%](?:DROP\s+(?:TABLE|DATABASE|SCHEMA|KEYSPACE)\b|TRUNCATE\s+(?:TABLE\s+)?(?!ON\b|FROM\b)\w|ALTER\s+TABLE\s+[^;\n]{1,120}\bDROP\s+COLUMN\b|DELETE\s+FROM\s+[\w."\[\]`]{1,80}\s*;)/i, severity: 'high', label: 'SQL destructive statement fed to a database client by heredoc' },
   { pattern: /mongo\s+.*dropDatabase\s*\(/i,                                               severity: 'high',   label: 'MongoDB dropDatabase() call' },
   { pattern: /db\.dropDatabase\s*\(/i,                                                     severity: 'high',   label: 'MongoDB db.dropDatabase() in shell/code' },
   { pattern: /db\.getCollection\s*\(.*\)\.drop\s*\(/i,                                    severity: 'high',   label: 'MongoDB collection.drop() call' },
