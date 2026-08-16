@@ -1,0 +1,375 @@
+/* ClaudeSec design tokens.
+ *
+ * One layer of CSS custom properties that every component reads through
+ * `var()`. Nothing here is a Tailwind class and nothing here is hard-coded in a
+ * component, so the theme switcher can repaint the whole dashboard by swapping
+ * a handful of values on <html>.
+ *
+ * The theming contract this file must never break:
+ *   - `<html data-theme="midnight|carbon|daylight|paper">` picks the palette.
+ *   - `<html class="light">` is set for the light palettes.
+ *   - A theme only needs to set `--cs-accent` and `--cs-accent-rgb`; every
+ *     other accent value is derived from them below. That is what lets an
+ *     accent picker offer dozens of colours without touching any component.
+ *
+ * Two rules hold the visual system together:
+ *   1. Severity is the only saturated colour at rest. The accent is chrome —
+ *      navigation, focus, selection, links. It never means "this is dangerous".
+ *   2. Panels are separated by a change of ground, not by an outline. Only
+ *      floating surfaces (popovers, drawers, dialogs) get a real border.
+ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Theme-independent scales
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── Type ───────────────────────────────────────────────────────────────
+     A dense instrument, not a marketing page: the UI base is 13px, and the
+     scale stays tight until it reaches the display sizes used for metrics. */
+  --cs-text-2xs:   10px;   /* eyebrows, meta labels — always uppercase        */
+  --cs-text-xs:    11px;   /* badges, timestamps, column headers              */
+  --cs-text-sm:    12px;   /* dense table cells, secondary body               */
+  --cs-text-base:  13px;   /* default UI text                                 */
+  --cs-text-md:    15px;   /* panel titles, alert titles                      */
+  --cs-text-lg:    18px;   /* section headings                                */
+  --cs-text-xl:    24px;   /* stat tile values                                */
+  --cs-text-2xl:   32px;   /* hero metric                                     */
+  --cs-text-3xl:   44px;   /* page title — at most once per screen            */
+
+  --cs-leading-tight:  1.15;  /* display sizes                                */
+  --cs-leading-snug:   1.35;  /* titles, single-line rows                     */
+  --cs-leading-normal: 1.55;  /* body copy                                    */
+  --cs-leading-loose:  1.75;  /* long-form docs prose                         */
+
+  --cs-tracking-tight:  -0.02em;  /* >= 24px                                  */
+  --cs-tracking-normal: 0;
+  --cs-tracking-wide:   0.08em;   /* the 10px uppercase eyebrow               */
+
+  --cs-weight-normal:   400;
+  --cs-weight-medium:   500;
+  --cs-weight-semibold: 600;
+  --cs-weight-bold:     700;
+
+  /* JetBrains Mono has a taller x-height than DM Sans, so mono set at the
+     same nominal size looks a step larger. Scaling it down optically matches
+     an inline command to the sentence around it. */
+  --cs-mono-optical-scale: 0.92;
+
+  /* ── Space — 4px base, with a 2px step for data-dense rows ─────────────── */
+  --cs-space-0-5: 2px;
+  --cs-space-1:   4px;
+  --cs-space-2:   8px;
+  --cs-space-3:   12px;
+  --cs-space-4:   16px;
+  --cs-space-5:   24px;
+  --cs-space-6:   32px;
+  --cs-space-7:   48px;
+  --cs-space-8:   64px;
+
+  /* ── Density — one of three row heights per surface, never mixed ───────── */
+  --cs-row-compact: 28px;  /* audit log, span table — scanning hundreds       */
+  --cs-row-default: 36px;  /* alert list, session list — scanning dozens      */
+  --cs-row-comfy:   44px;  /* settings, forms — reading and deciding          */
+
+  /* ── Radius ────────────────────────────────────────────────────────────── */
+  --cs-radius-xs:   3px;   /* the severity spine cap                          */
+  --cs-radius-sm:   6px;   /* chips, badges, inputs                           */
+  --cs-radius-md:   8px;   /* buttons, list rows                              */
+  --cs-radius-lg:   12px;  /* surfaces                                        */
+  --cs-radius-xl:   16px;  /* overlays, drawers                               */
+  --cs-radius-full: 999px; /* status dots only                                */
+
+  /* ── The severity spine ────────────────────────────────────────────────── */
+  --cs-spine-width: 3px;
+  --cs-spine-gutter: var(--cs-space-3);
+
+  /* ── Motion ────────────────────────────────────────────────────────────────
+     Live data must never animate its position. A row that slides while you are
+     reading it costs you the read. Only colour, opacity and floating surfaces
+     move; the list itself snaps. */
+  --cs-motion-instant: 80ms;   /* hover, press                                */
+  --cs-motion-fast:    140ms;  /* tint and state change                       */
+  --cs-motion-base:    220ms;  /* popovers, drawers                           */
+  --cs-motion-slow:    400ms;  /* first paint only                            */
+  --cs-ease-out:    cubic-bezier(0.2, 0, 0, 1);
+  --cs-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── Fonts ─────────────────────────────────────────────────────────────── */
+  --cs-font-sans:    'DM Sans Variable', 'DM Sans', system-ui, -apple-system, sans-serif;
+  --cs-font-mono:    'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+  --cs-font-display: 'Space Grotesk Variable', 'Space Grotesk', 'DM Sans Variable', system-ui, sans-serif;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Dark palettes — the default. This is an observability tool; it lives here.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root,
+html[data-theme='midnight'] {
+  color-scheme: dark;
+
+  /* Planes. Elevation is a change of ground, in five steps. */
+  --cs-bg-sunken:  #070809;  /* wells: code blocks, empty states, chart tracks */
+  --cs-bg-canvas:  #0c0d11;  /* the page                                      */
+  --cs-bg-surface: #121419;  /* a region of related content                   */
+  --cs-bg-raised:  #191c22;  /* an interactive item: row hover, input, chip   */
+  --cs-bg-overlay: #21242b;  /* floats above unknown content                  */
+
+  --cs-rule:        #23262d;  /* hairline: table rules, sticky header underline */
+  --cs-rule-strong: #333842;  /* the edge of a floating surface                */
+
+  --cs-text-strong: #f2f3f5;  /* headings, metric values                      */
+  --cs-text-body:   #dcdee3;  /* default text                                 */
+  --cs-text-muted:  #a2a7b0;  /* secondary text                               */
+  --cs-text-faint:  #878d9a;  /* labels and meta — >= 4.5:1 on every plane    */
+  --cs-text-invert: #0c0d11;  /* text on a filled accent or severity block    */
+
+  /* Severity ramp. Ordered by hue *and* by lightness, so it survives
+     greyscale printing and every form of colour-vision deficiency. Critical
+     sits on the magenta side of red so that it separates from the orange of
+     high for deuteranopic and protanopic viewers, where a red/orange pair
+     collapses. Colour is never the only carrier — every severity also has a
+     glyph, a text label, and a spine. */
+  --cs-sev-none:         #8b919c;
+  --cs-sev-none-rgb:     139, 145, 156;
+  --cs-sev-none-fg:      #8b919c;
+
+  --cs-sev-low:          #45b0f5;
+  --cs-sev-low-rgb:      69, 176, 245;
+  --cs-sev-low-fg:       #45b0f5;
+
+  --cs-sev-medium:       #f0b429;
+  --cs-sev-medium-rgb:   240, 180, 41;
+  --cs-sev-medium-fg:    #f0b429;
+
+  --cs-sev-high:         #ff7a33;
+  --cs-sev-high-rgb:     255, 122, 51;
+  --cs-sev-high-fg:      #ff7a33;
+
+  --cs-sev-critical:     #ff3d71;
+  --cs-sev-critical-rgb: 255, 61, 113;
+  --cs-sev-critical-fg:  #ff3d71;
+
+  --cs-sev-tint-alpha:      0.13;  /* row wash                               */
+  --cs-sev-tint-alpha-hover: 0.20;
+
+  /* Accent. A theme sets exactly these two; everything accent-flavoured is
+     derived, so swapping in any accent colour repaints the app correctly. */
+  --cs-accent:     #00d4aa;
+  --cs-accent-rgb: 0, 212, 170;
+
+  --cs-shadow-raised:  0 1px 2px rgba(0, 0, 0, 0.4);
+  --cs-shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --cs-shadow-drawer:  0 0 0 1px var(--cs-rule-strong), -24px 0 64px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='carbon'] {
+  color-scheme: dark;
+
+  --cs-bg-sunken:  #060607;
+  --cs-bg-canvas:  #0b0b0c;
+  --cs-bg-surface: #121213;
+  --cs-bg-raised:  #191919;
+  --cs-bg-overlay: #212123;
+
+  --cs-rule:        #232325;
+  --cs-rule-strong: #35353a;
+
+  --cs-text-strong: #f4f4f4;
+  --cs-text-body:   #e2e2e2;
+  --cs-text-muted:  #9d9da4;
+  --cs-text-faint:  #8a8a92;
+  --cs-text-invert: #0b0b0c;
+
+  --cs-accent:     #f5a623;
+  --cs-accent-rgb: 245, 166, 35;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Light palettes
+   ══════════════════════════════════════════════════════════════════════════ */
+html.light {
+  color-scheme: light;
+
+  /* Light inverts the elevation logic: white is already the top of the range,
+     so a "raised" item reads as a slight tint rather than a lift. Floating
+     surfaces stay white and separate themselves with a shadow instead. */
+  --cs-bg-sunken:  #e9ebef;
+  --cs-bg-canvas:  #f4f5f7;
+  --cs-bg-surface: #ffffff;
+  --cs-bg-raised:  #f1f3f7;
+  --cs-bg-overlay: #ffffff;
+
+  --cs-rule:        #e3e6ec;
+  --cs-rule-strong: #c9cdd8;
+
+  --cs-text-strong: #0d0f14;
+  --cs-text-body:   #1c1f27;
+  --cs-text-muted:  #545a68;
+  --cs-text-faint:  #676e7d;
+  --cs-text-invert: #ffffff;
+
+  /* In light mode a severity needs three separate values: a mark colour that
+     clears 3:1 as a 3px shape, a vivid rgb used only to mix the row wash, and
+     a darker foreground that clears 4.5:1 as text. Amber is the reason —
+     a legible amber mark and a pleasant amber wash cannot be the same colour. */
+  /* Dark enough to clear 3:1 as a 3px spine against both white and a hovered
+     row — a pale grey mark reads as "no data" rather than "nothing found". */
+  --cs-sev-none:         #838b9b;
+  --cs-sev-none-rgb:     152, 160, 174;
+  --cs-sev-none-fg:      #5b616e;
+
+  --cs-sev-low:          #1c7ed6;
+  --cs-sev-low-rgb:      28, 126, 214;
+  --cs-sev-low-fg:       #0f62c0;
+
+  --cs-sev-medium:       #b07800;
+  --cs-sev-medium-rgb:   232, 160, 0;
+  --cs-sev-medium-fg:    #8a5a00;
+
+  --cs-sev-high:         #e8590c;
+  --cs-sev-high-rgb:     232, 89, 12;
+  --cs-sev-high-fg:      #b23c00;
+
+  --cs-sev-critical:     #e5004e;
+  --cs-sev-critical-rgb: 229, 0, 78;
+  --cs-sev-critical-fg:  #c4004e;
+
+  --cs-sev-tint-alpha:       0.10;
+  --cs-sev-tint-alpha-hover: 0.16;
+
+  --cs-accent:     #00a884;
+  --cs-accent-rgb: 0, 168, 132;
+
+  --cs-shadow-raised:  0 1px 2px rgba(16, 24, 40, 0.06);
+  --cs-shadow-overlay: 0 16px 48px rgba(16, 24, 40, 0.14);
+  --cs-shadow-drawer:  0 0 0 1px var(--cs-rule), -24px 0 64px rgba(16, 24, 40, 0.12);
+}
+
+html[data-theme='paper'] {
+  --cs-bg-sunken:  #efe9dd;
+  --cs-bg-canvas:  #faf7f2;
+  --cs-bg-surface: #fffdf9;
+  --cs-bg-raised:  #f4f0e8;
+  --cs-bg-overlay: #fffdf9;
+
+  --cs-rule:        #eae3d6;
+  --cs-rule-strong: #d5ccbb;
+
+  --cs-text-strong: #14110c;
+  --cs-text-body:   #23201a;
+  --cs-text-muted:  #5c574c;
+  --cs-text-faint:  #6e685c;
+  --cs-text-invert: #fffdf9;
+
+  --cs-accent:     #6366f1;
+  --cs-accent-rgb: 99, 102, 241;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Derived values — authored once, correct for every theme and every accent
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Accent surfaces. A new accent only has to set --cs-accent + --cs-accent-rgb. */
+  --cs-accent-soft: rgba(var(--cs-accent-rgb), 0.12);  /* selected nav, chip   */
+  --cs-accent-dim:  rgba(var(--cs-accent-rgb), 0.20);  /* pressed, active fill */
+  --cs-accent-line: rgba(var(--cs-accent-rgb), 0.35);  /* accent hairline      */
+  --cs-accent-glow: rgba(var(--cs-accent-rgb), 0.15);
+
+  /* Severity washes. The row background for each level. */
+  --cs-sev-none-bg:     rgba(var(--cs-sev-none-rgb),     var(--cs-sev-tint-alpha));
+  --cs-sev-low-bg:      rgba(var(--cs-sev-low-rgb),      var(--cs-sev-tint-alpha));
+  --cs-sev-medium-bg:   rgba(var(--cs-sev-medium-rgb),   var(--cs-sev-tint-alpha));
+  --cs-sev-high-bg:     rgba(var(--cs-sev-high-rgb),     var(--cs-sev-tint-alpha));
+  --cs-sev-critical-bg: rgba(var(--cs-sev-critical-rgb), var(--cs-sev-tint-alpha));
+
+  --cs-sev-none-bg-hover:     rgba(var(--cs-sev-none-rgb),     var(--cs-sev-tint-alpha-hover));
+  --cs-sev-low-bg-hover:      rgba(var(--cs-sev-low-rgb),      var(--cs-sev-tint-alpha-hover));
+  --cs-sev-medium-bg-hover:   rgba(var(--cs-sev-medium-rgb),   var(--cs-sev-tint-alpha-hover));
+  --cs-sev-high-bg-hover:     rgba(var(--cs-sev-high-rgb),     var(--cs-sev-tint-alpha-hover));
+  --cs-sev-critical-bg-hover: rgba(var(--cs-sev-critical-rgb), var(--cs-sev-tint-alpha-hover));
+
+  /* Status colours reuse the severity ramp so the product only ever teaches
+     one colour language. "Warning" and "medium" are the same yellow on purpose. */
+  --cs-danger:   var(--cs-sev-critical);
+  --cs-warn:     var(--cs-sev-medium);
+  --cs-info:     var(--cs-sev-low);
+  --cs-ok:       var(--cs-accent);
+  --cs-info-rgb: var(--cs-sev-low-rgb);
+
+  /* ── Compatibility aliases ────────────────────────────────────────────────
+     The dashboard components were written against these names. They stay, and
+     now resolve to the plane tokens above, so the new system reaches every
+     existing screen without a rename. */
+  --cs-bg-primary:  var(--cs-bg-canvas);
+  --cs-bg-elevated: var(--cs-bg-raised);
+  --cs-bg-subtle:   var(--cs-bg-overlay);
+  --cs-border:      var(--cs-rule);
+  --cs-border-soft: var(--cs-rule-strong);
+  --cs-text-base:   var(--cs-text-body);
+
+  --font-sans:    var(--cs-font-sans);
+  --font-mono:    var(--cs-font-mono);
+  --font-display: var(--cs-font-display);
+
+  /* Chart and SVG surfaces follow the same planes. */
+  --cs-svg-grid:         var(--cs-rule);
+  --cs-svg-axis:         var(--cs-rule-strong);
+  --cs-svg-text:         var(--cs-text-faint);
+  --cs-svg-label:        var(--cs-text-strong);
+  --cs-svg-label-muted:  var(--cs-text-muted);
+  --cs-svg-track:        var(--cs-bg-sunken);
+  --cs-svg-selected:     var(--cs-bg-raised);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Primitives built on the tokens
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* The severity spine: a 3px bar on the leading edge of anything that carries a
+   severity. It is the one place full-chroma colour appears at rest, and it
+   lines up across every list so a whole screen can be triaged without reading
+   a word. Set `data-severity` on the element and the rest follows. */
+[data-severity] {
+  border-left: var(--cs-spine-width) solid transparent;
+}
+[data-severity='none']     { border-left-color: var(--cs-sev-none);     }
+[data-severity='low']      { border-left-color: var(--cs-sev-low);      }
+[data-severity='medium']   { border-left-color: var(--cs-sev-medium);   }
+[data-severity='high']     { border-left-color: var(--cs-sev-high);     }
+[data-severity='critical'] { border-left-color: var(--cs-sev-critical); }
+
+/* Only high and critical earn a background wash. Tinting every row would spend
+   the whole colour budget on noise and leave nothing for the real signal. */
+[data-severity='high']     { background: var(--cs-sev-high-bg);     }
+[data-severity='critical'] { background: var(--cs-sev-critical-bg); }
+
+/* Monospace is for machine-authored strings a person may need to compare
+   character by character or copy: commands, paths, IDs, hashes, rule IDs,
+   and any number that has to line up in a column. Never for prose or titles. */
+.cs-mono {
+  font-family: var(--cs-font-mono);
+  font-size: calc(1em * var(--cs-mono-optical-scale));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.cs-eyebrow {
+  font-size: var(--cs-text-2xs);
+  font-weight: var(--cs-weight-bold);
+  letter-spacing: var(--cs-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cs-text-faint);
+}
+
+/* Motion is a courtesy, not a requirement. Turning it off must leave the
+   dashboard fully usable, including the "live" pulse in the header. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

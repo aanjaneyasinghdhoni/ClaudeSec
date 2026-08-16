@@ -1,0 +1,150 @@
+/* shadcn/ui ↔ ClaudeSec token bridge.
+ *
+ * shadcn components are written against a fixed set of semantic variable names
+ * (--background, --card, --primary, --border, --ring …). This file is the only
+ * place those names are defined, and every one of them resolves to a `--cs-*`
+ * token from tokens.css. There is deliberately no second palette here: no
+ * literal colour is declared below, so a shadcn component cannot drift away
+ * from the rest of the dashboard.
+ *
+ * Two consequences fall out of that for free:
+ *   - Switching theme (midnight / carbon / daylight / paper) repaints shadcn
+ *     components, because the `--cs-*` tokens are redeclared per theme and the
+ *     var() references below are resolved at use time.
+ *   - Switching accent repaints anything accent-flavoured, because a theme only
+ *     ever sets `--cs-accent` / `--cs-accent-rgb` and everything else derives.
+ *
+ * Kept out of index.css on purpose: `shadcn add` writes CSS into the file named
+ * by components.json, and pointing it here keeps generated output away from the
+ * hand-written dashboard styles.
+ */
+
+/* Enter/exit animation utilities used by the overlay primitives. */
+@import "tw-animate-css";
+/* Data-state variants (data-open:, data-checked: …) and the scroll-fade /
+   shimmer utilities the generated components reference. */
+@import "shadcn/tailwind.css";
+
+/* The dashboard has no `.dark` class: dark is the default and light palettes are
+   marked with `.light` on <html>. Redefining the variant this way means a
+   `dark:` utility inside a generated component follows the app's own theme
+   state instead of the OS preference or a class we never set. */
+@custom-variant dark (&:where(html:not(.light), html:not(.light) *));
+
+/* Tailwind's own radius scale is left untouched: the dashboard already uses
+   rounded-lg/xl throughout, and Tailwind's defaults (4/6/8/12/16px) happen to
+   line up with --cs-radius-*, so shadcn inherits the right shapes without
+   restyling a single existing element. */
+@theme inline {
+  --font-sans: var(--cs-font-sans);
+  --font-mono: var(--cs-font-mono);
+  --font-heading: var(--cs-font-display);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  /* Planes. shadcn's four surface levels map onto the app's five, skipping
+     --cs-bg-sunken, which is reserved for wells (code blocks, chart tracks). */
+  --background: var(--cs-bg-canvas);
+  --foreground: var(--cs-text-body);
+  --card: var(--cs-bg-surface);
+  --card-foreground: var(--cs-text-body);
+  --popover: var(--cs-bg-overlay);
+  --popover-foreground: var(--cs-text-body);
+
+  /* Brand accent. This is the one saturated colour shadcn is allowed: filled
+     buttons, focus rings, selected state — chrome, never severity. */
+  --primary: var(--cs-accent);
+  --primary-foreground: var(--cs-text-invert);
+
+  /* `secondary` and `muted` are quiet surfaces, not colours. Both sit on the
+     raised plane so a shadcn chip reads exactly like a dashboard chip. */
+  --secondary: var(--cs-bg-raised);
+  --secondary-foreground: var(--cs-text-body);
+  --muted: var(--cs-bg-raised);
+  --muted-foreground: var(--cs-text-muted);
+
+  /* shadcn's `accent` is the hover/selected wash behind menu and list items —
+     not the brand colour. The 12% accent tint is what the dashboard already
+     uses for an active session row, so the two agree. */
+  --accent: var(--cs-accent-soft);
+  --accent-foreground: var(--cs-text-strong);
+
+  /* Destructive borrows the top of the severity ramp so the product only ever
+     teaches one colour language for danger. */
+  --destructive: var(--cs-sev-critical);
+  --destructive-foreground: var(--cs-text-invert);
+
+  --border: var(--cs-rule);
+  --input: var(--cs-rule-strong);
+  --ring: var(--cs-accent);
+
+  /* A handful of primitives read --radius directly rather than through the
+     Tailwind scale; --cs-radius-md is the button/row radius. */
+  --radius: var(--cs-radius-md);
+
+  /* Charts reuse the severity ramp rather than introducing a fifth palette. */
+  --chart-1: var(--cs-sev-low);
+  --chart-2: var(--cs-sev-medium);
+  --chart-3: var(--cs-sev-high);
+  --chart-4: var(--cs-sev-critical);
+  --chart-5: var(--cs-sev-none);
+
+  /* The sidebar block keeps its own token set so a navigation rail can sit on a
+     different plane from the page. Here it is the surface plane. */
+  --sidebar: var(--cs-bg-surface);
+  --sidebar-foreground: var(--cs-text-body);
+  --sidebar-primary: var(--cs-accent);
+  --sidebar-primary-foreground: var(--cs-text-invert);
+  --sidebar-accent: var(--cs-accent-soft);
+  --sidebar-accent-foreground: var(--cs-text-strong);
+  --sidebar-border: var(--cs-rule);
+  --sidebar-ring: var(--cs-accent);
+}
+
+/* shadcn's install notes ask for a global `* { border-color: var(--border) }`
+   reset, because its components write `border-b` with no colour and rely on it.
+   Applying that globally would repaint every existing panel in the dashboard,
+   so it is scoped to the generated components instead — each one carries a
+   `data-slot` attribute, and nothing hand-written in the app does. */
+@layer base {
+  [data-slot],
+  [data-slot] * {
+    border-color: var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+}
