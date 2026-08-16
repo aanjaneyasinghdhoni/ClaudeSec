@@ -9,15 +9,22 @@
  *   claudesec status       — show server health, span/session counts, uptime
  *   claudesec export [file]— download all spans as JSON (default: claudesec-export-<ts>.json)
  *   claudesec reset        — confirm + wipe all spans, sessions, and alerts
- *   claudesec open         — open dashboard in the default browser
+ *   claudesec open         — open the dashboard and pair the browser for mutations
+ *   claudesec audit-key    — show / move the Ed25519 audit signing key (file ⇄ Keychain)
  *   claudesec install-hook — register the PreToolUse enforcement hook (asks first)
  *   claudesec uninstall-hook — remove the enforcement hook entries
+ *
+ * The three teardown paths — `stop`, `uninstall` and `uninstall-hook` — are refused
+ * by the enforcement floor when they are run from inside an agent session, because
+ * an agent that can ask ClaudeSec to remove itself does not need to defeat the floor
+ * at all. They work normally from an operator's own shell, which no hook sees.
  */
 import { createInterface } from 'readline';
-import { execSync }        from 'child_process';
+import { execFileSync }    from 'child_process';
 import * as fs             from 'fs';
 import { installService, uninstallService, cleanupLegacyOtelEnv, platformSupport, servicePaths } from './service.js';
 import { installHook, uninstallHook } from './installHook.js';
+import { controlKeyPath, pairingUrl } from '../server/controlToken.js';
 
 const PORT     = process.env.CLAUDESEC_PORT ?? '3000';
 const BASE_URL = `http://localhost:${PORT}`;
@@ -30,16 +37,45 @@ function prompt(rl: ReturnType<typeof createInterface>, question: string): Promi
   return new Promise(resolve => rl.question(question, resolve));
 }
 
+/** The control-plane pairing key, if this machine has one. Never printed. */
+function readPairingKey(): string | undefined {
+  try {
+    const raw = fs.readFileSync(controlKeyPath(), 'utf8').trim();
+    return /^[0-9a-f]{48,128}$/.test(raw) ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function apiFetch(path: string, opts?: { method?: string; body?: unknown }): Promise<any> {
   const url = `${BASE_URL}${path}`;
+  // Mutating routes sit behind the control-plane gate even on loopback, so that a
+  // local agent cannot disarm the tool that is watching it. Reads stay open, which
+  // is why most of this CLI needs no token at all — but `reset` and `bookmark
+  // --delete` write, and would otherwise fail with a bare 403.
+  // CLAUDESEC_TOKEN first (it is what a remote or containerised install uses),
+  // then the local pairing key. Reading the key file is not a privilege the CLI
+  // has and the agent lacks — both run as the same user — it is simply how a
+  // local tool authenticates without asking the operator to paste a secret.
+  const token = process.env.CLAUDESEC_TOKEN || readPairingKey();
   const init: RequestInit = {
     method: opts?.method ?? 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...(opts?.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
   };
   const res = await fetch(url, init);
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
+    if (res.status === 403) {
+      throw new Error(
+        `HTTP 403: this command changes state, so it needs the control token. ` +
+        `Expected it in ${controlKeyPath()} (or CLAUDESEC_TOKEN). If the server ` +
+        `runs with a different CLAUDESEC_HOME, set the same one here.`,
+      );
+    }
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
   return res.json().catch(() => null);
@@ -244,16 +280,95 @@ async function cmdTail(args: string[]) {
   }
 }
 
+/**
+ * Open the dashboard, pairing the browser on the way in.
+ *
+ * The URL carries the control-plane pairing key exactly once; the server swaps
+ * it for an httpOnly cookie and redirects the key out of the address bar. This
+ * is the whole reason `open` exists as a command rather than a bookmark: the
+ * server will not hand a mutation token to anything that merely asks for it, so
+ * something that can read the key file has to put it in front of the browser.
+ */
 function cmdOpen() {
+  let url = BASE_URL;
+  try {
+    url = pairingUrl(BASE_URL);
+  } catch {
+    console.log('\x1b[33mNo pairing key yet — start the service first, or the dashboard will be read-only.\x1b[0m');
+  }
+  // Never print `url`: it contains the key, and terminal scrollback is a file.
   console.log(`\n\x1b[90mOpening ${BASE_URL} …\x1b[0m\n`);
   const platform = process.platform;
   try {
-    if (platform === 'darwin')       execSync(`open "${BASE_URL}"`);
-    else if (platform === 'win32')   execSync(`start "${BASE_URL}"`);
-    else                             execSync(`xdg-open "${BASE_URL}"`);
+    // execFileSync, not execSync: the URL carries the pairing key, and handing
+    // it to a shell would expose it to word splitting and history expansion.
+    if (platform === 'darwin')       execFileSync('open', [url]);
+    else if (platform === 'win32')   execFileSync('cmd', ['/c', 'start', '', url]);
+    else                             execFileSync('xdg-open', [url]);
   } catch {
-    console.log(`\x1b[33mCould not open browser. Visit ${BASE_URL} manually.\x1b[0m`);
+    console.log(`\x1b[33mCould not open browser. Visit ${BASE_URL} manually — mutations will 403 until you pair.\x1b[0m`);
+    console.log(`\x1b[90mThe pairing key is in ${controlKeyPath()}.\x1b[0m`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// claudesec audit-key — where the Ed25519 signing key lives
+// ---------------------------------------------------------------------------
+
+/**
+ * Nothing here runs on its own. Migrating the signing key of a live audit chain
+ * is a decision, not a default: if it goes wrong the record stops verifying, and
+ * on a chain with hundreds of thousands of entries there is no undo. So the
+ * server never migrates, `to-keychain` proves a sign/verify round trip through
+ * the Keychain before it changes anything, and it does not remove the key file
+ * unless you explicitly ask — and even then it renames rather than deletes.
+ */
+async function cmdAuditKey(args: string[]): Promise<void> {
+  const {
+    auditKeyStoreStatus, migrateAuditKeyToKeychain, revertAuditKeyToFile,
+  } = await import('../server/auditChain.js');
+
+  const sub = args[0] ?? 'status';
+
+  if (sub === 'status') {
+    const s = auditKeyStoreStatus();
+    console.log(`\n\x1b[1mAudit signing key\x1b[0m`);
+    console.log(`  store        ${s.store}${s.degraded ? ' \x1b[31m(UNREADABLE — anchors are unsigned)\x1b[0m' : ''}`);
+    console.log(`  keyId        ${s.keyId || '(none)'}`);
+    console.log(`  file         ${s.filePath}${s.fileExists ? '' : ' (absent)'}`);
+    console.log(`  keychain     ${s.keychainAvailable ? (s.keychainHasItem ? 'item present' : 'available, no item') : 'unavailable on this platform'}`);
+    console.log('\n\x1b[90mRecord the keyId somewhere off this machine. A keyId that changes means');
+    console.log('the record was re-founded, however cleanly the chain verifies.\x1b[0m\n');
+    return;
+  }
+
+  if (sub === 'to-keychain') {
+    const removeFile = args.includes('--remove-file');
+    const before = auditKeyStoreStatus();
+    if (!removeFile) {
+      console.log('\n\x1b[90mThe key file will be left in place. Re-run with --remove-file to rename it aside once you are satisfied.\x1b[0m');
+    }
+    const r = migrateAuditKeyToKeychain({ removeFile });
+    console.log(r.ok ? `\n\x1b[32m✓\x1b[0m ${r.message}` : `\n\x1b[31m✗\x1b[0m ${r.message}`);
+    if (r.ok && before.keyId && r.keyId !== before.keyId) {
+      console.error('\x1b[31mThe key identity changed during migration — this should be impossible. Run `claudesec audit-key to-file`.\x1b[0m');
+      process.exit(1);
+    }
+    if (r.ok) console.log('\x1b[90mRestart the service so it picks the key up from the Keychain.\x1b[0m\n');
+    else process.exit(1);
+    return;
+  }
+
+  if (sub === 'to-file') {
+    const r = revertAuditKeyToFile();
+    console.log(r.ok ? `\n\x1b[32m✓\x1b[0m ${r.message}\n` : `\n\x1b[31m✗\x1b[0m ${r.message}\n`);
+    if (!r.ok) process.exit(1);
+    return;
+  }
+
+  console.error(`\x1b[31mUnknown subcommand: audit-key ${sub}\x1b[0m`);
+  console.error('Usage: claudesec audit-key [status | to-keychain [--remove-file] | to-file]');
+  process.exit(1);
 }
 
 // ── Helper: box-drawing table printer ─────────────────────────────────────
@@ -579,7 +694,8 @@ function printHelp() {
   \x1b[33mclaudesec\x1b[0m / \x1b[33mstart\x1b[0m              Install + start the background watcher, open the dashboard
   \x1b[33mclaudesec stop\x1b[0m                    Stop and remove the background service
   \x1b[33mclaudesec status\x1b[0m                  Show server health and span counts
-  \x1b[33mclaudesec open\x1b[0m                    Open the dashboard in default browser
+  \x1b[33mclaudesec open\x1b[0m                    Open the dashboard and pair this browser so it
+                                       can change settings (reads never need pairing)
   \x1b[33mclaudesec tail\x1b[0m [--harness X] [--severity Y]   Stream live spans
   \x1b[33mclaudesec processes\x1b[0m               List running agent processes (macOS/Linux)
 
@@ -600,7 +716,15 @@ function printHelp() {
                                        Blocking is fail-open by design; rule-based
                                        blocking needs enforce mode (Enforce tab / CLAUDESEC_MODE).
   \x1b[33mclaudesec uninstall-hook\x1b[0m [--purge]  Remove only our hook entries (--purge also
-                                       deletes ~/.claudesec/hooks).
+                                       deletes ~/.claudesec/hooks). Run this from your own
+                                       shell — the enforcement floor refuses it (and
+                                       \x1b[33mstop\x1b[0m / \x1b[33muninstall\x1b[0m) inside an agent session, so an
+                                       agent cannot ask ClaudeSec to remove itself.
+  \x1b[33mclaudesec audit-key\x1b[0m [status]       Show where the Ed25519 audit signing key lives
+  \x1b[33mclaudesec audit-key to-keychain\x1b[0m [--remove-file]   Move it into the macOS Keychain,
+                                       out of cat/rm range. Verifies a sign+verify round
+                                       trip first; leaves the file alone unless asked.
+  \x1b[33mclaudesec audit-key to-file\x1b[0m        Move it back to ~/.claudesec/hooks (reversible)
   \x1b[33mclaudesec mcp-proxy\x1b[0m -- <mcp-server-cmd> [args...]   Gate any MCP server's
                                        tool calls against ClaudeSec rules (stdio).
                                        Point an agent's mcpServers config here instead
@@ -636,6 +760,7 @@ async function main() {
     case 'bookmarks':  await cmdBookmarks(rest);        break;
     case 'install-hook':   await installHook(rest);       break;
     case 'uninstall-hook': await uninstallHook(rest);     break;
+    case 'audit-key':      await cmdAuditKey(rest);       break;
     case '--help':
     case '-h':
     case 'help':     printHelp();                    break;

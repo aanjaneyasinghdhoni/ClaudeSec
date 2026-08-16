@@ -15,7 +15,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { db, DB_PATH, backupDatabase, checkpointAndClose } from './db.js';
+import { db, DB_PATH, backupDatabase, checkpointAndClose, reindexFtsMirror, capSpanAttributes, insertChainedSpan, chainSpansBackfill, repairSpanChainMutableFields } from './db.js';
 import { scanAgentProcesses, type AgentProcess } from './processScan.js';
 import { registerProcessRoutes } from './routes/processes.js';
 import { registerBookmarkRoutes } from './routes/bookmarks.js';
@@ -24,6 +24,7 @@ import { registerSpanMetaRoutes } from './routes/spanMeta.js';
 import { registerDbStatsRoutes } from './routes/dbStats.js';
 import { registerCostRoutes, dedupedTokenTotals } from './routes/costs.js';
 import { registerHarnessRoutes } from './routes/harnesses.js';
+import { registerGovernanceRoutes } from './routes/governance.js';
 import { registerFileAccessRoutes } from './routes/fileAccess.js';
 import { registerCommandAuditRoutes } from './routes/commandAudit.js';
 import { registerSearchRoutes } from './routes/search.js';
@@ -43,10 +44,23 @@ import { registerOrchestrationRoutes } from './routes/orchestration.js';
 import { registerLiveActivityRoutes } from './routes/liveActivity.js';
 import { registerWebhookRoutes } from './routes/webhook.js';
 import { registerEnforceRoutes } from './routes/enforce.js';
+import { registerEnforceImpactRoutes } from './routes/enforceImpact.js';
 import { registerAuditLogRoutes } from './routes/auditLog.js';
 import { registerAuditVerifyRoutes } from './routes/auditVerify.js';
 import { registerRuleOverrideRoutes } from './routes/ruleOverrides.js';
 import { makeAuditLogger } from './auditLog.js';
+import { refoundChain } from './auditChain.js';
+import {
+  CONTROL_COOKIE, CONTROL_HEADER, CONTROL_QUERY,
+  controlCookieValue, controlKeyPath, controlKeySource, controlTokenAccepted,
+  pairingUrl, tokenMatches,
+} from './controlToken.js';
+// Importing this is what actually turns external anchoring on: auditAnchor.ts
+// self-starts its checkpoint sweep at module load, but does real work (a file
+// write, a network call) only when CLAUDESEC_ANCHOR_METHOD is set — see the
+// file's own header. Off by default; this import plus the shutdown hook below
+// is the entire "wiring" this feature needs from the server.
+import { stopAnchorSweep } from './auditAnchor.js';
 import {
   ENFORCE_LOG_MAX,
   appendEnforceLog as persistEnforceLog,
@@ -57,7 +71,8 @@ import {
 import type { CustomRule, ProtectedPath, HealthBreakdown } from './routes/context.js';
 import { detectHarness, HARNESSES } from '../src/harnesses.js';
 import { loadScrubOptions, scrubAttributes, scrubText, type ScrubOptions } from './scrub.js';
-import { resolveRepo, backfillRepos } from './repoIdentity.js';
+import { resolveRepo, backfillRepos, attributeRepoForTrace } from './repoIdentity.js';
+import { SequenceEngine, renderChain, SEVERITY_RANK } from './sequenceRules.js';
 import { startTranscriptWatcher, defaultRoots, type WatcherEvent, type WatcherHandle, type IngestInput, type OffsetStore } from './transcriptWatcher.js';
 import { SEVERITY_RULES, CATASTROPHIC_DETECTION_LABELS } from './detection.js';
 import { buildEnforcementSnapshot } from './enforcementSnapshot.js';
@@ -68,7 +83,19 @@ import {
   assertSafeFetchUrl,
   SsrfBlockedError,
 } from './ssrf.js';
+import {
+  RETENTION_UNBOUNDED,
+  INGEST_BREAKER_RATIO,
+  DEFAULT_MAX_SPANS,
+  DEFAULT_RETENTION_DAYS,
+  resolveKnob,
+  resolveRetention,
+  retentionProfile,
+  type ResolvedRetention,
+  type RetentionSource,
+} from './retentionProfiles.js';
 import { getJudgeConfig } from './llmJudge.js';
+import { resolveEffectiveMode } from './enforceStatus.js';
 import { seedDemoData } from './demoData.js';
 import type { Severity } from '../src/shared/types.js';
 
@@ -123,16 +150,9 @@ const IS_ENTRY_POINT = (() => {
 // startup bind guard.  Factored into one place so all three agree on what
 // "loopback" means and how the token is compared.
 
-/** Constant-time token comparison with a length guard (timingSafeEqual throws
- *  on unequal lengths, and the mismatched-length case is the attacker path). */
-function tokenMatches(presented: string | undefined | null, expected: string): boolean {
-  if (!expected) return false;            // fail closed: no server token configured
-  if (!presented) return false;
-  const a = Buffer.from(String(presented));
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
+// The constant-time comparison itself lives in server/controlToken.ts alongside
+// the pairing key it guards, so the gate and the key module can never drift into
+// two different notions of "matches".
 
 /**
  * CLAUDESEC_TRUST_LOCAL opt-in trust mode.
@@ -151,6 +171,136 @@ function tokenMatches(presented: string | undefined | null, expected: string): b
  */
 function trustLocalEnabled(): boolean {
   return process.env.CLAUDESEC_TRUST_LOCAL === '1';
+}
+
+// ---------------------------------------------------------------------------
+// Control-plane token
+// ---------------------------------------------------------------------------
+// The subject ClaudeSec monitors is itself a local process, so "it came from
+// loopback" says nothing about whether it came from the operator. Every /api
+// route used to be wide open to any local caller, which meant one `curl` from a
+// compromised agent could disable detection rules, flip enforce back to monitor,
+// or read the audit log. The PreToolUse hook guards ~/.claudesec/hooks on disk;
+// nothing guarded the HTTP control plane.
+//
+// So: READS stay open (the dashboard is unchanged and stays instantly usable),
+// and MUTATIONS require the control token. The mechanism, the threat it closes,
+// and the threats it does NOT close are documented in server/controlToken.ts —
+// read that file before changing anything here.
+//
+// The short version: the token is never granted in response to an HTTP request.
+// The browser is paired once, out of band, via `claudesec open`.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Mutating endpoints that stay reachable WITHOUT the control token, because
+ * their callers are machine clients with no way to obtain one:
+ *   • POST /v1/traces      — OTLP ingest. Local agents post telemetry here with
+ *                            no token; gating it would break the documented
+ *                            integration. It is append-only data, not control.
+ *   • POST /mcp            — the cross-agent MCP tool surface (read-oriented:
+ *                            it queries spans, it does not change config).
+ *   • POST /api/enforce-log — the PreToolUse hook's own event feed. See below;
+ *                            this one is a deliberate trade, not an oversight.
+ *
+ * ON /api/enforce-log SPECIFICALLY. The hook is a script Claude Code executes
+ * inside the agent's own process tree, with the agent's environment and the
+ * agent's file access. Any secret we gave it — an env var, a file beside the
+ * hook, a value baked into the .cjs — would be readable by exactly the party the
+ * gate is meant to exclude, so a "hook token" would authenticate nothing while
+ * reading like it did. That is worse than an open endpoint, because it invites
+ * trust the mechanism cannot support. The honest containment is structural
+ * instead: the feed is APPEND-ONLY (it cannot change config, mode, or rules),
+ * capped at ENFORCE_LOG_MAX entries, and hash-chained, so forged entries are
+ * bounded in volume and any attempt to REMOVE real ones breaks the chain and is
+ * reported by /api/audit/verify. What a local attacker can do is add noise and
+ * push honest entries past the cap; what they cannot do is silently delete
+ * evidence or reconfigure enforcement through this route. Do not "fix" this by
+ * inventing a hook secret or a bypass nonce — see docs/security/enforcement.mdx.
+ */
+function isOpenMutation(pathname: string): boolean {
+  return (
+    pathname === '/v1/traces' || pathname.startsWith('/v1/traces/') ||
+    pathname === '/mcp' || pathname.startsWith('/mcp/') ||
+    pathname === '/api/enforce-log'
+  );
+}
+
+/** Read one cookie value out of a raw Cookie header (no cookie-parser needed). */
+function readCookie(header: string | undefined, name: string): string | undefined {
+  if (typeof header !== 'string') return undefined;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(eq + 1).trim()); }
+    catch { return part.slice(eq + 1).trim(); }
+  }
+  return undefined;
+}
+
+/** Every place a caller may present a token, in the order we accept them. */
+function presentedTokens(req: express.Request): string[] {
+  const out: string[] = [];
+  const bearer = req.headers['authorization'];
+  if (typeof bearer === 'string' && /^bearer\s+/i.test(bearer)) out.push(bearer.replace(/^bearer\s+/i, '').trim());
+  const apiKey = req.headers['x-api-key'];
+  if (typeof apiKey === 'string') out.push(apiKey.trim());
+  const ctrl = req.headers[CONTROL_HEADER];
+  if (typeof ctrl === 'string') out.push(ctrl.trim());
+  const cookie = readCookie(req.headers['cookie'], CONTROL_COOKIE);
+  if (cookie) out.push(cookie);
+  if (typeof req.query.token === 'string') out.push(req.query.token);
+  return out;
+}
+
+/**
+ * Pairing: exchange the out-of-band pairing key for the mutation cookie.
+ *
+ * Returns true when the request was consumed (a redirect was sent) so the caller
+ * stops processing it.
+ *
+ * There used to be a `looksLikeBrowserRequest()` here that granted the cookie to
+ * any loopback GET carrying `Sec-Fetch-Dest: document` or an HTML `Accept`.
+ * Those are request headers — the client picks them — so the test certified
+ * whatever the caller claimed, and `curl -H 'Sec-Fetch-Dest: document'` earned
+ * the same mutation rights as the dashboard. It is deleted rather than
+ * tightened: no header pattern can distinguish the operator's browser from
+ * another process on the same host, because the socket carries no identity to
+ * check against.
+ *
+ * What replaces it is a key the caller has to already possess. Presenting it on
+ * a normal navigation sets the cookie and redirects to the same URL without the
+ * key, so it never lands in history, a Referer header, or the SPA's address bar.
+ */
+function tryPairing(req: express.Request, res: express.Response): boolean {
+  if (!SAFE_METHODS.has(req.method)) return false;
+  const offered = req.query[CONTROL_QUERY];
+  if (typeof offered !== 'string' || !offered) return false;
+  if (!controlTokenAccepted([offered])) return false;
+
+  res.cookie(CONTROL_COOKIE, controlCookieValue(), {
+    // The SPA never reads this value — it rides along on same-origin fetches —
+    // so page script has no reason to see it and every reason not to.
+    httpOnly: true,
+    // A page on any other origin can never make the browser attach it.
+    sameSite: 'strict',
+    // The dashboard is plain HTTP on localhost; a Secure cookie would never be
+    // stored, and marking it Secure here would silently break the gate.
+    secure: false,
+    path: '/',
+    maxAge: 90 * 24 * 60 * 60 * 1000,
+  });
+
+  const rest = new URLSearchParams(req.url.includes('?') ? req.url.slice(req.url.indexOf('?') + 1) : '');
+  rest.delete(CONTROL_QUERY);
+  const qs = rest.toString();
+  // Same-origin only. `//host` and `/\host` are protocol-relative and would turn
+  // this into an open redirect; reaching here needs the key, but a redirect
+  // helper that can be pointed off-origin is a liability regardless.
+  const target = /^\/($|[^/\\])/.test(req.path) ? req.path : '/';
+  res.redirect(302, `${target}${qs ? `?${qs}` : ''}`);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +415,35 @@ function insertOrDedupeAlert(alert: {
   return result.lastInsertRowid;
 }
 
+/**
+ * Has `ruleLabel` already fired for this trace inside the last `windowMs`?
+ *
+ * WHY a JS-computed cutoff instead of SQLite's `datetime('now', '-5 minutes')`:
+ * `alerts.ts` holds a full ISO-8601 string ("2026-05-31T23:16:10.922Z") while
+ * `datetime()` renders the space-separated form ("2026-05-31 23:16:10"). A TEXT
+ * comparison reaches the 'T' (0x54) vs ' ' (0x20) at offset 10 before it ever
+ * looks at the clock digits, so EVERY same-UTC-day ISO timestamp sorted as
+ * "newer than now". The 5/10/30/60-minute anomaly windows all silently behaved
+ * like a 24-hour one and those alerts could fire at most once per day per trace.
+ * Binding an ISO cutoff keeps both sides in one format — the same thing
+ * insertOrDedupeAlert() already does.
+ *
+ * `nowMs` is injectable so the window boundary can be asserted deterministically
+ * instead of racing the wall clock.
+ */
+const selectAlertSince = db.prepare(
+  `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = ? AND ts > ? LIMIT 1`,
+);
+export function alertFiredWithin(
+  traceId: string,
+  ruleLabel: string,
+  windowMs: number,
+  nowMs: number = Date.now(),
+): boolean {
+  const cutoff = new Date(nowMs - windowMs).toISOString();
+  return selectAlertSince.get(traceId, ruleLabel, cutoff) !== undefined;
+}
+
 const deleteAllAlerts = db.prepare(`DELETE FROM alerts`);
 
 const insertThresholdRule = db.prepare(`
@@ -349,20 +528,11 @@ const deleteAllAnnotations = db.prepare(`DELETE FROM annotations`);
 // FTS5 full-text search — spans_fts mirrors spans(name, attributes)
 // ---------------------------------------------------------------------------
 
-// One-time backfill: index any spans that pre-date the trigger
-{
-  const indexed = new Set(
-    (db.prepare('SELECT spanId FROM spans_fts').all() as { spanId: string }[]).map(r => r.spanId),
-  );
-  const toIndex = (db.prepare('SELECT spanId, name, attributes FROM spans').all() as
-    { spanId: string; name: string; attributes: string }[])
-    .filter(s => !indexed.has(s.spanId));
-  if (toIndex.length > 0) {
-    const ftsInsert = db.prepare('INSERT OR IGNORE INTO spans_fts(spanId, name, attributes) VALUES (?, ?, ?)');
-    const tx = db.transaction(() => { for (const s of toIndex) ftsInsert.run(s.spanId, s.name, s.attributes); });
-    tx();
-  }
-}
+// Backfilling the mirror is now reindexFtsMirror()'s job (server/db.ts), driven
+// from the guarded boot sequence. It replaces a module-level backfill that read
+// every spanId AND every span row into memory on each import — an unbounded
+// allocation on a large database — and that indexed rows without pinning the FTS
+// rowid to the span it mirrors, which the delete trigger depends on.
 
 // ---------------------------------------------------------------------------
 // Webhook delivery log — tracks every attempt with retry support
@@ -519,19 +689,69 @@ const auditLog = makeAuditLogger(
 // ---------------------------------------------------------------------------
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const RULES_FILE = path.join(REPO_ROOT, 'rules.json');
+// CLAUDESEC_RULES_FILE lets a caller (a test fixture, an advanced operator)
+// point custom-rule load/save at a file of its own choosing instead of the
+// repo-root default — same override shape as CLAUDESEC_DB. Unset, this is
+// byte-identical to the old hardcoded path.
+const RULES_FILE = process.env.CLAUDESEC_RULES_FILE ?? path.join(REPO_ROOT, 'rules.json');
 let customRules: CustomRule[] = [];
 
-function loadCustomRules() {
+// Compiled-pattern cache. detectSeverity() runs on EVERY span and was calling
+// `new RE2(...)` once per custom rule per span — recompiling the same handful of
+// patterns thousands of times a minute on the hot ingest path. Compile once,
+// keyed by the rule's own pattern+flags so an edited rule gets a fresh compile,
+// and cleared whenever the rule set is loaded or saved. A pattern RE2 rejects is
+// cached as `null`, so a broken rule is reported once instead of throwing on
+// every single span.
+// Stateful sequence detection. One engine for the process, bounded internally
+// (FIFO over traces, ring over facts) so a flood of unique traceIds — which on
+// the OTLP path is untrusted input — cannot grow it without limit.
+const sequenceEngine = new SequenceEngine();
+
+const _customRuleRegex = new Map<string, RE2 | null>();
+function invalidateCustomRuleCache(): void { _customRuleRegex.clear(); }
+
+function compileCustomRule(rule: CustomRule): RE2 | null {
+  const key = `${rule.flags ?? ''}::${rule.pattern}`;
+  const cached = _customRuleRegex.get(key);
+  if (cached !== undefined) return cached;
+  let compiled: RE2 | null = null;
   try {
-    if (fs.existsSync(RULES_FILE)) {
-      customRules = JSON.parse(fs.readFileSync(RULES_FILE, 'utf-8'));
-    }
-  } catch { customRules = []; }
+    compiled = new RE2(rule.pattern, rule.flags);
+  } catch (err) {
+    console.warn(`[rules] custom rule "${rule.label}" has an invalid pattern and will not run: ${(err as Error)?.message}`);
+  }
+  _customRuleRegex.set(key, compiled);
+  return compiled;
+}
+
+function loadCustomRules() {
+  if (!fs.existsSync(RULES_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(RULES_FILE, 'utf-8'));
+    if (!Array.isArray(parsed)) throw new Error('rules.json must contain a JSON array');
+    customRules = parsed;
+  } catch (err) {
+    // NEVER silently reset to []. A truncated or corrupt file used to be swallowed
+    // here, so the next boot came up with every operator-authored rule gone and no
+    // sign anything was wrong — detection quietly weakened. Leave the in-memory set
+    // untouched, keep the file on disk for the operator to inspect, and say so loudly.
+    console.error(
+      `[rules] FAILED to load custom rules from ${RULES_FILE}: ${(err as Error)?.message}\n` +
+      `[rules] Custom rules are NOT loaded — built-in detection still runs. ` +
+      `Fix or remove the file and restart; it will not be overwritten until a rule is saved.`,
+    );
+  }
+  invalidateCustomRuleCache();
 }
 
 function saveCustomRules() {
-  fs.writeFileSync(RULES_FILE, JSON.stringify(customRules, null, 2));
+  // Atomic write (temp file + rename, 0600): a crash mid-write used to leave a
+  // truncated rules.json that the loader above then rejected, losing every custom
+  // rule. Rename is atomic on the same filesystem, so a reader sees either the
+  // whole old file or the whole new one.
+  atomicWrite0600(RULES_FILE, JSON.stringify(customRules, null, 2) + '\n');
+  invalidateCustomRuleCache();
 }
 
 loadCustomRules();
@@ -806,29 +1026,51 @@ function writeEnforceConfigFile(): void {
 // Retention policy + DB health
 // ---------------------------------------------------------------------------
 
+/** Read a stored retention value, or undefined when the key was never written. */
+const readRetentionConfig = (key: string): string | undefined => getConfig.get(key)?.value;
+
 function getMaxSpans(): number {
-  const env = Number(process.env.CLAUDESEC_MAX_SPANS);
-  if (env > 0) return env;
-  const cfg = Number(getConfig.get('retention.max_spans')?.value ?? 0);
-  return cfg > 0 ? cfg : 50_000;
+  return resolveKnob(process.env.CLAUDESEC_MAX_SPANS, readRetentionConfig('retention.max_spans'), DEFAULT_MAX_SPANS).value;
 }
 
 function getRetentionDays(): number {
-  const env = Number(process.env.CLAUDESEC_RETENTION_DAYS);
-  if (env > 0) return env;
-  const cfg = Number(getConfig.get('retention.days')?.value ?? 0);
-  // Default 183 days (~6 months) — meets the EU AI Act minimum log-retention
-  // floor for high-risk AI systems. Override down with CLAUDESEC_RETENTION_DAYS
-  // or the retention.days config if a shorter window is acceptable for you.
-  return cfg > 0 ? cfg : 183;
+  // The default is the "Minimum" profile: a 183-day (~6 month) window paired
+  // with a span ceiling large enough that the window is actually reachable.
+  // Setting the days alone is the original bug — see server/retentionProfiles.ts.
+  return resolveKnob(process.env.CLAUDESEC_RETENTION_DAYS, readRetentionConfig('retention.days'), DEFAULT_RETENTION_DAYS).value;
+}
+
+/** Retention as the user experiences it, measured against this install's own ingest rate. */
+function getRetentionStatus(): ResolvedRetention {
+  return resolveRetention({ env: process.env, readConfig: readRetentionConfig, db });
+}
+
+/**
+ * Is OTLP ingestion allowed to accept more spans?
+ *
+ * The capacity circuit breaker stops ingest at 90% of the span ceiling. That is
+ * a safety valve against runaway growth, but it is also the sharp edge of the
+ * two-knob interaction: pruning may only reclaim OUT-of-window spans, so a
+ * ceiling smaller than the retention window's own volume latches the breaker
+ * shut with no way to reopen it. Profiles size the ceiling to the window so this
+ * cannot happen by default; an unbounded ceiling disables the breaker entirely.
+ */
+function ingestCapacityExhausted(currentSpans: number): boolean {
+  const maxSpans = getMaxSpans();
+  if (maxSpans === RETENTION_UNBOUNDED) return false;
+  return currentSpans >= maxSpans * INGEST_BREAKER_RATIO;
 }
 
 function pruneSpans(): { prunedByAge: number; prunedByCount: number } {
   let prunedByAge = 0;
   let prunedByCount = 0;
 
-  // Age-based pruning: remove sessions (and their spans/alerts) older than N days
+  // Age-based pruning: remove sessions (and their spans/alerts) older than N days.
+  // An unbounded window (the Forensic profile) prunes nothing at all — and with
+  // no age cutoff there is no out-of-window data, so the count cap below has
+  // nothing it is allowed to reclaim either.
   const cutoffDays = getRetentionDays();
+  if (cutoffDays === RETENTION_UNBOUNDED) return { prunedByAge, prunedByCount };
   const cutoffDate = new Date(Date.now() - cutoffDays * 24 * 60 * 60 * 1000).toISOString();
   const oldSessions = db.prepare(
     `SELECT traceId FROM sessions WHERE createdAt < ?`
@@ -853,7 +1095,7 @@ function pruneSpans(): { prunedByAge: number; prunedByCount: number } {
   const maxSpans = getMaxSpans();
   const cutoffNano = String((Date.now() - cutoffDays * 24 * 60 * 60 * 1000) * 1e6);
   const totalSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
-  if (totalSpans > maxSpans) {
+  if (maxSpans !== RETENTION_UNBOUNDED && totalSpans > maxSpans) {
     const excess = totalSpans - maxSpans;
     // Delete the oldest spans, but only those already past the retention cutoff.
     const result = db.prepare(
@@ -873,36 +1115,128 @@ function pruneSpans(): { prunedByAge: number; prunedByCount: number } {
 // Behavioral anomaly detection
 // ---------------------------------------------------------------------------
 
-// Runs after each OTLP batch — checks for statistical anomalies per session
-function detectBehavioralAnomalies(traceId: string, harness: string): void {
-  const spans = db.prepare(`SELECT * FROM spans WHERE traceId = ?`).all(traceId) as SpanRecord[];
-  if (spans.length === 0) return;
+// The sweep re-runs this for every dirty trace every 2.5s, forever. The whole
+// point of the SQL below is that NOTHING it needs is worth shipping into JS:
+// reading a trace back as rows meant materialising every `attributes` blob and
+// JSON.parse-ing it, which on the largest real session (21,182 spans / 12.5 MB)
+// cost ~50 ms per call — per trace, per tick, for the life of the session. The
+// function only ever wanted five scalars out of all that text, so SQLite
+// computes them in place and hands back exactly those five.
+//
+// `rowid` is the ordering key throughout because spans are inserted in arrival
+// order, so rowid IS insertion order — see the note on `anomalyTail`.
 
-  const now = new Date().toISOString();
+// Input-token count for one span, mirroring the JS this replaces:
+//  • COALESCE = the `??` chain (falls through only on a missing/null key).
+//  • CAST(… AS REAL) = `Number(…)`, so a numeric string counts and a
+//    non-numeric one lands on 0 the same way `Number('x')` lands on NaN.
+//  • NULLIF(MAX(v, 0), 0) = the `if (ti > 0)` filter, collapsing anything
+//    non-positive to NULL so COUNT/SUM skip it exactly as `push` did.
+const tokenExpr = (src: string) => `
+  NULLIF(MAX(CAST(COALESCE(
+    json_extract(${src}, '$."gen_ai.usage.input_tokens"'),
+    json_extract(${src}, '$."llm.usage.input_tokens"')) AS REAL), 0), 0)`;
 
-  // 1. Token spike detection
-  //    Flag if a single span uses > 3× the session average input tokens
-  const tokenValues: number[] = [];
-  for (const span of spans) {
+// A tool call, mirroring `if (attrs['gen_ai.tool.name'] || attrs['tool.name'])`.
+// The nested NULLIFs reproduce JS falsiness: an empty string or a 0/false value
+// is present-but-falsy and must NOT be counted.
+const toolExpr = (src: string) => `
+  COALESCE(NULLIF(NULLIF(json_extract(${src}, '$."gen_ai.tool.name"'), ''), 0),
+           NULLIF(NULLIF(json_extract(${src}, '$."tool.name"'), ''), 0))`;
+
+// One pass over the trace yields every token/tool fact at once. `lastTokenRowid`
+// is carried out instead of the value itself so the "latest" reading is a single
+// rowid lookup afterwards rather than a second scan.
+const anomalyUsageSql = (src: string) => `
+  SELECT COUNT(v)                                  AS tokenCount,
+         SUM(v)                                    AS tokenSum,
+         MAX(CASE WHEN v IS NOT NULL THEN rid END) AS lastTokenRowid,
+         COUNT(tool)                               AS toolCallCount
+    FROM (SELECT rowid AS rid,
+                 ${tokenExpr(src)} AS v,
+                 ${toolExpr(src)}  AS tool
+            FROM spans WHERE traceId = ?)`;
+
+const anomalyUsage = db.prepare(anomalyUsageSql('attributes'));
+
+// json_extract THROWS on malformed JSON, and the sweep swallows throws — so one
+// unparseable blob would silently switch anomaly detection off for that whole
+// trace. The JS this replaces just skipped such a span (try/catch per span), so
+// the guarded variant below preserves that. It is the fallback rather than the
+// default because json_valid() is a second full parse of every blob, which costs
+// about as much as the entire aggregate; real data has never needed it.
+const anomalyUsageSafe = db.prepare(
+  anomalyUsageSql(`CASE WHEN json_valid(attributes) THEN attributes ELSE '{}' END`));
+
+// Unguarded on purpose: it is only ever asked for a rowid that one of the two
+// queries above already read a positive token value out of, so that row parsed.
+const anomalyTokenAt = db.prepare(`
+  SELECT ${tokenExpr('attributes')} AS v FROM spans WHERE rowid = ?
+`);
+
+// The newest span plus the severities of the last ten, in one read. Ordering by
+// rowid is what `spans.slice(-10)` was reaching for — see the ORDERING note in
+// detectBehavioralAnomalies().
+const anomalyTail = db.prepare(`
+  SELECT spanId, severity FROM spans WHERE traceId = ? ORDER BY rowid DESC LIMIT 10
+`);
+
+const anomalySpanCount = db.prepare(`SELECT COUNT(*) AS n FROM spans WHERE traceId = ?`);
+
+// Runs after each OTLP batch — checks for statistical anomalies per session.
+// Exported so tests can drive it directly, the same way alertFiredWithin is.
+// `nowMs` exists so a caller can pin the clock. The off-hours rule keys off the
+// local hour, so without it this function's output depends on what time of day it
+// runs — which made its own test pass all evening and fail after midnight. Tests
+// pin it; production never passes it and gets the wall clock.
+export function detectBehavioralAnomalies(traceId: string, harness: string, nowMs: number = Date.now()): void {
+  const spanCount = (anomalySpanCount.get(traceId) as { n: number }).n;
+  if (spanCount === 0) return;
+
+  const now = new Date(nowMs).toISOString();
+  const hour = new Date(nowMs).getHours();
+
+  // Ask the dedup guards FIRST. Each rule has its own label, so no rule's alert
+  // can change another's answer, and a rule that is inside its window would have
+  // discarded whatever we computed for it anyway. Hoisting the checks above the
+  // reads is therefore invisible in the output and lets a trace that is already
+  // alerting skip the scan entirely instead of re-deriving it every 2.5s.
+  const wantSpike    = !alertFiredWithin(traceId, 'Token spike detected',     5 * 60_000, nowMs);
+  const wantBurst    = !alertFiredWithin(traceId, 'Threat burst detected',   10 * 60_000, nowMs);
+  const wantTools    = !alertFiredWithin(traceId, 'Excessive tool calls',    30 * 60_000, nowMs);
+  const wantOffHours = hour < 6 &&
+                       !alertFiredWithin(traceId, 'Off-hours agent activity', 60 * 60_000, nowMs);
+  if (!wantSpike && !wantBurst && !wantTools && !wantOffHours) return;
+
+  // ORDERING: every rule below reports the newest span of the trace, and rule 2
+  // looks at the newest ten. "Newest" is rowid order — spans are appended as
+  // they arrive, so rowid is arrival order. The code this replaces took the tail
+  // of an unordered `SELECT *`, which SQLite answers from idx_spans_traceId_severity,
+  // so its "last ten spans" were really the ten highest in SEVERITY order —
+  // almost always ten `none` rows, which is why the burst rule seldom fired.
+  const tail = anomalyTail.all(traceId) as { spanId: string; severity: Severity }[];
+  const newestSpanId = tail[0].spanId;
+
+  // 1 + 3. Token and tool-call totals — one pass, and only when a rule can act.
+  if (wantSpike || wantTools) {
+    let usage: { tokenCount: number; tokenSum: number | null; lastTokenRowid: number | null; toolCallCount: number };
     try {
-      const attrs = JSON.parse(span.attributes);
-      const ti = Number(attrs['gen_ai.usage.input_tokens'] ?? attrs['llm.usage.input_tokens'] ?? 0);
-      if (ti > 0) tokenValues.push(ti);
-    } catch {}
-  }
-  if (tokenValues.length >= 3) {
-    const avg = tokenValues.reduce((a, b) => a + b, 0) / tokenValues.length;
-    const latest = tokenValues[tokenValues.length - 1];
-    if (latest > avg * 4 && latest > 2000) {
-      const alreadyFlagged = db.prepare(
-        `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Token spike detected' AND ts > datetime('now', '-5 minutes')`
-      ).get(traceId);
-      if (!alreadyFlagged) {
+      usage = anomalyUsage.get(traceId) as typeof usage;
+    } catch {
+      usage = anomalyUsageSafe.get(traceId) as typeof usage;
+    }
+
+    // 1. Token spike detection
+    //    Flag if a single span uses > 4× the session average input tokens
+    if (wantSpike && usage.tokenCount >= 3 && usage.lastTokenRowid !== null) {
+      const avg = (usage.tokenSum ?? 0) / usage.tokenCount;
+      const latest = (anomalyTokenAt.get(usage.lastTokenRowid) as { v: number }).v;
+      if (latest > avg * 4 && latest > 2000) {
         insertOrDedupeAlert({
           ts: now,
           ruleLabel:   'Token spike detected',
           severity:    'medium' as Severity,
-          spanId:      spans[spans.length - 1].spanId,
+          spanId:      newestSpanId,
           traceId,
           harness,
           spanName:    'behavioral-anomaly',
@@ -910,76 +1244,55 @@ function detectBehavioralAnomalies(traceId: string, harness: string): void {
         });
       }
     }
-  }
 
-  // 2. Threat escalation — >= 3 threats in last 10 spans (concentrated threat burst)
-  const recentThreats = spans.slice(-10).filter(s => s.severity !== 'none').length;
-  if (recentThreats >= 3) {
-    const alreadyFlagged = db.prepare(
-      `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Threat burst detected' AND ts > datetime('now', '-10 minutes')`
-    ).get(traceId);
-    if (!alreadyFlagged) {
-      insertOrDedupeAlert({
-        ts: now,
-        ruleLabel:   'Threat burst detected',
-        severity:    'high' as Severity,
-        spanId:      spans[spans.length - 1].spanId,
-        traceId,
-        harness,
-        spanName:    'behavioral-anomaly',
-        matchedText: `${recentThreats} threats in last ${Math.min(spans.length, 10)} spans`,
-      });
-    }
-  }
-
-  // 3. Excessive tool calls — > 100 total tool calls in a session
-  let toolCallCount = 0;
-  for (const span of spans) {
-    try {
-      const attrs = JSON.parse(span.attributes);
-      if (attrs['gen_ai.tool.name'] || attrs['tool.name']) toolCallCount++;
-    } catch {}
-  }
-  // The old `toolCallCount % 50 === 1` guard almost never matched: OTLP arrives
-  // in batches, so the running total skips the exact trigger values and the
-  // alert silently never fired. Fire on any count > 100 and rely solely on the
-  // 30-minute dedup window below to prevent flooding.
-  if (toolCallCount > 100) {
-    const alreadyFlagged = db.prepare(
-      `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Excessive tool calls' AND ts > datetime('now', '-30 minutes')`
-    ).get(traceId);
-    if (!alreadyFlagged) {
+    // 3. Excessive tool calls — > 100 total tool calls in a session
+    // The old `toolCallCount % 50 === 1` guard almost never matched: OTLP arrives
+    // in batches, so the running total skips the exact trigger values and the
+    // alert silently never fired. Fire on any count > 100 and rely solely on the
+    // 30-minute dedup window above to prevent flooding.
+    if (wantTools && usage.toolCallCount > 100) {
       insertOrDedupeAlert({
         ts: now,
         ruleLabel:   'Excessive tool calls',
         severity:    'low' as Severity,
-        spanId:      spans[spans.length - 1].spanId,
+        spanId:      newestSpanId,
         traceId,
         harness,
         spanName:    'behavioral-anomaly',
-        matchedText: `${toolCallCount} tool calls in session`,
+        matchedText: `${usage.toolCallCount} tool calls in session`,
+      });
+    }
+  }
+
+  // 2. Threat escalation — >= 3 threats in last 10 spans (concentrated threat burst)
+  if (wantBurst) {
+    const recentThreats = tail.filter(s => s.severity !== 'none').length;
+    if (recentThreats >= 3) {
+      insertOrDedupeAlert({
+        ts: now,
+        ruleLabel:   'Threat burst detected',
+        severity:    'high' as Severity,
+        spanId:      newestSpanId,
+        traceId,
+        harness,
+        spanName:    'behavioral-anomaly',
+        matchedText: `${recentThreats} threats in last ${Math.min(spanCount, 10)} spans`,
       });
     }
   }
 
   // 4. Off-hours activity — outside 06:00–23:59 local time
-  const hour = new Date().getHours();
-  if (hour < 6) {
-    const alreadyFlagged = db.prepare(
-      `SELECT 1 FROM alerts WHERE traceId = ? AND ruleLabel = 'Off-hours agent activity' AND ts > datetime('now', '-60 minutes')`
-    ).get(traceId);
-    if (!alreadyFlagged) {
-      insertOrDedupeAlert({
-        ts: now,
-        ruleLabel:   'Off-hours agent activity',
-        severity:    'low' as Severity,
-        spanId:      spans[spans.length - 1].spanId,
-        traceId,
-        harness,
-        spanName:    'behavioral-anomaly',
-        matchedText: `Activity at ${String(hour).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} local time`,
-      });
-    }
+  if (wantOffHours) {
+    insertOrDedupeAlert({
+      ts: now,
+      ruleLabel:   'Off-hours agent activity',
+      severity:    'low' as Severity,
+      spanId:      newestSpanId,
+      traceId,
+      harness,
+      spanName:    'behavioral-anomaly',
+      matchedText: `Activity at ${String(hour).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} local time`,
+    });
   }
 }
 
@@ -1008,6 +1321,118 @@ const APP_VERSION = (() => {
 
 // ── OTLP forwarding stats ────────────────────────────────────────────────
 const forwardStats = { total: 0, success: 0, failed: 0, lastError: '', lastSuccessAt: '' };
+
+// ── OTLP forwarding: scrub the batch before it leaves the machine ────────
+//
+// The scrubber protects what we PERSIST and BROADCAST. The OTEL_FORWARD_URL
+// proxy used to POST the raw request body, so an upstream collector received
+// exactly what the scrubber exists to keep on-device: live credentials, home
+// paths and the operator's username out of the agent's tool arguments. These
+// helpers re-run the ingest scrub over the OTLP document itself so the copy we
+// send matches the copy we store.
+//
+// The OTLP envelope is preserved: resourceSpans / scopeSpans / spans and the
+// attribute list keep their shape and only the VALUES change, so a downstream
+// collector parses the forwarded batch exactly as it would the original.
+
+/**
+ * Scrub one OTLP AnyValue. `key` is the attribute's own key, which the scrubber
+ * uses to mask sensitive names (authorization, api_key, …) whatever the value
+ * type — so a masked int comes back as the same `***` string the database holds.
+ */
+function scrubOtlpValue(key: string, value: any, opts: ScrubOptions): any {
+  // The overwhelmingly common case, and the only one that carries free text.
+  if (typeof value?.stringValue === 'string') {
+    const scrubbed = scrubAttributes({ [key]: value.stringValue }, opts).attrs[key];
+    return { ...value, stringValue: String(scrubbed) };
+  }
+  // Everything below can only change if the KEY is sensitive. Probe it with an
+  // empty string — the scrubber masks by key before it looks at the value, so a
+  // `***` back means "sensitive" without duplicating the list scrub.ts owns.
+  const keyIsSensitive = scrubAttributes({ [key]: '' }, opts).attrs[key] === '***';
+
+  // Numbers and booleans have no text to redact. Handing back the mask as a
+  // string is still valid OTLP and keeps the forwarded value identical to the
+  // one the database holds.
+  if (value?.intValue !== undefined || value?.doubleValue !== undefined || value?.boolValue !== undefined) {
+    return keyIsSensitive ? { stringValue: '***' } : value;
+  }
+  // Structured values (arrayValue / kvlistValue): the scrubber walks nested
+  // objects and arrays itself and rebuilds them key-for-key, so the OTLP shape
+  // survives and every string leaf inside is redacted.
+  if (value && typeof value === 'object') {
+    if (keyIsSensitive) return { stringValue: '***' };
+    return scrubAttributes({ [key]: value }, opts).attrs[key];
+  }
+  return value;
+}
+
+/** Scrub an OTLP attribute list, leaving malformed entries untouched. */
+function scrubOtlpAttributes(attributes: unknown, opts: ScrubOptions): unknown {
+  if (!Array.isArray(attributes)) return attributes;
+  return attributes.map((attr: any) =>
+    attr && typeof attr.key === 'string'
+      ? { ...attr, value: scrubOtlpValue(attr.key, attr.value, opts) }
+      : attr,
+  );
+}
+
+/**
+ * Rebuild an OTLP batch with every attribute value, span name and status
+ * message scrubbed.
+ *
+ * Rebuilt rather than scrubbed in place: detection deliberately runs on the RAW
+ * attributes — paths, hosts and secrets are what the rules match on — so
+ * mutating `req.body` would make rule accuracy depend on the order the ingest
+ * handler happens to call things in. Copies are shallow (only the objects on the
+ * path down to an attribute value are recreated), so this is one pass over the
+ * batch, not a deep clone of it.
+ */
+export function scrubTraceDataForForward(traceData: TraceData, opts: ScrubOptions): TraceData {
+  // CLAUDESEC_DISABLE_SCRUB=1 (honoured by scrub.ts via `opts.enabled`) means
+  // the operator asked for raw data everywhere — forward the body untouched
+  // rather than paying for a rebuild that changes nothing.
+  if (!opts.enabled) return traceData;
+  if (!Array.isArray(traceData?.resourceSpans)) return traceData;
+
+  return {
+    ...traceData,
+    resourceSpans: traceData.resourceSpans.map((rs: any) => ({
+      ...rs,
+      resource: rs?.resource
+        ? { ...rs.resource, attributes: scrubOtlpAttributes(rs.resource.attributes, opts) }
+        : rs?.resource,
+      scopeSpans: Array.isArray(rs?.scopeSpans)
+        ? rs.scopeSpans.map((ss: any) => ({
+            ...ss,
+            scope: ss?.scope
+              ? { ...ss.scope, attributes: scrubOtlpAttributes(ss.scope.attributes, opts) }
+              : ss?.scope,
+            spans: Array.isArray(ss?.spans)
+              ? ss.spans.map((span: any) => ({
+                  ...span,
+                  name: typeof span?.name === 'string' ? scrubText(span.name, opts) : span?.name,
+                  attributes: scrubOtlpAttributes(span?.attributes, opts),
+                  status: span?.status && typeof span.status.message === 'string'
+                    ? { ...span.status, message: scrubText(span.status.message, opts) }
+                    : span?.status,
+                  events: Array.isArray(span?.events)
+                    ? span.events.map((ev: any) => ({
+                        ...ev,
+                        name: typeof ev?.name === 'string' ? scrubText(ev.name, opts) : ev?.name,
+                        attributes: scrubOtlpAttributes(ev?.attributes, opts),
+                      }))
+                    : span?.events,
+                  links: Array.isArray(span?.links)
+                    ? span.links.map((ln: any) => ({ ...ln, attributes: scrubOtlpAttributes(ln?.attributes, opts) }))
+                    : span?.links,
+                }))
+              : ss?.spans,
+          }))
+        : rs?.scopeSpans,
+    })),
+  } as TraceData;
+}
 
 // ── Auto-export (hourly) ─────────────────────────────────────────────────
 const EXPORT_DIR = process.env.CLAUDESEC_AUTO_EXPORT_DIR || path.join(REPO_ROOT, 'exports');
@@ -1045,9 +1470,18 @@ function autoExport() {
   }
 }
 
+// Auto-export is OPT-IN. It serialises every span, alert and session into one
+// JSON file on the same thread that serves the dashboard, so its cost scales with
+// the database: at ~260k spans a single run wrote 250 MB and stalled the event
+// loop long enough that the UI went blank and /api/rules took over a minute.
+// Retaining 24 of those meant ~6 GB on disk, growing forever. Nobody opted into
+// that by installing a security monitor, so it now runs only when asked for.
+// Set CLAUDESEC_AUTO_EXPORT=1 to enable; use POST /api/export for a one-off.
+const AUTO_EXPORT_ENABLED = process.env.CLAUDESEC_AUTO_EXPORT === '1';
+
 // Schedule auto-export only when running as the entry point — an import (test /
 // build tool) must not leave a live timer running or write export files.
-if (IS_ENTRY_POINT) {
+if (IS_ENTRY_POINT && AUTO_EXPORT_ENABLED) {
   // Run auto-export every hour
   setInterval(autoExport, 60 * 60 * 1000);
   // Initial export after 30s (let server initialize)
@@ -1123,8 +1557,9 @@ async function fireWebhook(alert: {
   } else if (isDiscord) {
     const color = alert.severity === 'critical' ? 0xf43f5e : alert.severity === 'high' ? 0xef4444 : alert.severity === 'medium' ? 0xf97316 : 0xeab308;
     body = JSON.stringify({
+      // No avatar_url: Discord falls back to the avatar configured on the webhook
+      // itself, which is the one the operator controls.
       username: 'ClaudeSec',
-      avatar_url: 'https://raw.githubusercontent.com/aanjaneyasinghdhoni/ClaudeSec/main/public/logo.png',
       embeds: [{
         title: `${sevEmoji} ${alert.severity.toUpperCase()}: ${alert.ruleLabel}`,
         color,
@@ -1289,7 +1724,17 @@ interface DetectHit {
   matchStart: number;
   matchEnd:   number;
   ruleKey:    string;
+  /** How many BUILT-IN rules this text tripped, not just the one reported.
+   *  Zero for a custom-rule hit (custom rules short-circuit before the built-ins
+   *  run at all) and a lower bound when a `critical` match ended the scan early.
+   *  See detectSeverity() for why both of those are the intended behaviour. */
+  builtinMatches: number;
 }
+
+// The top of SEVERITY_RANK (imported from the sequence engine, so the stateless
+// and sequence detectors can never disagree on what outranks what). Named here
+// because detectSeverity() stops its scan the moment it reaches this rank.
+const CRITICAL_RANK = SEVERITY_RANK.critical;
 
 // ── Enforcement event log (PreToolUse hook → /api/enforce-log) ──────────────
 // The last N enforcement decisions reported by the opt-in claudesec-enforce.cjs
@@ -1298,7 +1743,39 @@ interface DetectHit {
 // hash chain as the operator audit log, so the feed survives a restart. Capped
 // + pruned on insert; the live Socket.io broadcast is unchanged.
 
-function detectSeverity(text: string): DetectHit {
+// Returns the WORST rule this text trips, not the first one in array order.
+//
+// This used to return on the first match, which quietly made array position the
+// arbiter of severity. It isn't one: the broad low-severity core rules sit near
+// the top of SEVERITY_RULES and shadowed the specific high-severity rules in the
+// EXTRA set that follow them. `cp -R ~/.ssh/ /tmp/backup/` reported as a low
+// "SSH directory access" because that rule is listed before "Credential store
+// directory copied"; `tar czf a.tgz ~/.ssh` reported as a low "Archive
+// creation/extraction"; `pkill -f server/index.ts` as a low "Process kill by
+// name". Every one of those is a high finding wearing a low label on the
+// dashboard.
+//
+// Enforcement was never affected — the PreToolUse hook filters to `action:
+// 'block'` rules before it matches, so blocking already ignored this ordering.
+// This is a dashboard-truth fix.
+//
+// Four properties the loop below is built to hold:
+//   1. All built-ins are evaluated; the highest severity wins.
+//   2. `critical` short-circuits — nothing can outrank it, so the scan stops.
+//   3. Ties keep the FIRST match in array order (`rank > bestRank`, never >=),
+//      so deliberate ordering WITHIN a severity tier still decides, exactly as
+//      it did before.
+//   4. Custom rules are not folded into the max. They are evaluated first and
+//      win outright — a documented user-override guarantee, not an artefact of
+//      ordering. A custom hit therefore also skips the built-in scan entirely.
+//
+// Cost: a span that matches nothing already ran every rule, so the extra work
+// falls only on spans that DO match (~2.8% of stored spans on a real database).
+// Measured on real span text: non-matching unchanged, matching ~277µs → ~1087µs,
+// weighted aggregate ~160µs → ~183µs per span.
+// Exported so tests/severityMaxTest.ts can exercise the real detector rather
+// than a copy of it; the module is inert on import (CLAUDESEC_NO_AUTOSTART).
+export function detectSeverity(text: string): DetectHit {
   // SECURITY: batch the suppression + disabled-rule lookups — both cached for
   // ~2s, so ingest never round-trips SQLite per rule per span under load.
   const suppressed = getSuppressedKeysCached();
@@ -1312,8 +1789,9 @@ function detectSeverity(text: string): DetectHit {
     // Skip patterns that exceed the ReDoS-mitigation cap (e.g. rules persisted
     // before the limit was enforced at creation time).
     if (rule.pattern.length > MAX_RULE_PATTERN_LEN) continue;
+    const re = compileCustomRule(rule);
+    if (!re) continue; // invalid pattern — already reported once
     try {
-      const re = new RE2(rule.pattern, rule.flags);
       const m = re.exec(text);
       if (m) {
         return {
@@ -1323,10 +1801,17 @@ function detectSeverity(text: string): DetectHit {
           matchStart: m.index,
           matchEnd:   m.index + m[0].length,
           ruleKey:    key,
+          // The built-ins were never reached, so there is no built-in count to
+          // report — not "zero built-ins matched".
+          builtinMatches: 0,
         };
       }
     } catch { /* invalid regex — skip */ }
   }
+
+  let best: DetectHit | null = null;
+  let bestRank = 0;
+  let builtinMatches = 0;
 
   for (let i = 0; i < SEVERITY_RULES.length; i++) {
     const key = `builtin-${i}`;
@@ -1336,21 +1821,39 @@ function detectSeverity(text: string): DetectHit {
     // in the disabled set (filtered at cache build), so they always run.
     if (disabled.has(rule.label)) continue;
     const m = rule.pattern.exec(text);
-    if (m) {
-      return {
-        severity: rule.severity,
-        matchedLabel: rule.label,
-        matchedText: m[0].slice(0, 100),
-        matchStart: m.index,
-        matchEnd:   m.index + m[0].length,
-        ruleKey:    key,
-      };
-    }
+    if (!m) continue;
+    // `none` (rank 0) is not a severity any shipped rule may carry —
+    // tests/ruleSelfTest.ts enforces low|medium|high|critical — so a rule that
+    // somehow rated it is ignored rather than reported as a hit or counted.
+    const rank = SEVERITY_RANK[rule.severity] ?? 0;
+    if (rank === 0) continue;
+    builtinMatches++;
+    // Strictly greater: an equal-severity later rule never displaces the first,
+    // so intra-tier array order keeps deciding exactly as it did before.
+    if (rank <= bestRank) continue;
+    bestRank = rank;
+    best = {
+      severity: rule.severity,
+      matchedLabel: rule.label,
+      matchedText: m[0].slice(0, 100),
+      matchStart: m.index,
+      matchEnd:   m.index + m[0].length,
+      ruleKey:    key,
+      builtinMatches: 0, // filled in below, once the scan has finished counting
+    };
+    // Nothing outranks critical, so keep the old first-match cost for the worst
+    // findings. The count then reports the rules seen so far, a lower bound.
+    if (rank === CRITICAL_RANK) break;
+  }
+
+  if (best) {
+    best.builtinMatches = builtinMatches;
+    return best;
   }
 
   return {
     severity: 'none', matchedLabel: '', matchedText: '',
-    matchStart: -1, matchEnd: -1, ruleKey: '',
+    matchStart: -1, matchEnd: -1, ruleKey: '', builtinMatches: 0,
   };
 }
 
@@ -1405,7 +1908,51 @@ function recordToEdge(r: SpanRecord) {
   };
 }
 
-function buildGraph(sessionFilter?: string) {
+function parseListParam(v: unknown): string[] {
+  if (!v) return [];
+  return String(v).split(',').map(s => s.trim()).filter(Boolean);
+}
+
+const GRAPH_SEVERITIES = new Set<string>(['none', 'low', 'medium', 'high', 'critical']);
+
+// Mirrors the windowMs lookup src/App.tsx used to run client-side over an
+// already-truncated span list. Computing the cutoff here means the same `t`
+// value now scopes the same wall-clock window no matter which layer applies it.
+function timeRangeToSinceNano(t: string): string | undefined {
+  const ms =
+    t === '1h'  ? 60 * 60 * 1000 :
+    t === '24h' ? 24 * 60 * 60 * 1000 :
+    t === '7d'  ? 7 * 24 * 60 * 60 * 1000 : 0;
+  if (!ms) return undefined;
+  // startNano is a 19-digit nanosecond-epoch string; ms * 1e6 keeps that same
+  // width, so buildGraph's plain TEXT `>=` sorts identically to a numeric one.
+  return String((Date.now() - ms) * 1e6);
+}
+
+// The filter axes /api/graph accepts, mirroring the ones the Timeline offers
+// (src/shell/filterState.ts's Filters). `sinceNano` is pre-computed by the
+// route handler rather than taking a TimeRange string here, so buildGraph
+// itself never has to know about '1h'/'24h'/'7d' — it only ever compares
+// startNano to a cutoff.
+interface GraphFilters {
+  session?: string;
+  repo?: string[];
+  severity?: string[];
+  harness?: string[];
+  /** Nanosecond-epoch cutoff, same 19-digit width as startNano — see the note below. */
+  sinceNano?: string;
+  q?: string;
+}
+
+// Accepts either the old bare session id (every existing internal caller —
+// the OTLP/import broadcasts, /api/reset, /api/demo/clear, the process
+// scanner) or the new filters object (the /api/graph route). Keeping the
+// string overload means none of those call sites, or the buildGraph?: type
+// in routes/context.ts, need to change for this to compile.
+function buildGraph(arg?: string | GraphFilters) {
+  const filters: GraphFilters = typeof arg === 'string' ? { session: arg } : (arg ?? {});
+  const { session, repo = [], severity = [], harness = [], sinceNano, q } = filters;
+
   // A single session is already bounded, so it loads in full. The unscoped graph
   // loads only the most-recent N spans (see GRAPH_LIMIT) to keep both the server
   // build and the frontend relayout fast. `windowed` tells the UI when older
@@ -1413,11 +1960,54 @@ function buildGraph(sessionFilter?: string) {
   let records: SpanRecord[];
   let windowed = false;
   let total = 0;
-  if (sessionFilter) {
-    records = db.prepare('SELECT * FROM spans WHERE traceId = ?').all(sessionFilter) as SpanRecord[];
+  if (session) {
+    records = db.prepare('SELECT * FROM spans WHERE traceId = ?').all(session) as SpanRecord[];
   } else {
-    total   = (countSpans.get() as { c: number }).c;
-    records = getRecentSpans.all(GRAPH_LIMIT) as SpanRecord[];
+    // Equality/IN filters first — each is the leading column of a composite
+    // index (idx_spans_repo_sev_start, idx_spans_severity_startNano,
+    // idx_spans_harness_start_sev), so SQLite seeks to the matching rows
+    // instead of scanning all ~270k. Repo values are already scrubbed at
+    // ingest (e.g. "/Users/***/…"), so this matches the stored value exactly
+    // rather than trying to reconstruct a real path.
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (repo.length)     { conditions.push(`repo IN (${repo.map(() => '?').join(',')})`);     params.push(...repo); }
+    if (severity.length) { conditions.push(`severity IN (${severity.map(() => '?').join(',')})`); params.push(...severity); }
+    if (harness.length)  { conditions.push(`harness IN (${harness.map(() => '?').join(',')})`);  params.push(...harness); }
+    // startNano is a 19-digit nanosecond-epoch TEXT column. sinceNano arrives
+    // pre-formatted at the same width (see timeRangeToSinceNano below), so a
+    // plain comparison sorts identically to a numeric one and every index
+    // above stays usable. Wrapping this in CAST(...) — as an earlier version
+    // of the retention sweep did for the same column — silently drops the
+    // index and turns a few-ms seek into a full scan.
+    if (sinceNano) { conditions.push('startNano >= ?'); params.push(sinceNano); }
+    if (q) {
+      // Same FTS pattern as /api/spans: split on whitespace, prefix-match each
+      // term, so a leading-wildcard LIKE (full scan) is never needed.
+      const terms = q.replace(/["']/g, ' ').split(/\s+/).filter(Boolean);
+      if (terms.length) {
+        conditions.push('spanId IN (SELECT spanId FROM spans_fts WHERE spans_fts MATCH ?)');
+        params.push(terms.map(t => `"${t}"*`).join(' '));
+      }
+    }
+
+    if (conditions.length === 0) {
+      total   = (countSpans.get() as { c: number }).c;
+      records = getRecentSpans.all(GRAPH_LIMIT) as SpanRecord[];
+    } else {
+      const where = conditions.join(' AND ');
+      try {
+        total = (db.prepare(`SELECT COUNT(*) AS c FROM spans WHERE ${where}`).get(...params) as { c: number }).c;
+        records = db.prepare(
+          `SELECT * FROM (SELECT * FROM spans WHERE ${where} ORDER BY startNano DESC LIMIT ?) ORDER BY startNano ASC`
+        ).all(...params, GRAPH_LIMIT) as SpanRecord[];
+      } catch {
+        // A malformed FTS query (unbalanced quotes etc.) throws — fail to an
+        // empty result rather than a 500, matching /api/spans's own fallback.
+        total = 0;
+        records = [];
+      }
+    }
     windowed = total > records.length;
   }
 
@@ -1445,7 +2035,7 @@ function buildGraph(sessionFilter?: string) {
     // Graph windowing metadata — backward compatible (consumers may ignore it).
     windowed,
     shown: records.length,
-    total: sessionFilter ? records.length : total,
+    total: session ? records.length : total,
     limit: GRAPH_LIMIT,
   };
 }
@@ -1589,13 +2179,43 @@ async function startServer() {
     const searchText = JSON.stringify(rawAttrs) + ' ' + input.name;
     const hit = detectSeverity(searchText);
     if (hit.matchedLabel) rawAttrs['claudesec.threat.rule'] = hit.matchedLabel;
+    // How many built-in rules this span tripped in total. Recorded only when
+    // there is more than one, because that is when it says something the rule
+    // label alone doesn't: the span is broadly suspicious, not a single narrow
+    // hit. Safe to store — it rides in `attributes`, an EXISTING field whose
+    // value already varies per row, so no span is hashed over a field the
+    // chain didn't cover before and every one of the ~278k stored signatures
+    // stays valid. Adding a column to spanCanonical() would have invalidated
+    // all of them.
+    if (hit.builtinMatches > 1) rawAttrs['claudesec.threat.matches'] = hit.builtinMatches;
+
+    const traceId  = input.traceId  || 'unknown';
+    const parentId = input.parentId || input.harnessId;
+
+    // Stateful, sequence-aware detection. The stateless rules above judge this
+    // span alone; the engine remembers the last few notable actions in this
+    // trace and reports the ORDER — read a secret, then upload it — which no
+    // single-string pattern can express. Runs on the raw attributes because
+    // paths and hosts are what it correlates, and its output is scrubbed with
+    // everything else on the way out.
+    const seqTsMs = Number(input.startNano) / 1e6 || Date.now();
+    const findings = sequenceEngine.observe({
+      spanId:  input.spanId,
+      traceId,
+      name:    input.name,
+      tsMs:    seqTsMs,
+      attrs:   rawAttrs,
+    });
+    if (findings.length > 0) {
+      rawAttrs['claudesec.sequence.rule']  = findings.map((f) => f.label).join(' · ');
+      // The chain IS the evidence — spans, in order, with timestamps. Stored on
+      // the span so the detail view shows it, and copied onto the alert below.
+      rawAttrs['claudesec.sequence.chain'] = findings.map(renderChain).join('\n\n');
+    }
 
     const { attrs, honeytokenHits } = scrubAttributes(rawAttrs, scrubOptions);
     const scrubbedName    = scrubText(input.name, scrubOptions);
     const scrubbedMatched = scrubText(hit.matchedText, scrubOptions);
-
-    const traceId  = input.traceId  || 'unknown';
-    const parentId = input.parentId || input.harnessId;
 
     let newSession = false;
     if (!db.prepare('SELECT 1 FROM sessions WHERE traceId = ?').get(traceId)) {
@@ -1604,19 +2224,29 @@ async function startServer() {
       newSession = true;
     }
 
-    const finalSeverity: Severity = honeytokenHits.length > 0 ? 'high' : hit.severity;
+    const baseSeverity: Severity = honeytokenHits.length > 0 ? 'high' : hit.severity;
     const finalLabel =
       honeytokenHits.length > 0
         ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
         : hit.matchedLabel;
 
+    // The span that CLOSES a chain is usually unremarkable on its own — that is
+    // the point. Carry the chain's severity onto it so the closing span is not
+    // stored as 'none' while a high-severity alert points straight at it.
+    const finalSeverity: Severity = findings.reduce<Severity>(
+      (acc, f) => (SEVERITY_RANK[f.severity] > SEVERITY_RANK[acc] ? f.severity : acc),
+      baseSeverity,
+    );
+
     // Repository identity for the Per-Repository Dashboard. Derived from the
     // agent's cwd (walk up to the nearest .git root), scrubbed the same way as
-    // every other stored path. Falls back to 'unknown' when no cwd was recorded.
-    const repo = resolveRepo(
+    // every other stored path. Most spans — every `llm_request`, the largest
+    // group by far — carry no cwd at all, so the trace settles their identity
+    // from the sibling spans that do.
+    const repo = attributeRepoForTrace(db, traceId, resolveRepo(
       typeof rawAttrs['cwd'] === 'string' ? (rawAttrs['cwd'] as string) : undefined,
       scrubOptions,
-    );
+    ));
 
     const spanRecord: SpanRecord = {
       spanId:     input.spanId,
@@ -1627,12 +2257,12 @@ async function startServer() {
       reason:     String(attrs['reason']   ?? 'Processing step'),
       severity:   finalSeverity,
       harness:    input.harnessId,
-      attributes: JSON.stringify(attrs),
+      attributes: JSON.stringify(capSpanAttributes(attrs)),
       startNano:  input.startNano || '0',
       endNano:    input.endNano   || '0',
       repo,
     };
-    insertSpan.run(spanRecord);
+    insertChainedSpan(spanRecord);
     pushToSse(spanRecord);
     io.emit('span-added', {
       spanId:   spanRecord.spanId,
@@ -1661,6 +2291,34 @@ async function startServer() {
         harness:     input.harnessId,
         spanName:    scrubbedName,
         matchedText: scrubbedMatched || '(honeytoken)',
+        traceId,
+      }).catch(() => {});
+    }
+
+    // Sequence findings are ADDITIVE — they never replace or suppress a
+    // stateless hit, they stand alongside it. `matchedText` carries the rendered
+    // chain, scrubbed the same way every other stored string is, so the existing
+    // alert UI shows the whole ordered story with no changes of its own.
+    // insertOrDedupeAlert then collapses repeats per trace as usual.
+    for (const finding of findings) {
+      const chain = scrubText(renderChain(finding), scrubOptions);
+      insertOrDedupeAlert({
+        ts:          new Date().toISOString(),
+        ruleLabel:   finding.label,
+        severity:    finding.severity,
+        spanId:      input.spanId,
+        traceId,
+        harness:     input.harnessId,
+        spanName:    scrubbedName,
+        matchedText: chain,
+      });
+      alertChanged = true;
+      fireWebhook({
+        ruleLabel:   finding.label,
+        severity:    finding.severity,
+        harness:     input.harnessId,
+        spanName:    scrubbedName,
+        matchedText: chain,
         traceId,
       }).catch(() => {});
     }
@@ -1700,7 +2358,48 @@ async function startServer() {
   // One-time, idempotent backfill of the per-span `repo` column for rows ingested
   // before that column existed. Writes ONLY `repo` (see backfillRepos for the full
   // data-safety contract); fail-open so it can never block startup.
-  backfillRepos(db, scrubOptions, (msg) => console.log(msg));
+  // CLAUDESEC_REPO_BACKFILL_DRY_RUN=1 logs what it WOULD attribute and writes
+  // nothing, so the plan can be reviewed before a large historical table moves.
+  const repoBackfillDryRun = process.env.CLAUDESEC_REPO_BACKFILL_DRY_RUN === '1';
+  backfillRepos(db, scrubOptions, (msg) => console.log(msg), { dryRun: repoBackfillDryRun });
+
+  // One-time rebuild of the FTS mirror so it is rowid-aligned with `spans` and
+  // carries no rows for spans that retention already pruned. Chunked and yielding
+  // (server/db.ts), so it is deliberately NOT awaited — boot must not wait on a
+  // maintenance pass, and search degrades to partial results for ~a second at
+  // worst. Fail-open: an error here logs and is swallowed.
+  // These two maintenance passes are SEQUENCED, not fired side by side. Both
+  // chunk their work over the one shared better-sqlite3 connection, and that
+  // driver refuses a write while another statement on the same connection is
+  // still iterating — running them concurrently produced exactly one symptom,
+  // "This database connection is busy executing a query", which the fail-open
+  // catch then swallowed into a single console line. The repair never ran, and
+  // the chain stayed broken with nothing but a warning to show for it.
+  void reindexFtsMirror()
+    .then(({ ran, rows }) => {
+      if (ran) console.log(`[ClaudeSec] Rebuilt the full-text index (${rows} spans)`);
+    })
+    .catch(err => console.warn('[ClaudeSec] full-text index rebuild failed:', (err as Error)?.message))
+    // Same contract for the span hash-chain: chunked, resumable, not awaited.
+    // Until it completes, older spans simply verify as `unchained` — the chain is
+    // only a claim about rows it actually covers, so a partial pass understates
+    // rather than lies.
+    .then(() => chainSpansBackfill())
+    .then(({ ran, rows }) => {
+      if (ran) console.log(`[ClaudeSec] Hash-chained ${rows} existing span(s)`);
+      // Runs after every span has a chain position, so it can walk the whole
+      // chain in one pass. Repairs exactly the rows the endNano/repo mutation
+      // defect actually broke (recomputing forward from the first break) and
+      // touches nothing else — see server/db.ts for why that is safe to do
+      // while ingest keeps running concurrently.
+      return repairSpanChainMutableFields();
+    })
+    .then((result) => {
+      if (result?.ran) {
+        console.log(`[ClaudeSec] Span chain mutable-field repair: checked ${result.rows}, repaired ${result.repaired}`);
+      }
+    })
+    .catch(err => console.warn('[ClaudeSec] span chain backfill/repair failed:', (err as Error)?.message));
 
   // Security headers.  The dashboard uses inline event handlers, dynamic
   // Tailwind classes, and a live Socket.io websocket, so the CSP is configured
@@ -1745,7 +2444,8 @@ async function startServer() {
   // The auth middleware below enforces a LOOPBACK-EXEMPT token gate. Protection
   // status of every route group:
   //
-  //   DATA routes — GATED (loopback-open + token-required-for-remote):
+  //   DATA routes — GATED (loopback-open for READS + token-required-for-remote,
+  //   plus the control token on every local MUTATION — see server/controlToken.ts):
   //     • /api/*    — all dashboard data, config, search, exports, mutations
   //     • /mcp      — POST /mcp AI-to-AI tool surface (esp. `search_spans`,
   //                   which can read arbitrary span content)
@@ -1763,7 +2463,7 @@ async function startServer() {
   //     • GET /metrics — Prometheus counters only (no span content). Not gated.
   //
   //   Mutating / sensitive routes to be aware of (all under the GATED /api or
-  //   /mcp prefix above, so all loopback-only or token-protected):
+  //   /mcp prefix above, so all control-token-protected or token-protected):
   //     • POST   /api/import                       (bulk span ingest)
   //     • POST   /api/reset                        (wipe all data)
   //     • POST/PATCH/DELETE /api/threshold-rules*  (threshold rule mutation)
@@ -1790,24 +2490,43 @@ async function startServer() {
       req.path === '/mcp' ||
       req.path.startsWith('/mcp/') ||
       req.path.startsWith('/v1/traces');
+    const isLocal = isLoopbackAddr(req.socket.remoteAddress) || trustLocalEnabled();
+
+    // Pair the browser: `claudesec open` (or the startup banner on a terminal)
+    // sends it to /?ct=<key>, which is the ONLY way a cookie is ever issued.
+    // Loopback only — a remote caller still needs CLAUDESEC_TOKEN for everything.
+    if (isLocal && tryPairing(req, res)) return;
+
     if (!isGated) { next(); return; }
 
-    if (isLoopbackAddr(req.socket.remoteAddress) || trustLocalEnabled()) { next(); return; }
+    if (isLocal) {
+      // Reads are open so the dashboard needs no bootstrap step, and so does
+      // every mutation whose caller is a machine client (see isOpenMutation).
+      // CLAUDESEC_TRUST_LOCAL keeps its documented meaning — trust everything —
+      // so the Docker deployment behaves exactly as before.
+      if (SAFE_METHODS.has(req.method) || isOpenMutation(req.path) || trustLocalEnabled()) {
+        next();
+        return;
+      }
+      const presented = presentedTokens(req);
+      const envToken = process.env.CLAUDESEC_TOKEN ?? '';
+      const ok = controlTokenAccepted(presented)
+        || (envToken !== '' && presented.some(t => tokenMatches(t, envToken)));
+      if (ok) { next(); return; }
+      res.status(403).json({
+        error: 'forbidden',
+        detail:
+          'This endpoint changes ClaudeSec configuration and needs the control token. ' +
+          'Run `claudesec open` to pair a browser, or send the pairing key from ' +
+          `${controlKeyPath()} as a bearer token or the ${CONTROL_HEADER} header. ` +
+          'CLAUDESEC_TOKEN is also accepted.',
+      });
+      return;
+    }
 
     const expected = process.env.CLAUDESEC_TOKEN ?? '';
     if (!expected) { res.status(401).json({ error: 'unauthorized' }); return; }
-
-    const bearer = req.headers['authorization'];
-    const fromBearer =
-      typeof bearer === 'string' && /^bearer\s+/i.test(bearer)
-        ? bearer.replace(/^bearer\s+/i, '').trim()
-        : undefined;
-    const apiKeyHeader = req.headers['x-api-key'];
-    const fromApiKey = typeof apiKeyHeader === 'string' ? apiKeyHeader.trim() : undefined;
-    const queryToken = typeof req.query.token === 'string' ? req.query.token : undefined;
-    const presented = fromBearer || fromApiKey || queryToken;
-
-    if (tokenMatches(presented, expected)) { next(); return; }
+    if (presentedTokens(req).some(t => tokenMatches(t, expected))) { next(); return; }
     res.status(401).json({ error: 'unauthorized' });
   });
 
@@ -1841,85 +2560,131 @@ async function startServer() {
     }
 
     // --- Circuit breaker: pause ingestion when DB is ≥ 90% full ---
-    const maxSpans = getMaxSpans();
+    // Says WHICH setting stopped the ingest and what the ceiling is. A bare
+    // "near capacity" left an operator guessing, and this is the failure that
+    // silently ends recording when the ceiling is too small for the window.
     const currentSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
-    if (currentSpans >= maxSpans * 0.9) {
-      res.status(503).json({ error: 'Service Unavailable', detail: 'Span buffer near capacity. Try again after pruning.' });
+    if (ingestCapacityExhausted(currentSpans)) {
+      res.status(503).json({
+        error: 'Service Unavailable',
+        detail: `Span buffer at capacity (${currentSpans.toLocaleString()} of a ${getMaxSpans().toLocaleString()}-span ceiling). Raise CLAUDESEC_MAX_SPANS or choose a larger retention profile — pruning cannot free spans that are still inside the retention window.`,
+      });
       return;
     }
 
     const traceData: TraceData = req.body;
 
+    // --- Payload shape validation ---
+    // An exporter (or a replayed/garbled batch) that sends anything other than
+    // an object with an array of resourceSpans used to reach `.forEach` on a
+    // non-array and throw a TypeError, which express turned into an opaque 500.
+    // A malformed request is the caller's problem — answer with an actionable
+    // 400 and never let it look like a server fault.
+    if (!traceData || typeof traceData !== 'object' || Array.isArray(traceData)) {
+      res.status(400).json({ error: 'Bad Request', detail: 'Body must be an OTLP JSON object.' });
+      return;
+    }
+    if (traceData.resourceSpans !== undefined && !Array.isArray(traceData.resourceSpans)) {
+      res.status(400).json({ error: 'Bad Request', detail: 'resourceSpans must be an array.' });
+      return;
+    }
+    const resourceSpans = traceData.resourceSpans ?? [];
+    const spansOf = (ss: any): any[] => (Array.isArray(ss?.spans) ? ss.spans : []);
+    const scopesOf = (rs: any): any[] => (Array.isArray(rs?.scopeSpans) ? rs.scopeSpans : []);
+
     // --- Span count guard per batch ---
     let batchSpanCount = 0;
-    traceData.resourceSpans?.forEach(rs => rs.scopeSpans?.forEach(ss => { batchSpanCount += ss.spans?.length ?? 0; }));
+    for (const rs of resourceSpans) for (const ss of scopesOf(rs)) batchSpanCount += spansOf(ss).length;
     if (batchSpanCount > MAX_SPANS_PER_BATCH) {
       res.status(400).json({ error: 'Bad Request', detail: `Batch exceeds max ${MAX_SPANS_PER_BATCH} spans. Got ${batchSpanCount}.` });
       return;
     }
     let newSessions   = false;
     let alertsChanged = false;
+    let ingested = 0;
+    // Spans rejected for a missing/blank spanId or traceId. `spanId TEXT PRIMARY
+    // KEY` has no NOT NULL, and SQLite treats every NULL in a primary key as
+    // distinct — so INSERT OR IGNORE never deduped them and a replayed malformed
+    // batch could pile up rows no API path can ever address or delete.
+    let skipped = 0;
+    // Placeholder spans the transcript watcher already owns — a deliberate drop,
+    // not a rejection, so it is reported separately from `skipped`.
+    let ignored = 0;
+    let batchTokensIn = 0, batchTokensOut = 0;
+    const affectedTraces = new Set<string>();
 
-    traceData.resourceSpans?.forEach(rs => {
-      const serviceName = String(
-        rs.resource?.attributes?.find?.((a: any) => a.key === 'service.name')?.value?.stringValue ?? ''
-      );
-      const sdkName = String(
-        rs.resource?.attributes?.find?.((a: any) => a.key === 'telemetry.sdk.name')?.value?.stringValue ?? ''
-      );
-      const harness = detectHarness(serviceName, sdkName);
+    // One transaction for the whole batch. Before this, 500 spans meant 500
+    // autocommits (each firing the FTS trigger) and a throw part-way through
+    // committed the spans already written while silently losing the rest — the
+    // caller got a 500 with no way to tell what landed. Now the batch is all or
+    // nothing and the response reports exactly what happened.
+    const ingestBatch = db.transaction(() => {
+      for (const rs of resourceSpans) {
+        const serviceName = String(
+          (rs as any)?.resource?.attributes?.find?.((a: any) => a.key === 'service.name')?.value?.stringValue ?? ''
+        );
+        const sdkName = String(
+          (rs as any)?.resource?.attributes?.find?.((a: any) => a.key === 'telemetry.sdk.name')?.value?.stringValue ?? ''
+        );
+        const harness = detectHarness(serviceName, sdkName);
 
-      rs.scopeSpans?.forEach(ss => {
-        ss.spans?.forEach(span => {
-          if (process.env.CLAUDESEC_WATCH !== '0' && span.name === 'tool_call/unknown') return;
-          const rawAttrs: Record<string, any> = {};
-          (span.attributes || []).forEach(attr => {
-            rawAttrs[attr.key] =
-              attr.value?.stringValue ??
-              attr.value?.intValue    ??
-              attr.value?.boolValue   ??
-              JSON.stringify(attr.value);
-          });
+        for (const ss of scopesOf(rs)) {
+          for (const span of spansOf(ss)) {
+            const spanId  = typeof span?.spanId  === 'string' ? span.spanId.trim()  : '';
+            const traceId = typeof span?.traceId === 'string' ? span.traceId.trim() : '';
+            if (!spanId || !traceId) { skipped++; continue; }
 
-          const result = ingestSpan({
-            spanId:      span.spanId,
-            traceId:     span.traceId || 'unknown',
-            parentId:    span.parentSpanId || '',
-            name:        span.name,
-            rawAttrs,
-            harnessId:   harness.id,
-            harnessName: harness.name,
-            startNano:   String(span.startTimeUnixNano ?? '0'),
-            endNano:     String(span.endTimeUnixNano ?? '0'),
-          });
-          if (result.newSession)   newSessions   = true;
-          if (result.alertChanged) alertsChanged = true;
-        });
-      });
+            const name = typeof span.name === 'string' ? span.name : '';
+            if (process.env.CLAUDESEC_WATCH !== '0' && name === 'tool_call/unknown') { ignored++; continue; }
+
+            const attributes: any[] = Array.isArray(span.attributes) ? span.attributes : [];
+            const rawAttrs: Record<string, any> = {};
+            for (const attr of attributes) {
+              if (!attr || typeof attr.key !== 'string') continue;
+              rawAttrs[attr.key] =
+                attr.value?.stringValue ??
+                attr.value?.intValue    ??
+                attr.value?.boolValue   ??
+                JSON.stringify(attr.value);
+              if (attr.key === 'gen_ai.usage.input_tokens'  || attr.key === 'llm.usage.input_tokens')  batchTokensIn  += Number(attr.value?.intValue ?? 0);
+              if (attr.key === 'gen_ai.usage.output_tokens' || attr.key === 'llm.usage.output_tokens') batchTokensOut += Number(attr.value?.intValue ?? 0);
+            }
+
+            const result = ingestSpan({
+              spanId,
+              traceId,
+              parentId:    typeof span.parentSpanId === 'string' ? span.parentSpanId : '',
+              name,
+              rawAttrs,
+              harnessId:   harness.id,
+              harnessName: harness.name,
+              startNano:   String(span.startTimeUnixNano ?? '0'),
+              endNano:     String(span.endTimeUnixNano  ?? '0'),
+            });
+            ingested++;
+            affectedTraces.add(traceId);
+            if (result.newSession)   newSessions   = true;
+            if (result.alertChanged) alertsChanged = true;
+          }
+        }
+      }
     });
 
-    // Activity ring-buffer update
-    {
-      let batchTokensIn = 0, batchTokensOut = 0, batchCount = 0;
-      traceData.resourceSpans?.forEach(rs => rs.scopeSpans?.forEach(ss => ss.spans?.forEach(span => {
-        batchCount++;
-        (span.attributes || []).forEach(attr => {
-          if (attr.key === 'gen_ai.usage.input_tokens'  || attr.key === 'llm.usage.input_tokens')  batchTokensIn  += Number(attr.value?.intValue ?? 0);
-          if (attr.key === 'gen_ai.usage.output_tokens' || attr.key === 'llm.usage.output_tokens') batchTokensOut += Number(attr.value?.intValue ?? 0);
-        });
-      })));
-      recordActivity(batchCount, batchTokensIn, batchTokensOut);
+    try {
+      ingestBatch();
+    } catch (err) {
+      console.error('[ClaudeSec] OTLP batch rolled back:', (err as Error)?.message);
+      res.status(500).json({
+        error: 'Internal Server Error',
+        detail: 'Batch was rolled back; no spans were stored. Retry the batch.',
+        received: batchSpanCount,
+        ingested: 0,
+        skipped,
+      });
+      return;
     }
 
-    // Behavioral anomaly detection — run per affected session
-    const affectedTraces = new Set<string>();
-    traceData.resourceSpans?.forEach(rs => {
-      rs.scopeSpans?.forEach(ss => {
-        ss.spans?.forEach(span => {
-          if (span.traceId) affectedTraces.add(span.traceId);
-        });
-      });
-    });
+    recordActivity(ingested, batchTokensIn, batchTokensOut);
 
     for (const traceId of affectedTraces) {
       const traceHarness = (db.prepare('SELECT harness FROM spans WHERE traceId = ? LIMIT 1')
@@ -1946,6 +2711,8 @@ async function startServer() {
     // forward target can't be pointed at loopback/metadata/private ranges via
     // integer/hex literals, IPv6 forms, or DNS rebinding. Runs in a detached
     // async IIFE so the resolution does not block the ingest response.
+    // The batch is scrubbed on the way out — an upstream collector is off-device
+    // and must never receive secrets the local database would have redacted.
     const forwardUrl = process.env.OTEL_FORWARD_URL ?? getConfig.get('otel.forward.url')?.value ?? '';
     if (forwardUrl) {
       void (async () => {
@@ -1958,10 +2725,12 @@ async function startServer() {
           return;
         }
         try {
+          // Scrubbed here, after the guard: a blocked target costs nothing, and
+          // the work lands off the ingest response path instead of ahead of it.
           const r = await fetch(forwardUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(traceData),
+            body: JSON.stringify(scrubTraceDataForForward(traceData, scrubOptions)),
             signal: AbortSignal.timeout(5000),
           });
           forwardStats.total++;
@@ -1975,7 +2744,9 @@ async function startServer() {
       })();
     }
 
-    res.status(200).json({ status: 'ok' });
+    // Report what actually landed. A silent drop is indistinguishable from a
+    // successful ingest at the exporter, so the counts travel with the 200.
+    res.status(200).json({ status: 'ok', received: batchSpanCount, ingested, skipped, ignored });
   });
 
   // ── Activity sparkline data ──────────────────────────────────────────────
@@ -2002,8 +2773,8 @@ async function startServer() {
     }
     // Circuit breaker
     const currentSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c as number;
-    if (currentSpans >= getMaxSpans() * 0.9) {
-      return res.status(503).json({ error: 'Span buffer near capacity. Prune before importing.' }) as any;
+    if (ingestCapacityExhausted(currentSpans)) {
+      return res.status(503).json({ error: `Span buffer at capacity (${currentSpans.toLocaleString()} of a ${getMaxSpans().toLocaleString()}-span ceiling). Prune, raise CLAUDESEC_MAX_SPANS, or choose a larger retention profile before importing.` }) as any;
     }
 
     // Detect format: ClaudeSec export ({ spans: SpanRecord[] }) or raw OTLP ({ resourceSpans: [...] })
@@ -2026,8 +2797,8 @@ async function startServer() {
           const label = honeytokenHits.length > 0
             ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
             : hit.matchedLabel;
-          const importRepo = span.repo || resolveRepo(typeof rawAttrs['cwd'] === 'string' ? rawAttrs['cwd'] : undefined, scrubOptions);
-          insertSpan.run({ ...span, severity, name: scrubbedName, attributes: JSON.stringify(attrs), repo: importRepo } satisfies SpanRecord);
+          const importRepo = attributeRepoForTrace(db, span.traceId, span.repo || resolveRepo(typeof rawAttrs['cwd'] === 'string' ? rawAttrs['cwd'] : undefined, scrubOptions));
+          insertChainedSpan({ ...span, severity, name: scrubbedName, attributes: JSON.stringify(capSpanAttributes(attrs)), repo: importRepo } satisfies SpanRecord);
           if (label) {
             insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: label, severity, spanId: span.spanId, traceId: span.traceId, harness: span.harness, spanName: scrubbedName, matchedText: scrubbedMatched || '(honeytoken)' });
             alertsAdded++;
@@ -2063,8 +2834,8 @@ async function startServer() {
             const label = honeytokenHits.length > 0
               ? `Honeytoken exfiltration (${honeytokenHits[0].key})`
               : hit.matchedLabel;
-            const otlpRepo = resolveRepo(typeof rawAttrs['cwd'] === 'string' ? rawAttrs['cwd'] : undefined, scrubOptions);
-            insertSpan.run({ spanId: span.spanId, traceId, parentId, name: scrubbedName, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(attrs), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0'), repo: otlpRepo } satisfies SpanRecord);
+            const otlpRepo = attributeRepoForTrace(db, traceId, resolveRepo(typeof rawAttrs['cwd'] === 'string' ? rawAttrs['cwd'] : undefined, scrubOptions));
+            insertChainedSpan({ spanId: span.spanId, traceId, parentId, name: scrubbedName, protocol: String(attrs['protocol'] ?? 'HTTPS'), reason: String(attrs['reason'] ?? 'Processing step'), severity, harness: harness.id, attributes: JSON.stringify(capSpanAttributes(attrs)), startNano: String(span.startTimeUnixNano ?? '0'), endNano: String(span.endTimeUnixNano ?? '0'), repo: otlpRepo } satisfies SpanRecord);
             if (label) {
               insertOrDedupeAlert({ ts: new Date().toISOString(), ruleLabel: label, severity, spanId: span.spanId, traceId, harness: harness.id, spanName: scrubbedName, matchedText: scrubbedMatched || '(honeytoken)' });
               alertsAdded++;
@@ -2085,9 +2856,17 @@ async function startServer() {
   });
 
   // ── Graph ────────────────────────────────────────────────────────────────
+  // Param names (repo, sev, harness, t, q) intentionally match the URL keys
+  // src/shell/filterState.ts already writes, so the client can forward its
+  // filter state to this route almost verbatim — see fetchGraph in App.tsx.
   app.get('/api/graph', (req, res) => {
-    const session = req.query.session ? String(req.query.session) : undefined;
-    res.json(buildGraph(session));
+    const session  = req.query.session ? String(req.query.session) : undefined;
+    const repo     = parseListParam(req.query.repo);
+    const severity = parseListParam(req.query.sev).filter(s => GRAPH_SEVERITIES.has(s));
+    const harness  = parseListParam(req.query.harness);
+    const q        = req.query.q ? String(req.query.q).trim() : '';
+    const sinceNano = timeRangeToSinceNano(req.query.t ? String(req.query.t) : '');
+    res.json(buildGraph({ session, repo, severity, harness, sinceNano, q: q || undefined }));
   });
 
   // ── Sessions ─────────────────────────────────────────────────────────────
@@ -2146,6 +2925,16 @@ async function startServer() {
 
   // ── Harness profiles (full per-agent stats) ──────────────────────────────
   registerHarnessRoutes(app, { io });
+
+  // ── Governance (policies over the rules that already exist) ──────────────
+  // Reads only: it derives policy status from alerts, enforce state and the
+  // chain, and mutates nothing.
+  registerGovernanceRoutes(app, {
+    io,
+    appVersion: APP_VERSION,
+    getMaxSpans,
+    getRetentionDays,
+  });
 
   // ── SSE live tail ────────────────────────────────────────────────────────
   app.get('/api/tail', (req, res) => {
@@ -2491,8 +3280,8 @@ service:
       { key: 'CLAUDESEC_RATE_LIMIT_BURST',   description: 'Token bucket burst capacity',              default: '200',    category: 'Performance' },
       { key: 'CLAUDESEC_MAX_SPANS_BATCH',    description: 'Max spans allowed per OTLP batch',         default: '500',    category: 'Performance' },
       { key: 'CLAUDESEC_GRAPH_LIMIT',        description: 'How many of the most-recent spans the live graph renders (older spans stay available via Search/Sessions)', default: '2000', category: 'Performance' },
-      { key: 'CLAUDESEC_MAX_SPANS',          description: 'Total span capacity before pruning',       default: '50000',  category: 'Retention' },
-      { key: 'CLAUDESEC_RETENTION_DAYS',     description: 'Days to keep data before age-based prune', default: '183',    category: 'Retention' },
+      { key: 'CLAUDESEC_MAX_SPANS',          description: 'Span ceiling; ingestion pauses at 90% of it (0 = unbounded)', default: String(DEFAULT_MAX_SPANS),      category: 'Retention' },
+      { key: 'CLAUDESEC_RETENTION_DAYS',     description: 'Days to keep data before age-based prune (0 = unbounded)',   default: String(DEFAULT_RETENTION_DAYS), category: 'Retention' },
       { key: 'CLAUDESEC_WEBHOOK_URL',        description: 'Webhook endpoint for alert delivery',      default: '',       category: 'Alerts',   sensitive: true },
       { key: 'CLAUDESEC_WEBHOOK_THRESHOLD',  description: 'Minimum severity to trigger webhook',      default: 'high',   category: 'Alerts' },
       { key: 'CLAUDESEC_CORS_ORIGINS',       description: 'Comma-separated allowed CORS origins',     default: 'localhost', category: 'Security' },
@@ -2502,6 +3291,8 @@ service:
       { key: 'CLAUDESEC_TRUST_PROXY',        description: 'Trust X-Forwarded-For headers (set to 1)', default: '',       category: 'Security' },
       { key: 'CLAUDESEC_HONEYTOKENS',        description: 'Comma-separated canary strings for exfiltration detection', default: '', category: 'Security', sensitive: true },
       { key: 'CLAUDESEC_AUTO_EXPORT_DIR',    description: 'Directory for hourly auto-export JSON snapshots',           default: './exports', category: 'Export' },
+      { key: 'CLAUDESEC_BACKFILL',           description: 'Set to "1" to re-read agent transcripts from the start on boot, so sessions that ran while the service was down are still ingested', default: '', category: 'Ingestion' },
+      { key: 'CLAUDESEC_LINEAGE_BACKFILL',   description: 'Set to "1" to reconstruct sub-agent lineage for spans recorded before lineage capture existed. Read-only: it rebuilds the parent links in memory at query time and never rewrites stored spans, whose hash chain signs the parent id.', default: '', category: 'Ingestion' },
       { key: 'OTEL_FORWARD_URL',             description: 'Forward OTLP traces to upstream collector', default: '',      category: 'Integration' },
       // Optional LLM-as-judge semantic detection (OFF by default — no URL = no egress)
       { key: 'CLAUDESEC_JUDGE_URL',          description: 'Optional LLM-as-judge endpoint (OpenAI-compatible /chat/completions; recommended: local Ollama http://localhost:11434/v1). OFF by default.', default: '', category: 'Detection' },
@@ -2542,17 +3333,27 @@ service:
     const settings: SettingStatus[] = [];
 
     // — Enforcement —
-    const mode = (process.env.CLAUDESEC_MODE ?? 'monitor').toLowerCase();
-    const isEnforce = mode === 'enforce';
+    // Report the mode the HOOK will actually run, not the env var. The dashboard
+    // toggle writes enforce-config.json, which outranks CLAUDESEC_MODE in the
+    // hook's own precedence (resolveEffectiveMode mirrors it exactly). Reading
+    // the env var here made Settings claim "monitor" while tool calls were being
+    // blocked — a dashboard that lies about enforcement state is the one thing
+    // this page must never do.
+    const { effectiveMode, modeSource } = resolveEffectiveMode();
+    const isEnforce = effectiveMode === 'enforce';
+    const modeSourceLabel =
+      modeSource === 'config-file' ? 'set from the dashboard'
+      : modeSource === 'env'       ? 'set by CLAUDESEC_MODE'
+      :                              'built-in default';
     settings.push({
       key: 'CLAUDESEC_MODE',
       category: 'Enforcement',
       description: 'PreToolUse hook mode: "enforce" actively blocks high-severity tool calls; "monitor" (default) only logs would-block events.',
       isSet: !!process.env.CLAUDESEC_MODE,
-      effectiveValue: isEnforce ? 'enforce' : 'monitor',
+      effectiveValue: effectiveMode,
       enabled: isEnforce,
       state: isEnforce ? 'active' : 'default',
-      detail: isEnforce ? 'High-severity tool calls are blocked.' : 'Logging only — nothing is blocked.',
+      detail: `${isEnforce ? 'High-severity tool calls are blocked.' : 'Logging only — nothing is blocked.'} (${modeSourceLabel})`,
     });
 
     // Recent enforcement activity (persisted to SQLite; survives restart)
@@ -2634,8 +3435,14 @@ service:
     // empty DB simply yields "off".
     let enhancedActive = false;
     try {
+      // No CAST in the ORDER BY: casting builds a new expression that the
+      // startNano index cannot serve, so this "bounded" query was scanning the
+      // whole table and sorting it in a temp b-tree just to take 200 rows.
+      // Ordering on the raw column is equivalent here — every startNano is a
+      // fixed-width 19-digit nanosecond string, so lexicographic and numeric
+      // order coincide (and will until roughly the year 2286).
       const recentSpans = db.prepare(
-        `SELECT attributes FROM spans ORDER BY CAST(startNano AS INTEGER) DESC LIMIT 200`
+        `SELECT attributes FROM spans ORDER BY startNano DESC LIMIT 200`
       ).all() as { attributes: string }[];
       for (const row of recentSpans) {
         let a: Record<string, unknown> = {};
@@ -2704,30 +3511,60 @@ service:
     });
 
     // — Retention —
-    const maxSpansEnv = Number(process.env.CLAUDESEC_MAX_SPANS) > 0;
-    const maxSpans = getMaxSpans();
+    // Reported as ONE policy, because the two knobs only mean what they say when
+    // they agree. Every row carries the window the install actually delivers at
+    // its own measured ingest rate, not the number that was typed in.
+    const retention = getRetentionStatus();
+    const sourceLabel = (s: RetentionSource) =>
+      s === 'env' ? 'set by env var' : s === 'config' ? 'set from the dashboard' : 'profile default';
+
+    settings.push({
+      key: 'CLAUDESEC_RETENTION_PROFILE',
+      category: 'Retention',
+      description: 'Retention profile — the day window and the span ceiling as a single policy. Minimum keeps six months; Audit year keeps 400 days; Forensic keeps everything; Custom is any other pair.',
+      isSet: retention.profile !== 'custom',
+      effectiveValue: retention.profileLabel,
+      enabled: true,
+      state: retention.limitingFactor === 'capacity' ? 'caution' : 'active',
+      detail: retention.warning
+        ?? retentionProfile(retention.profile)?.summary
+        ?? 'Custom pair of retention values.',
+    });
+
     settings.push({
       key: 'CLAUDESEC_MAX_SPANS',
       category: 'Retention',
-      description: 'Total span capacity before the oldest spans are pruned.',
-      isSet: maxSpansEnv,
-      effectiveValue: `${maxSpans.toLocaleString()} spans`,
+      description: 'Span ceiling. Ingestion stops at 90% of it, and pruning cannot free spans that are still inside the retention window — so this has to be big enough to hold the window.',
+      isSet: retention.sources.maxSpans === 'env',
+      effectiveValue: retention.maxSpans === null ? 'unbounded' : `${retention.maxSpans.toLocaleString()} spans`,
       enabled: true,
-      state: 'active',
-      detail: maxSpansEnv ? 'Limit set via env.' : 'Using configured/default limit.',
+      state: retention.limitingFactor === 'capacity' ? 'caution' : 'active',
+      detail: [
+        retention.ingestStopsAtSpans === null
+          ? 'No ceiling — ingestion is never paused for capacity.'
+          : `Ingestion pauses at ${retention.ingestStopsAtSpans.toLocaleString()} spans.`,
+        retention.spansPerDay ? `Measured rate: ${retention.spansPerDay.toLocaleString()} spans/day.` : null,
+        `(${sourceLabel(retention.sources.maxSpans)})`,
+      ].filter(Boolean).join(' '),
     });
 
-    const retentionEnv = Number(process.env.CLAUDESEC_RETENTION_DAYS) > 0;
-    const retentionDays = getRetentionDays();
     settings.push({
       key: 'CLAUDESEC_RETENTION_DAYS',
       category: 'Retention',
-      description: 'Age-based pruning — spans older than this many days are removed.',
-      isSet: retentionEnv,
-      effectiveValue: `${retentionDays} day${retentionDays === 1 ? '' : 's'}`,
+      description: 'Age-based pruning — sessions older than this many days are removed. This is a hard floor: count-based pruning may never evict data still inside it.',
+      isSet: retention.sources.retentionDays === 'env',
+      effectiveValue: retention.retentionDays === null
+        ? 'unbounded'
+        : `${retention.retentionDays} day${retention.retentionDays === 1 ? '' : 's'}`,
       enabled: true,
-      state: 'active',
-      detail: retentionEnv ? 'Window set via env.' : 'Using configured/default window.',
+      state: retention.limitingFactor === 'capacity' ? 'caution' : 'active',
+      detail: [
+        retention.effectiveWindowDays === null
+          ? 'Nothing is pruned by age.'
+          : `Effective window: about ${retention.effectiveWindowDays} days (limited by the ${retention.limitingFactor === 'capacity' ? 'span ceiling' : 'day window'}).`,
+        retention.envOverride,
+        `(${sourceLabel(retention.sources.retentionDays)})`,
+      ].filter(Boolean).join(' '),
     });
 
     // — Integrations —
@@ -2788,6 +3625,11 @@ service:
     db.prepare('DELETE FROM webhook_deliveries').run();
     db.prepare('DELETE FROM span_tags').run();
     db.prepare('DELETE FROM span_bookmarks').run();
+    // An operator-authorised wipe is not tampering, but the chain cannot tell the
+    // difference on its own — without this it would report `wiped` forever and
+    // every later verification would be a false alarm. Re-founding stamps the
+    // moment and deliberately claims nothing about what came before it.
+    refoundChain('spans');
     io.emit('graph-update', buildGraph());
     io.emit('sessions-update');
     io.emit('alerts-update');
@@ -2808,7 +3650,7 @@ service:
     const demoSessions = (db.prepare("SELECT COUNT(*) AS c FROM sessions WHERE traceId LIKE 'demo-%'").get() as { c: number }).c;
     auditLog(req, 'data.demo-clear', 'demo-*', { demoSpans, demoSessions });
     db.transaction(() => {
-      db.prepare("DELETE FROM spans_fts WHERE spanId IN (SELECT spanId FROM spans WHERE traceId LIKE 'demo-%')").run();
+      // The FTS mirror is cleaned by the AFTER DELETE trigger on `spans`.
       db.prepare("DELETE FROM spans    WHERE traceId LIKE 'demo-%'").run();
       db.prepare("DELETE FROM sessions WHERE traceId LIKE 'demo-%'").run();
       db.prepare("DELETE FROM alerts   WHERE traceId LIKE 'demo-%'").run();
@@ -2840,6 +3682,9 @@ service:
     enforceConfigFile: ENFORCE_CONFIG_FILE,
     auditLog,
   });
+
+  // ── Enforcement impact preview (replay recorded calls through the evaluator) ─
+  registerEnforceImpactRoutes(app, { io });
 
   // ── MCP / skill static scanner ───────────────────────────────────────────
   registerMcpScanRoutes(app, { io, detectSeverity });
@@ -3244,14 +4089,14 @@ service:
           reason:   `Auto-detected running process (PID ${proc.pid}, ${proc.cpuPct}% CPU, ${proc.memMb}MB)`,
           severity,
           harness:  harnessId,
-          attributes: JSON.stringify(attrs),
+          attributes: JSON.stringify(capSpanAttributes(attrs)),
           startNano: nowNs,
           endNano:   endNs,
           // Auto-discovered process spans carry no cwd, so they group under 'unknown'.
           repo:      'unknown',
         };
 
-        insertSpan.run(spanRecord);
+        insertChainedSpan(spanRecord);
         pushToSse(spanRecord);
         io.emit('span-added', {
           spanId:   spanRecord.spanId,
@@ -3467,6 +4312,10 @@ service:
     try { watcherHandle?.stop(); } catch {}
     try { if (sweepTimer) clearInterval(sweepTimer); } catch {}
     try { clearInterval(pruneTimer); } catch {}
+    try { stopAnchorSweep(); } catch {}
+    // The auto-discovery scan writes spans of its own; leaving it running would
+    // let a tick land insertSpan() on the handle we are about to close.
+    try { clearInterval(autoScanTimer); } catch {}
     httpServer.close(() => {
       checkpointAndClose();
       console.log('[ClaudeSec] database checkpointed and closed. Bye.');
@@ -3486,8 +4335,26 @@ service:
     console.log(`\n  ClaudeSec  http://localhost:${PORT}`);
     console.log(`  OTLP       http://localhost:${PORT}/v1/traces`);
     console.log(`  Auto-scan  Every ${AUTO_SCAN_INTERVAL / 1000}s for running agents`);
-    console.log(`  Watcher    ${watchEnabled ? `on — zero-config capture of Claude Code & Codex (${watchRoots.length} roots)` : 'off (CLAUDESEC_WATCH=0)'}\n`);
-    const n = (getAllSpans.all() as SpanRecord[]).length;
+    console.log(`  Watcher    ${watchEnabled ? `on — zero-config capture of Claude Code & Codex (${watchRoots.length} roots)` : 'off (CLAUDESEC_WATCH=0)'}`);
+    // The pairing link CONTAINS the control key, so it goes to an interactive
+    // terminal or nowhere. Under launchd/systemd stdout is service.log — a file
+    // the monitored agent can read — and printing the key there would hand it
+    // over by exactly the route this gate exists to close.
+    if (trustLocalEnabled()) {
+      console.log('  Control    CLAUDESEC_TRUST_LOCAL=1 — every local caller may mutate');
+    } else if (controlKeySource() === 'ephemeral') {
+      console.log(`  Control    pairing key is NOT persisted (${controlKeyPath()} is not writable) — mutations need CLAUDESEC_TOKEN`);
+    } else if (process.stdout.isTTY) {
+      console.log(`  Pair       ${pairingUrl(`http://localhost:${PORT}`)}`);
+    } else {
+      console.log('  Control    run `claudesec open` to pair a browser for mutations');
+    }
+    console.log('');
+    // COUNT(*) rather than materialising every row: this line is a startup banner,
+    // but `getAllSpans.all()` pulled the entire table into JS heap to read `.length`
+    // — measured at ~2.3 KB/row, so a 5M-span database ran the process out of a 4 GB
+    // heap and the server could not boot at all. The count is a b-tree walk instead.
+    const n = (countSpans.get() as { c: number }).c;
     if (n > 0) console.log(`  Loaded ${n} spans from database.\n`);
   });
 }

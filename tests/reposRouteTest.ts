@@ -31,6 +31,7 @@ const TSX_BIN = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const PORT = 3211;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DB_PATH = path.join(os.tmpdir(), `csec-repostest-${process.pid}-${Date.now()}.db`);
+const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-reposroutetest-home-'));
 
 const REPO_A = '~/code/alpha'; // clean repo, one session
 const REPO_B = '~/code/beta';  // threats across two sessions
@@ -70,6 +71,7 @@ function cleanupDb(): void {
   for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
     try { fs.rmSync(f, { force: true }); } catch {}
   }
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 }
 
 function killTree(child: ChildProcess): void {
@@ -160,6 +162,10 @@ async function main(): Promise<void> {
       env: {
         ...process.env,
         CLAUDESEC_DB: DB_PATH,
+        // Keep the child off the operator's real ~/.claudesec: booting the
+        // server mirrors its hook artifacts (enforce-config, protected-paths,
+        // the rule snapshot, the control-plane pairing key) into CLAUDESEC_HOME.
+        CLAUDESEC_HOME: HOME_DIR,
         CLAUDESEC_PORT: String(PORT),
         PORT: String(PORT),
         CLAUDESEC_HOST: '127.0.0.1',

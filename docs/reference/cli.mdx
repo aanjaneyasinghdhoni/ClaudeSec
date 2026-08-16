@@ -5,6 +5,8 @@ description: "Every claudesec command and flag."
 
 Run from the repo via `node cli/init.mjs <command>`. With no command, it installs the background service and opens the dashboard.
 
+`claudesec` below is shorthand for that invocation — the name is not published to npm, and the `claudesec` package on the public registry is an unrelated project. Always run it from your own clone.
+
 ## Setup & monitoring
 
 | Command | Description |
@@ -12,9 +14,11 @@ Run from the repo via `node cli/init.mjs <command>`. With no command, it install
 | `claudesec` / `start` | Install + start the background watcher service, then open the dashboard |
 | `claudesec stop` | Stop and remove the background service (data is kept) |
 | `claudesec status` | Server health: version, uptime, span / session / alert counts, DB size, webhook status |
-| `claudesec open` | Open the dashboard in the default browser |
+| `claudesec open` | Open the dashboard in the default browser, **pairing** that browser so it can perform mutations (see [Notes](#notes)) |
 | `claudesec tail` | Stream new spans live in the terminal |
 | `claudesec processes` | List running agent processes (macOS / Linux) |
+| `claudesec install-hook` [`--yes`] | Register the PreToolUse enforcement hook — see [Enforcement](/security/enforcement#install-the-hook) |
+| `claudesec uninstall-hook` [`--purge`] | Remove ClaudeSec's hook entries (`--purge` also deletes `~/.claudesec/hooks`) |
 
 ### `tail` flags
 
@@ -40,7 +44,25 @@ Run from the repo via `node cli/init.mjs <command>`. With no command, it install
 | `claudesec top` | Rank sessions — `--by spans\|threats\|health`, `--limit N` |
 | `claudesec report [id]` | Markdown security report for a session (`latest` by default) — `--out <file>` |
 
+## Security
+
+| Command | Description |
+|---------|-------------|
+| `claudesec audit-key status` | Report where the Ed25519 audit signing key currently lives (file or Keychain) |
+| `claudesec audit-key to-keychain` [`--remove-file`] | Move the key into the macOS Keychain. Opt-in only; verifies a sign/verify round-trip *before* changing anything, and renames rather than deletes the file |
+| `claudesec audit-key to-file` | Move the key back out of the Keychain onto disk |
+
+Key storage is **unchanged unless you run one of these** — every platform reads the same file path
+by default, so Linux, Docker and CI are unaffected.
+
 ## Notes
 
 - The CLI talks to the running server over HTTP on `CLAUDESEC_PORT` (default `3000`). If the server isn't running, commands that need it print a hint to start it.
 - `claudesec init` is an alias for `start`.
+- **Mutating commands need to be paired or hold a token.** Reads are open on loopback; writes are
+  not. The dashboard earns write access by being **paired once** — `claudesec open` launches it with
+  a one-time pairing key and the server sets an `HttpOnly`, `SameSite=Strict` cookie derived from
+  that key. Nothing about the *shape* of an HTTP request can earn write access, so a local process
+  cannot mint one by imitating a browser. The CLI is not the browser: it reads the same pairing key
+  from `~/.claudesec/hooks/control-token` (owner-only), or you can set `CLAUDESEC_TOKEN` in its
+  environment. `reset` additionally requires `CLAUDESEC_ALLOW_RESET=1` on the server.
