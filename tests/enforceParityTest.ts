@@ -772,6 +772,52 @@ async function main(): Promise<void> {
     // trigger by design, so this pair is compared in enforce; the monitor-mode
     // hook behaviour is asserted in tests/selfProtectionFloorTest.ts.)
 
+    // ── Self-protection floor: SHELL QUOTING ────────────────────────────────────
+    //    A backtick span is command substitution in a script and prose in a
+    //    document, and the floor could not tell them apart — so writing a doc that
+    //    QUOTED a blocked command was itself blocked, including this project's own
+    //    PR description. The rule that separates them is the shell's: a quoted
+    //    heredoc body and a single-quoted span are literal, a double-quoted one is
+    //    not. Both layers have to agree on that, or an MCP agent and a Claude Code
+    //    agent get different answers about whether they may write a changelog.
+    {
+      name: 'benign: quoted heredoc quoting a blocked command → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `cat > /tmp/x.md <<'EOF'\nBefore the fix, \`rm -rf ${CSEC_HOME}\` was allowed.\nEOF` },
+      mcpName: 'bash', mcpArgs: { command: `cat > /tmp/x.md <<'EOF'\nBefore the fix, \`rm -rf ${CSEC_HOME}\` was allowed.\nEOF` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    {
+      name: 'benign: commit message quoting a blocked command → ALLOW',
+      hookTool: 'Bash', hookInput: { command: `git commit -m 'fix(enforce): refuse \`rm -rf ${CSEC_HOME}\`'` },
+      mcpName: 'bash', mcpArgs: { command: `git commit -m 'fix(enforce): refuse \`rm -rf ${CSEC_HOME}\`'` },
+      cfg: ENFORCE_CONFIG, expectBlock: false,
+    },
+    // The counterweight: everywhere the shell WOULD expand it, both layers block.
+    {
+      name: 'self-protect: bare $( ) substitution',
+      hookTool: 'Bash', hookInput: { command: `$(rm -rf ${CSEC_HOME})` },
+      mcpName: 'bash', mcpArgs: { command: `$(rm -rf ${CSEC_HOME})` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: backticks inside DOUBLE quotes',
+      hookTool: 'Bash', hookInput: { command: `echo "see \`rm -rf ${CSEC_HOME}\`"` },
+      mcpName: 'bash', mcpArgs: { command: `echo "see \`rm -rf ${CSEC_HOME}\`"` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: unquoted heredoc body is live code',
+      hookTool: 'Bash', hookInput: { command: `cat > /tmp/x.md <<EOF\n\`rm -rf ${CSEC_HOME}\`\nEOF` },
+      mcpName: 'bash', mcpArgs: { command: `cat > /tmp/x.md <<EOF\n\`rm -rf ${CSEC_HOME}\`\nEOF` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+    {
+      name: 'self-protect: rm -rf $( ) supplying the target',
+      hookTool: 'Bash', hookInput: { command: `rm -rf $(echo ${CSEC_HOOKS})` },
+      mcpName: 'bash', mcpArgs: { command: `rm -rf $(echo ${CSEC_HOOKS})` },
+      cfg: ENFORCE_CONFIG, expectBlock: true,
+    },
+
     // ── Block rule parity: a command matching the snapshot rule. ────────────────
     {
       name: 'block rule: command hits DANGERMARKER',

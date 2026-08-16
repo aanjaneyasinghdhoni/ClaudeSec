@@ -311,6 +311,35 @@ async function main(): Promise<void> {
       // gone in a single command that named none of them to a verb the floor knew.
       ['Bash the composed record-and-key wipe', bash(
         "sh -c 'rm -f ~/.claudesec/spans.db ~/.claudesec/audit-anchor.json ~/.claudesec/hooks/audit-key.ed25519.pem'")],
+
+      // ── REAL command substitution. The floor stopped reading backticks and
+      //    `$(` as substitution wherever they appear — but only where the SHELL
+      //    would not expand them. Everywhere the shell does, it still must.
+      //    These are the counterweight to the documentation cases below: if any
+      //    of them flips to ALLOW, the false-positive fix has been bought by
+      //    opening a bypass, which is the trade this section exists to prevent.
+      ['Bash bare backtick substitution', bash('`rm -rf ~/.claudesec`')],
+      ['Bash bare $( ) substitution', bash('$(rm -rf ~/.claudesec)')],
+      ['Bash backticks inside DOUBLE quotes (shell expands these)', bash('echo "see `rm -rf ~/.claudesec`"')],
+      ['Bash $( ) inside DOUBLE quotes (shell expands these)', bash('echo "see $(rm -rf ~/.claudesec)"')],
+      // The target is computed by the substitution rather than named literally.
+      // Caught because the substitution is flattened back into its caller's
+      // arguments, not only analysed on its own.
+      ['Bash rm -rf $( ) supplying the target', bash('rm -rf $(echo ~/.claudesec/hooks)')],
+      // An UNQUOTED heredoc body IS expanded by the shell, so it stays scanned.
+      // This is the single character that separates it from the doc cases below.
+      ['Bash unquoted heredoc body is live code', bash('cat > /tmp/x.md <<EOF\n`rm -rf ~/.claudesec`\nEOF')],
+      // A quoted heredoc still cannot be aimed AT the control plane: the body is
+      // data, but the redirect on the introducing line is a write.
+      ['Bash quoted heredoc redirected onto settings.json', bash("cat > ~/.claude/settings.json <<'EOF'\n{}\nEOF")],
+      // …and the command that follows the terminator is live again.
+      ['Bash real command after a quoted heredoc', bash("cat > /tmp/x.md <<'EOF'\nprose `rm -rf ~/.claudesec`\nEOF\nrm -rf ~/.claudesec")],
+      // Quote-tracking has to be exact, or it becomes a bypass of its own. An
+      // apostrophe inside a DOUBLE-quoted word does not open a literal span, so
+      // the backticks after it are still live code.
+      ['Bash apostrophe in double quotes, then live backticks', bash('echo "it\'s fine" `rm -rf ~/.claudesec`')],
+      // A closed single-quoted span does not protect what comes after it.
+      ['Bash closed quote, then live backticks', bash("echo 'a' `rm -rf ~/.claudesec` 'b'")],
     ];
 
     for (const [name, stdin] of mustBlock) {
@@ -422,6 +451,47 @@ async function main(): Promise<void> {
       ['Bash sqlite3 .schema against the database', bash('sqlite3 ~/.claudesec/spans.db .schema')],
       ['Bash sqlite3 SELECT naming an updates table', bash(`sqlite3 ~/.claudesec/spans.db 'SELECT * FROM updates'`)],
       ['Bash an unrelated project database', bash('rm -f ./tmp/fixtures/spans.db.fixture')],
+
+      // ── WRITING ABOUT the commands the floor blocks. This is the half the
+      //    floor got wrong in practice: a markdown backtick span was followed as
+      //    command substitution, so a document that QUOTED a blocked command was
+      //    itself blocked. It refused this project's own PR description, and it
+      //    would refuse an agent writing the changelog entry for a fix it had
+      //    just made — in a repo whose docs quote commands on nearly every page.
+      //
+      //    The rule that fixes it is the shell's, not a guess about file types: a
+      //    QUOTED heredoc body and a SINGLE-quoted span are literal text, and the
+      //    shell expands neither. Every case here is prose; none of them runs
+      //    anything. Their live counterparts are in the block list above.
+      ['Bash doc: a blocked command quoted in backticks', bash(
+        "cat > /tmp/x.md <<'EOF'\nBefore the fix, `rm -rf ~/.claudesec` was allowed.\nEOF")],
+      ['Bash doc: a changelog entry quoting the command', bash(
+        "cat > CHANGELOG.md <<'EOF'\n- fix(enforce): `rm -rf ~/.claudesec` is now refused\nEOF")],
+      ['Bash doc: prose naming settings.json in backticks', bash(
+        "cat > /tmp/x.md <<'EOF'\nRun `rm -f ~/.claude/settings.json` to unregister the hook.\nEOF")],
+      ['Bash doc: backticks around a bare path', bash(
+        "cat > /tmp/x.md <<'EOF'\nThe control plane lives in `~/.claudesec/hooks`.\nEOF")],
+      ['Bash doc: <<-\'EOF\' with an indented terminator', bash(
+        "cat > /tmp/x.md <<-'EOF'\n\tSee `rm -rf ~/.claudesec`.\n\tEOF")],
+      ['Bash doc: <<\\EOF backslash-quoted delimiter', bash(
+        'cat > /tmp/x.md <<\\EOF\nSee `rm -rf ~/.claudesec`.\nEOF')],
+      ['Bash doc: a double-quoted heredoc body', bash(
+        'cat > /tmp/x.md <<"EOF"\nSee `rm -rf ~/.claudesec`.\nEOF')],
+      // The single-quoted spellings — the ones that blocked a commit message and
+      // a PR body, which is how this reached a person rather than a test.
+      ['Bash doc: changelog line via echo in single quotes', bash(
+        "echo '- `rm -rf ~/.claudesec` is now refused' >> CHANGELOG.md")],
+      ['Bash doc: release note via printf in single quotes', bash(
+        "printf '%s\\n' 'see `rm -rf ~/.claudesec`' >> NOTES.md")],
+      ['Bash doc: a commit message quoting the command', bash(
+        "git commit -m 'fix(enforce): refuse `rm -rf ~/.claudesec`'")],
+      ['Bash doc: a PR body quoting the command', bash(
+        "gh pr create --title x --body 'Closes the `rm -rf ~/.claudesec` bypass'")],
+      ['Bash doc: a single-quoted $( ) in prose', bash(
+        "git commit -m 'fix: refuse $(rm -rf ~/.claudesec) too'")],
+      // A backslash-escaped backtick is a character, not syntax.
+      ['Bash doc: an escaped backtick outside quotes', bash(
+        'echo Before the fix, \\`rm -rf ~/.claudesec\\` was allowed >> notes.md')],
     ];
 
     for (const [name, stdin] of mustAllow) {
@@ -471,6 +541,28 @@ async function main(): Promise<void> {
       check('deeply nested shell wrappers stay bounded and allow', () => {
         assert.strictEqual(code, 0, `expected exit 0, got ${code}`);
         assert.ok(Date.now() - started < 3000, 'nested shell recursion took too long');
+      });
+    }
+
+    // Quote tracking and heredoc stripping each walk the command character by
+    // character, and an unterminated `$(` scans to the end of the string. A long
+    // document full of backticks — the exact thing that reaches this code now
+    // that writing docs is allowed again — must stay a linear pass.
+    {
+      const doc = 'Line with `rm -rf ~/.claudesec` in it.\n'.repeat(2000);
+      const started = Date.now();
+      const { code } = await runHook(bash(`cat > /tmp/big.md <<'EOF'\n${doc}EOF`), baseEnv('enforce'), PROJECT);
+      check('a 76KB backticked document stays fast and allows', () => {
+        assert.strictEqual(code, 0, `expected exit 0, got ${code}`);
+        assert.ok(Date.now() - started < 3000, 'heredoc/quote scanning took too long');
+      });
+    }
+    {
+      const started = Date.now();
+      const { code } = await runHook(bash(`echo ${'$('.repeat(3000)}`), baseEnv('enforce'), PROJECT);
+      check('3000 unterminated $( openers stay bounded', () => {
+        assert.strictEqual(code, 0, `expected exit 0, got ${code}`);
+        assert.ok(Date.now() - started < 3000, 'unterminated substitution scanning blew up');
       });
     }
 

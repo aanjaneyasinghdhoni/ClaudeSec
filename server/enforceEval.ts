@@ -871,6 +871,157 @@ function copyWriteTargets(verb: string, args: string[]): string[] {
   return targets;
 }
 
+// ── Shell quoting ────────────────────────────────────────────────────────────
+// The tokenizer used to treat every backtick and every `$(` as command
+// substitution wherever it appeared. That is right in a script and wrong in
+// prose, and this repo writes prose about shell commands on nearly every page:
+//
+//     cat > CHANGELOG.md <<'EOF'
+//     - fix(enforce): `rm -rf ~/.claudesec` is now refused
+//     EOF
+//
+// was refused, because the backtick span was followed as a substitution, the `rm`
+// inside it was read as a mutating verb, and its "arguments" ran on into the
+// surrounding sentence until they reached a protected path. Documenting a fix was
+// blocked by the fix. The same bug refused `git commit -m 'refuse `rm -rf …`'` and
+// every `gh pr create --body '…'` that quoted a command.
+//
+// The fix is not a guess about which files look like documentation — it is the
+// shell's own rule, applied in the two places the tokenizer was not applying it:
+//
+//   • A QUOTED heredoc (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) is not expanded at all.
+//     No parameter expansion, no substitution, no backticks — the body is data on
+//     its way to a file. The floor's stated contract is that it never matches
+//     CONTENT, only the target path and the command, so scanning that body was
+//     always inconsistent with the rest of this module. An UNQUOTED `<<EOF` body
+//     IS expanded, and is still scanned.
+//   • A SINGLE-QUOTED span is literal. Backticks and `$(` inside `'…'` are
+//     characters, not syntax. Inside DOUBLE quotes they ARE syntax, and are still
+//     followed — the shell really would run them.
+//
+// Applying the same rule properly also closed an under-block in the other
+// direction: because `$(` was a plain split delimiter, the closing `)` stayed
+// glued to the last argument, so `$(rm -rf ~/.claudesec)` compared
+// `…/.claudesec)` against the prefixes and matched nothing. Substitutions are now
+// extracted with their delimiters, so a real one is refused and a quoted one is
+// not — see extractSubstitutions.
+
+/**
+ * Remove the BODY of every QUOTED heredoc (`<<'EOF'`, `<<"EOF"`, `<<\EOF`, and
+ * the `<<-` tab-stripping forms). The introducing line is KEPT, because that is
+ * where the redirect lives — `cat > ~/.claude/settings.json <<'EOF'` must still
+ * be refused on its target.
+ *
+ * The terminator is matched on the trimmed line, which is deliberately more
+ * permissive than POSIX for the non-`<<-` form. Erring that way ends the body
+ * EARLY, which means more text is scanned as commands, not less — the safe
+ * direction for a floor. Mirrors stripQuotedHeredocBodies() in
+ * cli/hooks/claudesec-enforce.cjs.
+ */
+function stripQuotedHeredocBodies(cmd: string): string {
+  if (!cmd || cmd.indexOf('<<') === -1) return cmd;
+  const rx = /<<-?[ \t]*(?:'([^'\n]{1,64})'|"([^"\n]{1,64})"|\\([A-Za-z_][A-Za-z0-9_]{0,63}))/g;
+  let out = '';
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(cmd)) !== null) {
+    const delim = m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3];
+    // The rest of the INTRODUCING line is real command text; the body starts
+    // after its newline. A `<<'EOF'` with no newline after it has no body here.
+    const lineEnd = cmd.indexOf('\n', rx.lastIndex);
+    if (lineEnd === -1) break;
+    out += cmd.slice(cursor, lineEnd + 1);
+    // Walk forward line by line for the terminator. Monotonic, so the whole
+    // function stays a single linear pass over the command.
+    let i = lineEnd + 1;
+    let end = cmd.length;
+    while (i <= cmd.length) {
+      const nl = cmd.indexOf('\n', i);
+      const line = cmd.slice(i, nl === -1 ? cmd.length : nl);
+      if (line.trim() === delim) { end = nl === -1 ? cmd.length : nl; break; }
+      if (nl === -1) break;
+      i = nl + 1;
+    }
+    cursor = end;
+    rx.lastIndex = end;
+  }
+  return out + cmd.slice(cursor);
+}
+
+/**
+ * Find the `)` that closes the `(` at `open`, honoring quotes. Returns -1 when
+ * the substitution is unterminated, which the caller reads as "runs to the end of
+ * the command" — again the safe direction, since it scans MORE text.
+ * Mirrors matchCloseParen() in cli/hooks/claudesec-enforce.cjs.
+ */
+function matchCloseParen(s: string, open: number): number {
+  let depth = 0;
+  let sq = false;
+  let dq = false;
+  for (let i = open; i < s.length; i++) {
+    const c = s[i];
+    if (!sq && c === '\\') { i++; continue; }
+    if (!dq && c === "'") { sq = !sq; continue; }
+    if (!sq && c === '"') { dq = !dq; continue; }
+    if (sq || dq) continue;
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+/**
+ * Pull command substitutions out of a command, honoring shell quoting.
+ *
+ * Returns the command with every ACTIVE substitution flattened in place, plus the
+ * list of substituted commands to analyse in their own right. Both halves matter,
+ * and they catch different attacks:
+ *   • the NESTED list catches `$(rm -rf ~/.claudesec)` — the dangerous verb is
+ *     inside the substitution;
+ *   • the FLATTENED text catches `rm -rf $(echo ~/.claudesec/hooks)` — the
+ *     dangerous verb is outside and the substitution only supplies its argument.
+ *
+ * A substitution inside `'…'` is not active and is left as literal text, which is
+ * what lets a document quote a command in backticks. Inside `"…"` it IS active,
+ * because the shell would run it.
+ * Mirrors extractSubstitutions() in cli/hooks/claudesec-enforce.cjs.
+ */
+function extractSubstitutions(cmd: string): { text: string; nested: string[] } {
+  const nested: string[] = [];
+  if (!cmd || (cmd.indexOf('`') === -1 && cmd.indexOf('$(') === -1)) {
+    return { text: cmd, nested };
+  }
+  let text = '';
+  let i = 0;
+  let sq = false; // inside '…' — nothing is syntax
+  let dq = false; // inside "…" — substitutions still are
+  while (i < cmd.length) {
+    const ch = cmd[i];
+    if (!sq && ch === '\\' && i + 1 < cmd.length) {
+      text += ch + cmd[i + 1]; // an escaped backtick is a character, not syntax
+      i += 2;
+      continue;
+    }
+    if (!dq && ch === "'") { sq = !sq; text += ch; i++; continue; }
+    if (!sq && ch === '"') { dq = !dq; text += ch; i++; continue; }
+    if (!sq && (ch === '`' || (ch === '$' && cmd[i + 1] === '('))) {
+      const isTick = ch === '`';
+      const close = isTick ? cmd.indexOf('`', i + 1) : matchCloseParen(cmd, i + 1);
+      const stop = close === -1 ? cmd.length : close;
+      const inner = cmd.slice(i + (isTick ? 1 : 2), stop);
+      nested.push(inner);
+      // Spaces keep the flattened text from fusing the substitution onto its
+      // neighbours (`a$(b)c` must not become one token `abc`).
+      text += ' ' + inner + ' ';
+      i = close === -1 ? cmd.length : close + 1;
+      continue;
+    }
+    text += ch;
+    i++;
+  }
+  return { text, nested };
+}
+
 /** A path a command would write to, and whether the verb destroys a whole tree. */
 interface WriteTarget {
   /** The path spelling as it appeared on the command line. */
@@ -903,10 +1054,22 @@ interface WriteTarget {
 function bashWriteTargets(cmd: string, depth = 0): WriteTarget[] {
   const out: WriteTarget[] = [];
   if (!cmd) return out;
+  // Drop what the shell will not expand, then lift out what it will. A quoted
+  // heredoc body is data on its way to a file; a substitution inside `'…'` is
+  // literal text. Everything the shell WOULD run survives both steps.
+  const stripped = stripQuotedHeredocBodies(cmd);
+  const { text: flattened, nested } = extractSubstitutions(stripped);
+  // Each substitution is a command in its own right — `$(rm -rf ~/.claudesec)`
+  // hides the verb inside the parentheses, where no argument scan would reach it.
+  if (depth < MAX_SHELL_DEPTH) {
+    for (const sub of nested) {
+      for (const t of bashWriteTargets(sub, depth + 1)) out.push(t);
+    }
+  }
   // Resolve indirection before tokenizing: same-command variables first, then
   // $HOME, then `~`. Each layer feeds the next, so `P=~/x; … > $P` ends up as an
   // absolute path the prefix compare can actually see.
-  const expanded = expandTilde(expandHomeVar(expandLocalVars(cmd)));
+  const expanded = expandTilde(expandHomeVar(expandLocalVars(flattened)));
   // `printf '…' | sh` hands the shell its script on stdin, where no argument scan
   // can see it. When a pipeline ENDS in a bare shell, every quoted string feeding
   // it is re-analysed as a script.
@@ -915,11 +1078,14 @@ function bashWriteTargets(cmd: string, depth = 0): WriteTarget[] {
       for (const t of bashWriteTargets(quoted.slice(1, -1), depth + 1)) out.push(t);
     }
   }
-  // Rough split into simple commands: a shell separator or a command substitution
-  // starts a new command, and a verb only governs the arguments in its own
-  // segment. Parentheses are deliberately NOT split on — an inline
-  // `python -c "open(...)"` script is one argument and must stay intact.
-  for (const seg of expanded.split(/[\n;|&`]+|\$\(/)) {
+  // Rough split into simple commands: a shell separator starts a new command, and
+  // a verb only governs the arguments in its own segment. Backticks and `$(` are
+  // NO LONGER split delimiters — extractSubstitutions has already lifted the real
+  // ones out (and left the quoted ones as prose), which is what stopped a
+  // backticked command in a document from being read as a command. Parentheses
+  // are deliberately not split on either: an inline `python -c "open(...)"` script
+  // is one argument and must stay intact.
+  for (const seg of expanded.split(/[\n;|&]+/)) {
     const tokens: { val: string; redirect: boolean }[] = [];
     const rx = /(>>?|<|"([^"]*)"|'([^']*)'|[^\s"'<>|;&]+)/g;
     let m: RegExpExecArray | null;
