@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## 2.0.1 — 2026-08-17
+
+### Fixed
+
+- **The container image builds again.** 2.0.0 was tagged and released, but its
+  image never reached the registry. The image build runs `pnpm build` as root,
+  `prebuild` chains the full test suite, and one case in the legacy-database
+  migration test simulates an interrupted move by making the target directory
+  unwritable. Root ignores directory permission bits, so the move completed, no
+  interruption occurred, and every assertion in that case inverted. The case is
+  now skipped under uid 0 — with a line saying why, so the skip is not mistaken
+  for a weakened test — and runs in full for everyone else. If you run ClaudeSec
+  as a container, 2.0.1 is the first 2.x image you can pull.
+
+### Build
+
+- **`better-sqlite3` 12.11.1 → 13.0.3.** 13.0.0 rebuilds the driver on N-API.
+  The JavaScript API is unchanged and the release only adds `db.explain()` and
+  `stmt.toString()`, but the binding layer underneath is new code, so the audit
+  chain was re-verified against it: 500 chained spans verify deep with a signed,
+  attested anchor, and an out-of-band edit to a row in the middle is still caught
+  as a mismatch at that exact position. 13.x also ships musl prebuilds inline,
+  so the Alpine image no longer depends on fetching one at install time.
+- **`motion` 12.40.0 → 13.1.0.** The one breaking change in 13.0.0 drops the
+  optional `@emotion/is-prop-valid` integration, which this project does not
+  install, and the built-in prop filter it falls back to is unchanged.
+- **The npm dependency group moves up 15 packages**, every one of them within
+  its current major.
+
+### Security
+
+- **Workflow actions are pinned to commit SHAs.** `pnpm/action-setup` and
+  `github/codeql-action` were pinned to the SHAs of their *annotated tag
+  objects*, which an upstream maintainer can delete and recreate. They now point
+  at the commits those tags resolve to, which cannot be moved.
+
 ## 2.0.0 — 2026-08-16
 
 ### Upgrade notes
