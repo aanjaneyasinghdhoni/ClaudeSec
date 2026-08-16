@@ -192,6 +192,70 @@ function trustLocalEnabled(): boolean {
 // The browser is paired once, out of band, via `claudesec open`.
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+// ---------------------------------------------------------------------------
+// Path classification — the gate must agree with the ROUTER
+// ---------------------------------------------------------------------------
+// The gate decides "is this a control-plane route?" by comparing strings, while
+// express decides "does this route match?" by its own rules. Every spelling the
+// router accepts but the comparison rejects is an authentication bypass, and
+// that was not hypothetical: express matches routes case-INSENSITIVELY unless
+// `case sensitive routing` is set, and the gate compared case-SENSITIVELY. So
+// `PUT /API/enforce/config` missed the gate, reached the handler, and turned
+// enforcement off with no token — and off-loopback it also skipped the
+// CLAUDESEC_TOKEN branch, because the "not a gated path" early-out runs first.
+//
+// Two changes, because either alone leaves the class of bug open:
+//
+//   1. `case sensitive routing` is set on the app (see startServer), so the
+//      ROUTER now agrees with these comparisons: /API/… matches no route at all
+//      and 404s before any handler runs. Repairing only the comparison would
+//      leave the next hand-written prefix check free to make the same mistake.
+//      `strict routing` is deliberately NOT set: it would 404 an ordinary
+//      `/api/spans/`, a visible behaviour change for callers, and it buys
+//      nothing once the classifier folds the trailing slash itself.
+//
+//   2. The classifier normalises before comparing, and normalises MORE than
+//      express 4 resolves — it folds percent-escapes, duplicate slashes, dot
+//      segments and backslashes, none of which express 4 currently matches
+//      through. Over-approximating is the safe direction: the worst case is
+//      demanding a token for a path that would have 404'd anyway, where
+//      under-approximating is the bug being fixed. It also keeps the gate
+//      honest behind a normalising reverse proxy, and under the express 5
+//      router, which unlike express 4 decodes the path before matching.
+const GATED_PREFIXES = ['/api', '/mcp', '/v1/traces'] as const;
+
+/**
+ * Reduce a request path to the route it could reach. Never throws: a malformed
+ * escape leaves the path as-is, which classifies as "not one of ours" only when
+ * it genuinely cannot be read as one.
+ */
+function normalizeRequestPath(raw: string): string {
+  let p = String(raw ?? '');
+  // Decode repeatedly — "%2561" decodes to "%61", which decodes to "a" — so a
+  // proxy that decodes once cannot hand the router a path we classified raw.
+  // Bounded to 3 passes; that is far past anything a real client sends.
+  for (let i = 0; i < 3 && p.includes('%'); i++) {
+    let decoded: string;
+    try { decoded = decodeURIComponent(p); } catch { break; }
+    if (decoded === p) break;
+    p = decoded;
+  }
+  p = p.replace(/\\/g, '/');       // some clients and proxies treat \ as /
+  const out: string[] = [];
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue;   // also collapses // and trailing /
+    if (seg === '..') { out.pop(); continue; }
+    out.push(seg);
+  }
+  return `/${out.join('/')}`.toLowerCase();
+}
+
+/** Is this path part of the gated control/data plane, however it is spelled? */
+function isGatedPath(rawPath: string): boolean {
+  const p = normalizeRequestPath(rawPath);
+  return GATED_PREFIXES.some(prefix => p === prefix || p.startsWith(`${prefix}/`));
+}
+
 /**
  * Mutating endpoints that stay reachable WITHOUT the control token, because
  * their callers are machine clients with no way to obtain one:
@@ -219,12 +283,36 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * inventing a hook secret or a bypass nonce — see docs/security/enforcement.mdx.
  */
 function isOpenMutation(pathname: string): boolean {
+  // Normalised for the same reason isGatedPath is: this must answer for the
+  // route the request will REACH, not for the spelling it arrived in. Widening
+  // here is safe in a way widening the gate is not, because express 4 matches
+  // none of the alternate spellings — a path that only normalises onto this
+  // list still 404s at the router.
+  const p = normalizeRequestPath(pathname);
   return (
-    pathname === '/v1/traces' || pathname.startsWith('/v1/traces/') ||
-    pathname === '/mcp' || pathname.startsWith('/mcp/') ||
-    pathname === '/api/enforce-log'
+    p === '/v1/traces' || p.startsWith('/v1/traces/') ||
+    p === '/mcp' || p.startsWith('/mcp/') ||
+    p === '/api/enforce-log'
   );
 }
+
+/**
+ * MCP tools that are control-plane operations, not observation.
+ *
+ * POST /mcp itself stays open (isOpenMutation above says why), but these change
+ * what ClaudeSec DETECTS, which is the one thing the open surface must not
+ * offer. Everything else on /mcp reads recorded activity or annotates it —
+ * `tag_span` and `bookmark_span` add rows, they cannot take a rule away — so
+ * they stay reachable by a machine client with no credential.
+ */
+const MCP_CONTROL_TOOLS: ReadonlySet<string> = new Set(['suppress_rule']);
+
+/**
+ * Ceiling on a snooze requested over /mcp. An uncapped duration is a permanent
+ * disable with a temporary name; the REST twin's operator-driven flow at least
+ * shows an expiry in the UI, while a machine caller's request is unattended.
+ */
+const MAX_MCP_SUPPRESSION_MS = 24 * 60 * 60 * 1000;
 
 /** Read one cookie value out of a raw Cookie header (no cookie-parser needed). */
 function readCookie(header: string | undefined, name: string): string | undefined {
@@ -252,6 +340,21 @@ function presentedTokens(req: express.Request): string[] {
   if (cookie) out.push(cookie);
   if (typeof req.query.token === 'string') out.push(req.query.token);
   return out;
+}
+
+/**
+ * Does this request carry a credential that satisfies the control plane —
+ * either the out-of-band pairing key (or its derived cookie) or CLAUDESEC_TOKEN?
+ *
+ * One definition, used by the HTTP gate AND by the control-plane tools on /mcp,
+ * so the two can never drift into disagreeing about who is the operator.
+ */
+function hasControlCredential(req: express.Request): boolean {
+  const presented = presentedTokens(req);
+  if (presented.length === 0) return false;
+  const envToken = process.env.CLAUDESEC_TOKEN ?? '';
+  return controlTokenAccepted(presented)
+    || (envToken !== '' && presented.some(t => tokenMatches(t, envToken)));
 }
 
 /**
@@ -627,6 +730,19 @@ let scrubOptions: ScrubOptions = loadScrubOptions(loadHoneytokens());
 let _suppressedCache: { keys: Set<string>; at: number } | null = null;
 const SUPPRESSED_TTL_MS = 2_000;
 
+/**
+ * The `builtin-<n>` keys of the catastrophic-floor detection rules.
+ *
+ * Suppression addresses a rule by INDEX, while the disable/override surface
+ * addresses it by LABEL — so the label-based catastrophic guard the override
+ * routes enforce never applied to a suppression. `builtin-0` is "Recursive root
+ * deletion" (rm -rf /): the first, most guessable id on the list was the one
+ * that mattered most. Derived from the rule table itself so it cannot drift.
+ */
+const CATASTROPHIC_RULE_KEYS: ReadonlySet<string> = new Set(
+  SEVERITY_RULES.flatMap((r, i) => (CATASTROPHIC_DETECTION_LABELS.has(r.label) ? [`builtin-${i}`] : [])),
+);
+
 function getSuppressedKeysCached(): Set<string> {
   const now = Date.now();
   if (_suppressedCache && now - _suppressedCache.at < SUPPRESSED_TTL_MS) {
@@ -635,7 +751,11 @@ function getSuppressedKeysCached(): Set<string> {
   const rows = db.prepare(
     `SELECT ruleKey FROM suppressions WHERE suppressUntil > ?`
   ).all(new Date().toISOString()) as { ruleKey: string }[];
-  const keys = new Set(rows.map(r => r.ruleKey));
+  // Catastrophic-floor rules are dropped here defensively, exactly as the
+  // disabled-rule cache below drops their labels: whatever wrote the row — a
+  // stale record, an ungated route, a future caller — applying it must never
+  // silence the handful of rules the tool exists to catch.
+  const keys = new Set(rows.map(r => r.ruleKey).filter(k => !CATASTROPHIC_RULE_KEYS.has(k)));
   _suppressedCache = { keys, at: now };
   return keys;
 }
@@ -2143,6 +2263,14 @@ function recordActivity(spans: number, tokensIn: number, tokensOut: number) {
 
 async function startServer() {
   const app        = express();
+  // Make the router match paths the way the auth gate classifies them. Without
+  // this express matches case-INSENSITIVELY, so /API/enforce/config reached the
+  // handler while the gate — comparing case-sensitively — never saw it as a
+  // control-plane route. Set before the first route is registered, which is
+  // when express builds the router from these settings. See the comment above
+  // GATED_PREFIXES for why the classifier is ALSO normalised, and why
+  // `strict routing` is deliberately left off.
+  app.set('case sensitive routing', true);
   const httpServer = createServer(app);
 
   // SECURITY: Restrict CORS to localhost origins only (prevents cross-site request forgery)
@@ -2484,12 +2612,9 @@ async function startServer() {
   // CLAUDESEC_TRUST_LOCAL=1 bypasses the address check (opt-in, default off):
   // used in Docker where the container sees a bridge IP instead of loopback.
   app.use((req, res, next) => {
-    const isGated =
-      req.path === '/api' ||
-      req.path.startsWith('/api/') ||
-      req.path === '/mcp' ||
-      req.path.startsWith('/mcp/') ||
-      req.path.startsWith('/v1/traces');
+    // isGatedPath normalises first — see its definition for why a raw string
+    // comparison here was a total bypass of this middleware.
+    const isGated = isGatedPath(req.path);
     const isLocal = isLoopbackAddr(req.socket.remoteAddress) || trustLocalEnabled();
 
     // Pair the browser: `claudesec open` (or the startup banner on a terminal)
@@ -2508,11 +2633,7 @@ async function startServer() {
         next();
         return;
       }
-      const presented = presentedTokens(req);
-      const envToken = process.env.CLAUDESEC_TOKEN ?? '';
-      const ok = controlTokenAccepted(presented)
-        || (envToken !== '' && presented.some(t => tokenMatches(t, envToken)));
-      if (ok) { next(); return; }
+      if (hasControlCredential(req)) { next(); return; }
       res.status(403).json({
         error: 'forbidden',
         detail:
@@ -2987,7 +3108,7 @@ async function startServer() {
               { name: 'search_spans',         description: 'Full-text search across all spans', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } },
               // Phase 15 / s68 — expanded tool coverage
               { name: 'tag_span',             description: 'Add a tag to a span', inputSchema: { type: 'object', properties: { spanId: { type: 'string' }, tag: { type: 'string' } }, required: ['spanId', 'tag'] } },
-              { name: 'suppress_rule',        description: 'Snooze a detection rule for a duration', inputSchema: { type: 'object', properties: { ruleKey: { type: 'string', description: 'e.g. builtin-0 or custom:<id>' }, durationMs: { type: 'number', description: 'Snooze duration in milliseconds' } }, required: ['ruleKey', 'durationMs'] } },
+              { name: 'suppress_rule',        description: 'Snooze a detection rule for a duration. Control-plane: requires the control token (pairing key or CLAUDESEC_TOKEN); catastrophic-floor rules cannot be suppressed, and the duration is capped at 24h.', inputSchema: { type: 'object', properties: { ruleKey: { type: 'string', description: 'e.g. builtin-0 or custom:<id>' }, durationMs: { type: 'number', description: `Snooze duration in milliseconds (capped at ${MAX_MCP_SUPPRESSION_MS})` } }, required: ['ruleKey', 'durationMs'] } },
               { name: 'bookmark_span',        description: 'Bookmark a span with an optional note', inputSchema: { type: 'object', properties: { spanId: { type: 'string' }, traceId: { type: 'string' }, note: { type: 'string' } }, required: ['spanId'] } },
               { name: 'get_processes',        description: 'List running AI agent processes on the local machine', inputSchema: { type: 'object', properties: {} } },
               { name: 'get_incident_summary', description: 'Summarise a session: spans, alerts, top threats, tags', inputSchema: { type: 'object', properties: { traceId: { type: 'string' } }, required: ['traceId'] } },
@@ -2999,6 +3120,33 @@ async function startServer() {
         case 'tools/call': {
           const toolName = String(params?.name ?? '');
           const args     = (params?.arguments ?? {}) as Record<string, unknown>;
+
+          // ── Why /mcp is outside the control-token gate, and where that stops ──
+          // A cross-agent MCP client is a machine with nowhere to hold a secret,
+          // so requiring a token here would mean requiring one nobody can supply
+          // — the same reasoning that keeps /v1/traces and the hook's event feed
+          // open (see isOpenMutation). That trade is sound for READING recorded
+          // activity and for annotating it: the worst outcome is noise in the
+          // record, and the record is hash-chained.
+          //
+          // It is NOT sound for switching detection OFF. `suppress_rule` takes a
+          // rule id an attacker can simply enumerate (`builtin-0` is rm -rf /)
+          // and stops that rule scoring anything, which is indistinguishable
+          // from "ClaudeSec saw nothing". Its gated REST twin has always needed
+          // the control token; there is no reason the same operation reached by
+          // JSON-RPC should not. So the exemption stays for the read and
+          // annotate tools, and the control-plane tools carry the same
+          // credential the /api control plane does.
+          if (MCP_CONTROL_TOOLS.has(toolName) && !hasControlCredential(req)) {
+            auditLog(req, 'mcp.control.rejected', toolName, { tool: toolName, reason: 'no control token' });
+            err(-32001,
+              `"${toolName}" changes what ClaudeSec detects and needs the control token. ` +
+              'Run `claudesec open` to pair, or present the pairing key from ' +
+              `${controlKeyPath()} as a bearer token or the ${CONTROL_HEADER} header. ` +
+              'CLAUDESEC_TOKEN is also accepted.');
+            break;
+          }
+
           switch (toolName) {
             case 'get_health': {
               const spanCount    = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as any).c;
@@ -3101,14 +3249,52 @@ async function startServer() {
             case 'suppress_rule': {
               const ruleKey    = String(args.ruleKey    ?? '').trim();
               const durationMs = Number(args.durationMs ?? 0);
-              if (!ruleKey || durationMs <= 0) { err(-32602, 'ruleKey and positive durationMs required'); break; }
-              const suppressUntil = new Date(Date.now() + durationMs).toISOString();
-              db.prepare(
-                `INSERT INTO suppressions (ruleKey, suppressUntil, createdAt) VALUES (?, ?, ?)
-                 ON CONFLICT(ruleKey) DO UPDATE SET suppressUntil = excluded.suppressUntil, createdAt = excluded.createdAt`
-              ).run(ruleKey, suppressUntil, new Date().toISOString());
+              if (!ruleKey || !(durationMs > 0)) { err(-32602, 'ruleKey and positive durationMs required'); break; }
+              // Shape check: a suppression row is only ever read back as one of
+              // these two forms, so anything else is a typo or a probe, not a
+              // rule anyone can un-suppress from the UI later.
+              if (!/^(?:builtin-\d{1,5}|custom:[A-Za-z0-9._:-]{1,64})$/.test(ruleKey)) {
+                err(-32602, 'ruleKey must be "builtin-<n>" or "custom:<id>"');
+                break;
+              }
+              // The catastrophic floor, by INDEX. The label-based guard on the
+              // rule-override routes never covered this surface — see
+              // CATASTROPHIC_RULE_KEYS. Record the attempt: "who tried to
+              // silence rm -rf / detection" is exactly what an audit log is for.
+              if (CATASTROPHIC_RULE_KEYS.has(ruleKey)) {
+                auditLog(req, 'suppression.rejected', ruleKey, { ruleKey, via: 'mcp', reason: 'catastrophic-floor rule' });
+                err(-32602, `"${ruleKey}" is a catastrophic-floor rule and cannot be suppressed`);
+                break;
+              }
+              // Bound the snooze. An uncapped duration is a permanent disable
+              // wearing a temporary name; it also outlives the operator's memory
+              // of having set it. A day is long enough for the noisy-rule case
+              // the tool exists for, short enough to heal itself.
+              const capped = Math.min(durationMs, MAX_MCP_SUPPRESSION_MS);
+              const suppressUntil = new Date(Date.now() + capped).toISOString();
+              // Replace-then-insert rather than ON CONFLICT: `suppressions` has
+              // a plain (non-unique) index on ruleKey, so the upsert this used
+              // to run raised "ON CONFLICT clause does not match any PRIMARY KEY
+              // or UNIQUE constraint" on every call — the tool never worked.
+              db.transaction(() => {
+                db.prepare('DELETE FROM suppressions WHERE ruleKey = ?').run(ruleKey);
+                db.prepare(
+                  'INSERT INTO suppressions (ruleKey, suppressUntil, reason, createdAt) VALUES (?, ?, ?, ?)',
+                ).run(ruleKey, suppressUntil, 'via mcp suppress_rule', new Date().toISOString());
+              })();
+              // The read path caches suppressed keys for ~2s; drop it so the
+              // change takes effect now rather than "soon".
+              invalidateSuppressedCache();
+              auditLog(req, 'suppression.create', ruleKey, {
+                ruleKey, via: 'mcp', durationMs: capped,
+                ...(capped !== durationMs ? { requestedMs: durationMs, cappedTo: capped } : {}),
+              });
               io.emit('suppressions-update');
-              ok({ content: [{ type: 'text', text: JSON.stringify({ ok: true, ruleKey, suppressUntil }) }] });
+              io.emit('rules-update');
+              ok({ content: [{ type: 'text', text: JSON.stringify({
+                ok: true, ruleKey, suppressUntil,
+                ...(capped !== durationMs ? { cappedFromMs: durationMs, maxDurationMs: MAX_MCP_SUPPRESSION_MS } : {}),
+              }) }] });
               break;
             }
 
@@ -3659,6 +3845,167 @@ service:
     io.emit('sessions-update');
     io.emit('alerts-update');
     res.json({ status: 'ok', clearedSpans: demoSpans, clearedSessions: demoSessions });
+  });
+
+  // ── Flood control for the open enforcement feed ───────────────────────────
+  //
+  // POST /api/enforce-log is deliberately token-free: the PreToolUse hook runs
+  // inside the agent's own process tree, so any secret we handed it would be
+  // readable by exactly the party the gate excludes (isOpenMutation says more).
+  // That trade stands. What did not stand is what the openness let an
+  // unauthenticated local caller do with it: the feed is a FIFO capped at
+  // ENFORCE_LOG_MAX, so 500 posts pushed every real entry out of it in under
+  // half a second — and because the survivors are re-anchored after a prune,
+  // /api/audit/verify still answered "chain intact". Append-only turned out to
+  // mean "anyone can append", which is also "anyone can evict".
+  //
+  // The openness is not the defect; the eviction is. Three layers, in order:
+  //
+  //   1. RATE. A token bucket per source address. The hook fires once per tool
+  //      call — bursty but nothing like a flood — so a generous ceiling costs
+  //      it nothing and takes the "erase the feed between two keystrokes"
+  //      option off the table.
+  //
+  //   2. WHAT MAY BE EVICTED. At the cap, an append displaces the oldest entry.
+  //      If that entry records a real BLOCK (`blocked: true`) it is evidence
+  //      that something was actually stopped, and recent evidence is not
+  //      displaced by new arrivals: the append is refused instead. Old evidence
+  //      (past ENFORCE_LOG_PRESERVE_MS) may rotate out normally, so a feed full
+  //      of blocks cannot wedge the endpoint forever.
+  //
+  //   3. HOW MUCH MAY BE EVICTED. Even displacing monitor-mode entries is
+  //      budgeted — a ceiling on evictions per window. Normal operation rotates
+  //      a feed slowly and never notices; a flood exhausts the budget in seconds
+  //      and is then refused. This is the layer that protects a monitor-mode
+  //      feed, where nothing is `blocked` and layer 2 has nothing to hold. The
+  //      window is fixed rather than sliding, so a flood straddling a boundary
+  //      can evict up to 2× the budget before it is refused again; that is
+  //      bounded and loud, and a sliding window buys precision this does not
+  //      need — the number that matters is "hundreds per hour, not 500 in half
+  //      a second".
+  //
+  // And whatever survives all three is RECORDED: evictions and refusals write
+  // an audit entry (aggregated, so a flood cannot flood the audit log in turn).
+  // Losing enforcement events may be unavoidable at a fixed cap; losing them
+  // silently is the thing this tool must never do.
+  //
+  // Fail-open remains the hook's contract, not this endpoint's: the hook
+  // ignores our response, so a 429 costs it nothing and never blocks a tool
+  // call. A caller holding the control token skips all of this — it is the
+  // operator, and it is not the flood source.
+  //
+  // RESIDUAL, stated plainly: under a sustained flood the feed stops accepting
+  // NEW events until the budget window slides. That is deliberate — refusing
+  // loudly beats deleting silently — but it is a denial of recording, and the
+  // complete fix is a priority-eviction policy inside enforceLogStore.ts so the
+  // cap sheds noise instead of history.
+  const envInt = (name: string, dflt: number): number => {
+    const n = Number(process.env[name]);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
+  };
+  const ENFORCE_LOG_BURST       = envInt('CLAUDESEC_ENFORCE_LOG_BURST', 300);
+  const ENFORCE_LOG_RATE_PER_S  = envInt('CLAUDESEC_ENFORCE_LOG_RATE', 200);
+  const ENFORCE_LOG_EVICTIONS   = envInt('CLAUDESEC_ENFORCE_LOG_EVICTIONS', 60);
+  const ENFORCE_EVICT_WINDOW_MS = 10 * 60_000;
+  const ENFORCE_LOG_PRESERVE_MS = 24 * 60 * 60 * 1000;
+
+  const enforceLogBuckets = new Map<string, { tokens: number; at: number }>();
+  const enforceLogRateOk = (source: string): boolean => {
+    const now = Date.now();
+    // Bound the map: a source that has been idle long enough to refill fully
+    // carries no state worth keeping.
+    if (enforceLogBuckets.size > 512) {
+      for (const [k, v] of enforceLogBuckets) {
+        if (now - v.at > 60_000) enforceLogBuckets.delete(k);
+      }
+    }
+    const b = enforceLogBuckets.get(source) ?? { tokens: ENFORCE_LOG_BURST, at: now };
+    b.tokens = Math.min(ENFORCE_LOG_BURST, b.tokens + ((now - b.at) / 1000) * ENFORCE_LOG_RATE_PER_S);
+    b.at = now;
+    enforceLogBuckets.set(source, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  };
+
+  // The row an append at the cap would displace. O(1) on the id index; memoised
+  // for a second so a flood does not re-query per request, and dropped whenever
+  // an eviction actually moves the head.
+  const oldestEnforceRowStmt = db.prepare('SELECT ts, blocked FROM enforce_log ORDER BY id ASC LIMIT 1');
+  let _oldestEnforce: { row: { ts: number; blocked: number } | undefined; at: number } | null = null;
+  const oldestEnforceRow = (): { ts: number; blocked: number } | undefined => {
+    const now = Date.now();
+    if (_oldestEnforce && now - _oldestEnforce.at < 1_000) return _oldestEnforce.row;
+    let row: { ts: number; blocked: number } | undefined;
+    try { row = oldestEnforceRowStmt.get() as { ts: number; blocked: number } | undefined; }
+    catch { row = undefined; }
+    _oldestEnforce = { row, at: now };
+    return row;
+  };
+
+  let _evictWindow = { start: 0, count: 0 };
+  const evictionBudgetOk = (): boolean => {
+    const now = Date.now();
+    if (now - _evictWindow.start > ENFORCE_EVICT_WINDOW_MS) _evictWindow = { start: now, count: 0 };
+    if (_evictWindow.count >= ENFORCE_LOG_EVICTIONS) return false;
+    _evictWindow.count++;
+    return true;
+  };
+
+  // Aggregate the record: one audit entry per minute carrying the counts, so
+  // the flood cannot turn the audit log into its own denial of service.
+  let _feedPressure = { evicted: 0, refused: 0, loggedAt: 0 };
+  const noteFeedPressure = (req: express.Request, kind: 'evicted' | 'refused', reason: string): void => {
+    _feedPressure[kind]++;
+    const now = Date.now();
+    if (now - _feedPressure.loggedAt < 60_000) return;
+    _feedPressure.loggedAt = now;
+    auditLog(req, `enforce-log.${kind}`, 'enforce_log', {
+      reason,
+      evictedSinceLastRecord: _feedPressure.evicted,
+      refusedSinceLastRecord: _feedPressure.refused,
+      cap: ENFORCE_LOG_MAX,
+      total: persistedEnforceLogCount(),
+    });
+    _feedPressure.evicted = 0;
+    _feedPressure.refused = 0;
+  };
+
+  app.post('/api/enforce-log', (req, res, next) => {
+    if (hasControlCredential(req)) { next(); return; }
+    const source = String(req.socket.remoteAddress ?? 'unknown');
+    const refuse = (error: string, detail: string): void => {
+      noteFeedPressure(req, 'refused', error);
+      res.status(429).json({ error, detail });
+    };
+
+    if (!enforceLogRateOk(source)) {
+      refuse('rate_limited',
+        'Too many enforcement events from this source. The feed accepts a burst and then a steady rate; ' +
+        'this protects recorded events from being pushed out of a capped log.');
+      return;
+    }
+
+    if (persistedEnforceLogCount() >= ENFORCE_LOG_MAX) {
+      const oldest = oldestEnforceRow();
+      const evicteeIsEvidence =
+        !!oldest?.blocked && Date.now() - Number(oldest.ts) < ENFORCE_LOG_PRESERVE_MS;
+      if (evicteeIsEvidence) {
+        refuse('feed_saturated',
+          `The enforcement feed is at its ${ENFORCE_LOG_MAX}-entry cap and the oldest entry records a ` +
+          'block that has not aged out. New events are refused rather than displacing it.');
+        return;
+      }
+      if (!evictionBudgetOk()) {
+        refuse('feed_saturated',
+          `The enforcement feed is at its ${ENFORCE_LOG_MAX}-entry cap and has already rotated ` +
+          `${ENFORCE_LOG_EVICTIONS} entries in this window. New events are refused until it slides.`);
+        return;
+      }
+      _oldestEnforce = null;                 // the head is about to move
+      noteFeedPressure(req, 'evicted', 'cap reached');
+    }
+    next();
   });
 
   // ── Enforcement event log + config (PreToolUse hook feed) ──────────────────

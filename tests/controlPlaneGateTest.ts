@@ -1,7 +1,7 @@
 /**
  * tests/controlPlaneGateTest.ts
  *
- * Gate for three server behaviours that can only be exercised by driving the
+ * Gate for six server behaviours that can only be exercised by driving the
  * real server (they are inline express middleware / route handlers, not exported
  * functions):
  *
@@ -27,6 +27,29 @@
  *      unaddressable rows — `spanId TEXT PRIMARY KEY` has no NOT NULL, and SQLite
  *      treats every NULL primary key as distinct, so INSERT OR IGNORE never
  *      deduped them.
+ *
+ *   4. THE GATE CLASSIFIES A PATH THE WAY THE ROUTER MATCHES IT. The gate asked
+ *      `req.path.startsWith('/api/')` — a case-SENSITIVE test — while express
+ *      matches routes case-INSENSITIVELY unless `case sensitive routing` is set.
+ *      `PUT /API/enforce/config` therefore missed the gate and reached the
+ *      handler, turning enforcement off with no token; off-loopback it also
+ *      skipped the CLAUDESEC_TOKEN branch, because the "not a gated path"
+ *      early-out runs first. Section 1c walks every spelling that a router, or
+ *      a normalising proxy in front of one, could resolve to a gated route.
+ *
+ *   5. /mcp IS EXEMPT FROM THE GATE — ITS CONTROL TOOLS ARE NOT. The exemption
+ *      is a deliberate trade for machine clients that cannot hold a secret, and
+ *      it is right for INGEST. It was also letting `suppress_rule` switch off
+ *      any detection rule by an enumerable id (`builtin-0` is `rm -rf /`) with
+ *      no token, no cap, no catastrophic-label guard and no audit trail.
+ *
+ *   6. AN OPEN APPEND ENDPOINT MUST NOT BE AN ERASE ENDPOINT. POST
+ *      /api/enforce-log is token-free by the same trade (the PreToolUse hook has
+ *      nowhere safe to keep a secret). 500 unauthenticated posts used to push
+ *      every real entry out of the capped feed in under half a second, and
+ *      because the survivors are re-anchored, /api/audit/verify still reported
+ *      "chain intact". Section 6 floods the feed and asserts the evidence
+ *      survives, that displacement is bounded, and that it is recorded.
  *
  * Run via:  npx tsx tests/controlPlaneGateTest.ts
  *   Exit 0 → every assertion passed.   Exit 1 → a failure (or boot failure).
@@ -130,6 +153,32 @@ function otlpBatch(spans: unknown[]) {
     }],
   };
 }
+/**
+ * Every spelling of `p` that express — or a proxy that normalises before
+ * forwarding — could resolve back to the route `p` names. The gate has to treat
+ * all of them as the gated route (or the router has to refuse them outright);
+ * what it must never do is let one through unclassified.
+ */
+function pathSpellings(p: string): Array<[string, string]> {
+  const upper   = p.toUpperCase();
+  const capped  = p.replace(/\/([a-z])/g, (_m, c: string) => `/${c.toUpperCase()}`);
+  const pctHead = `/%${p.charCodeAt(1).toString(16).toUpperCase()}${p.slice(2)}`;
+  const dupIn   = p.replace(/^\/([^/]+)\//, '/$1//');
+  const out: Array<[string, string]> = [
+    ['upper case',                    upper],
+    ['capitalised segments',          capped],
+    ['trailing slash',                `${p}/`],
+    ['upper case + trailing slash',   `${upper}/`],
+    ['duplicate leading slash',       `/${p}`],
+    ['percent-encoded first letter',  pctHead],
+  ];
+  if (dupIn !== p) out.push(['duplicate interior slash', dupIn]);
+  return out;
+}
+
+/** A refusal — any of them. The point is that the handler did not run. */
+const REFUSALS = new Set([400, 401, 403, 404, 405, 429]);
+
 const goodSpan = (id: string) => ({
   spanId: id, traceId: 'trace-ctlplane', name: 'tool_call/Bash',
   startTimeUnixNano: '1700000000000000000', endTimeUnixNano: '1700000000500000000',
@@ -329,6 +378,58 @@ async function main(): Promise<void> {
       assert.notStrictEqual(r.status, 403);
     });
 
+    // ── 1c. Path spelling: the gate must model the router ──────────────────
+    // The regression: the gate classified with case-SENSITIVE comparisons and
+    // express matches case-INSENSITIVELY, so `PUT /API/enforce/config` walked
+    // past the gate into the handler and turned enforcement off with no token.
+    // Case is the spelling that was live, but it is one of a family — trailing
+    // slashes, duplicate slashes and percent-escapes are the same mistake — so
+    // every member is checked, not the one that happened to be exploitable.
+    await check('no spelling of PUT /api/enforce/config flips the mode without a token', async () => {
+      const before = (await (await fetch(`${BASE}/api/enforce/config`)).json() as { mode: string }).mode;
+      for (const [label, p] of pathSpellings('/api/enforce/config')) {
+        const r = await fetch(`${BASE}${p}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'enforce' }),
+        });
+        assert.ok(REFUSALS.has(r.status),
+          `${label} (${p}) reached the handler — expected a refusal, got ${r.status}`);
+      }
+      const after = (await (await fetch(`${BASE}/api/enforce/config`)).json() as { mode: string }).mode;
+      assert.strictEqual(after, before,
+        'an unauthenticated caller changed the enforcement mode through an alternate path spelling');
+    });
+
+    await check('no spelling of POST /api/suppressions can silence a rule without a token', async () => {
+      for (const [label, p] of pathSpellings('/api/suppressions')) {
+        const r = await fetch(`${BASE}${p}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ruleKey: `spelling-probe:${label}`, durationMs: 60_000 }),
+        });
+        assert.ok(REFUSALS.has(r.status),
+          `${label} (${p}) reached the handler — expected a refusal, got ${r.status}`);
+      }
+      const list = await (await fetch(`${BASE}/api/suppressions`)).json() as { suppressions: { ruleKey: string }[] };
+      const leaked = list.suppressions.filter(s => s.ruleKey.startsWith('spelling-probe:'));
+      assert.deepStrictEqual(leaked, [],
+        `an alternate path spelling created ${leaked.length} suppression(s) with no token`);
+    });
+
+    await check('a spoofed-shape mutation through a case variant is still refused', async () => {
+      // The two bypasses composed: browser-looking headers (which used to earn
+      // the cookie) on a case-variant path (which used to skip the gate).
+      for (const [, headers] of SPOOFS) {
+        const r = await fetch(`${BASE}/API/enforce/config`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify({ mode: 'enforce' }),
+        });
+        assert.ok(REFUSALS.has(r.status), `spoofed headers + /API reached the handler (${r.status})`);
+      }
+    });
+
     // ── 2. Effective enforcement mode ──────────────────────────────────────
     // Switch to enforce the way an operator does — through the dashboard, which
     // persists to the config table and mirrors it to enforce-config.json. That
@@ -419,6 +520,214 @@ async function main(): Promise<void> {
       const j = await r.json() as { spans: { spanId: string }[] };
       assert.strictEqual(j.spans.length, 2,
         'a replayed batch of spanId-less spans must not accumulate unaddressable rows');
+    });
+
+    // ── 5. /mcp is exempt from the gate; its CONTROL tools must not be ─────
+    // POST /mcp carries no token by design — a cross-agent MCP client has
+    // nowhere to hold one. That trade buys ingest and read tools. It was also
+    // buying `suppress_rule`, which switches OFF a detection rule by an
+    // enumerable id, with none of the guards its gated REST twin has.
+    type RpcReply = { result?: { content?: { text: string }[] }; error?: { code: number; message: string } };
+    const mcpCall = async (
+      tool: string,
+      args: Record<string, unknown>,
+      opts: { token?: string; path?: string } = {},
+    ): Promise<RpcReply> => {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (opts.token) headers['x-claudesec-token'] = opts.token;
+      const r = await fetch(`${BASE}${opts.path ?? '/mcp'}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }),
+      });
+      // A refusal at the gate is an HTTP status, not a JSON-RPC envelope.
+      if (!r.ok) return { error: { code: r.status, message: `HTTP ${r.status}` } };
+      return await r.json() as RpcReply;
+    };
+    const suppressionsNow = async (): Promise<{ ruleKey: string; suppressUntil: string }[]> =>
+      ((await (await fetch(`${BASE}/api/suppressions`)).json()) as { suppressions: { ruleKey: string; suppressUntil: string }[] }).suppressions;
+
+    // The refusal must be an AUTH refusal. Asserting only "an error came back"
+    // would pass on any incidental failure — and one is live today: the tool's
+    // upsert names a constraint the suppressions table does not have, so it
+    // raises -32603 on every call. A test that accepts that as a pass proves
+    // nothing about the gate.
+    const refusedForAuth = (reply: RpcReply, where: string): void => {
+      assert.ok(reply.error, `${where}: expected a refusal, got ${JSON.stringify(reply.result)}`);
+      assert.match(reply.error!.message, /control token|unauthorized|forbidden|HTTP 40/i,
+        `${where}: the refusal must be about the missing credential, not an incidental error ` +
+        `(got "${reply.error!.message}")`);
+    };
+
+    await check('suppress_rule over /mcp is refused with no control token', async () => {
+      const reply = await mcpCall('suppress_rule', { ruleKey: 'builtin-77', durationMs: 60_000 });
+      refusedForAuth(reply, 'POST /mcp');
+      const rows = await suppressionsNow();
+      assert.ok(!rows.some(s => s.ruleKey === 'builtin-77'),
+        'an unauthenticated /mcp call switched a detection rule off');
+    });
+
+    await check('a case-variant /MCP does not sidestep the control-tool check', async () => {
+      for (const [label, p] of pathSpellings('/mcp')) {
+        const reply = await mcpCall('suppress_rule', { ruleKey: `builtin-78`, durationMs: 60_000 }, { path: p });
+        refusedForAuth(reply, `${label} (${p})`);
+      }
+      const rows = await suppressionsNow();
+      assert.ok(!rows.some(s => s.ruleKey === 'builtin-78'), 'a /MCP spelling switched a rule off');
+    });
+
+    await check('suppress_rule refuses a CATASTROPHIC-floor rule even WITH the token', async () => {
+      // builtin-0 is "Recursive root deletion" — rm -rf /. The catastrophic
+      // labels are the ones the tool exists to catch; no caller may snooze them.
+      const reply = await mcpCall('suppress_rule', { ruleKey: 'builtin-0', durationMs: 60_000 }, { token: controlToken });
+      assert.ok(reply.error, `expected a refusal, got ${JSON.stringify(reply.result)}`);
+      assert.match(reply.error!.message, /catastroph/i, 'the refusal should say why');
+      const rows = await suppressionsNow();
+      assert.ok(!rows.some(s => s.ruleKey === 'builtin-0'), 'a catastrophic-floor rule was suppressed');
+    });
+
+    await check('a suppression created over /mcp is capped and audited', async () => {
+      const TEN_YEARS = 10 * 365 * 24 * 60 * 60 * 1000;
+      const reply = await mcpCall('suppress_rule', { ruleKey: 'builtin-79', durationMs: TEN_YEARS }, { token: controlToken });
+      assert.ok(!reply.error, `an authorised suppression should succeed: ${JSON.stringify(reply.error)}`);
+      const row = (await suppressionsNow()).find(s => s.ruleKey === 'builtin-79');
+      assert.ok(row, 'the authorised suppression was not created');
+      const forMs = Date.parse(row!.suppressUntil) - Date.now();
+      assert.ok(forMs <= 24 * 60 * 60 * 1000 + 10_000,
+        `a rule may not be snoozed for ${Math.round(forMs / 86_400_000)} days — the duration must be capped`);
+      const audit = await (await fetch(`${BASE}/api/audit-log?limit=200`)).json() as { entries?: { action: string; target: string }[]; auditLog?: { action: string; target: string }[] };
+      const rows = audit.entries ?? audit.auditLog ?? [];
+      assert.ok(rows.some(e => e.action.startsWith('suppression') && e.target === 'builtin-79'),
+        'turning a detection rule off over /mcp must leave an audit entry');
+    });
+
+    await check('a suppressed catastrophic rule still fires in detection', async () => {
+      // Defence in depth for the row itself: however a `builtin-<n>` suppression
+      // of a catastrophic label got written (a stale row, the ungated REST twin),
+      // applying it must not silence the rule. Created here through the REST
+      // route WITH the control token, then a span that trips builtin-0 is
+      // ingested and must still be scored.
+      const created = await fetch(`${BASE}/api/suppressions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-claudesec-token': controlToken },
+        body: JSON.stringify({ ruleKey: 'builtin-0', durationMs: 600_000, reason: 'floor probe' }),
+      });
+      assert.ok([200, 201, 400, 403].includes(created.status), `unexpected status ${created.status}`);
+      await sleep(2_200); // the suppressed-key cache has a ~2s TTL
+      const ingest = await fetch(`${BASE}/v1/traces`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(otlpBatch([{
+          spanId: 'cata0000000000c1', traceId: 'trace-catastrophic', name: 'tool_call/Bash',
+          startTimeUnixNano: '1700000000000000000', endTimeUnixNano: '1700000000500000000',
+          // This payload trips builtin-0 and NOTHING else — deliberately. A
+          // richer command (`sudo …`, say) also trips the low-severity sudo
+          // rule, and then "severity is not none" would pass with builtin-0
+          // fully silenced, which is the assertion passing for the wrong reason.
+          // The trailing ` && …` matters too: detection runs over the serialized
+          // attribute blob, and rule 0 needs a delimiter after the slash, which
+          // a bare `rm -rf /` does not have once it is wrapped in JSON quotes.
+          attributes: [{ key: 'tool.input', value: { stringValue: 'rm -rf / && echo done' } }],
+        }])),
+      });
+      assert.strictEqual(ingest.status, 200, `ingest failed: ${ingest.status}`);
+      const spans = await (await fetch(`${BASE}/api/spans?session=trace-catastrophic`)).json() as { spans: { spanId: string; severity: string; reason?: string }[] };
+      const span = spans.spans.find(s => s.spanId === 'cata0000000000c1');
+      assert.ok(span, 'the probe span was not stored');
+      assert.strictEqual(span!.severity, 'high',
+        `a suppression row silenced a catastrophic-floor detection rule (scored "${span!.severity}", reason "${span!.reason ?? ''}")`);
+    });
+
+    // ── 6. The open append endpoint must not be an erase endpoint ──────────
+    await check('flooding /api/enforce-log cannot erase the recorded evidence', async () => {
+      const EVIDENCE = 'EVIDENCE-real-block-do-not-evict';
+      const post = (body: Record<string, unknown>) => fetch(`${BASE}/api/enforce-log`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      // The evidence: a real block, recorded by the hook the way the hook does
+      // it — with no token, because the hook has none. It is the OLDEST entry
+      // but one, so a FIFO cap evicts it almost immediately under flood.
+      const totalBefore = ((await (await fetch(`${BASE}/api/enforce-log?limit=1`)).json()) as { total: number }).total;
+      const seeded = await post({ mode: 'enforce', label: EVIDENCE, severity: 'critical', command: 'rm -rf /', wouldBlock: true, blocked: true });
+      assert.strictEqual(seeded.status, 200, `seeding the evidence failed: ${seeded.status}`);
+
+      // The attack: unauthenticated appends, as fast as the server will take
+      // them — 500 of these used to clear the feed in 451ms while
+      // /api/audit/verify still reported the chain intact.
+      //
+      // The attempt budget is the attacker's real one. Every route but OTLP
+      // ingest sits behind a 1000-request/minute global limiter, so ~700 posts
+      // is what one minute of flooding actually buys — and pre-fix that was
+      // already several times the 500-entry cap. Pacing at the feed's own
+      // refill rate keeps the flood inside the same budget while still driving
+      // the feed to its cap, which is where the eviction rules are decided.
+      const TARGET = 640;
+      const MAX_ATTEMPTS = 700;
+      const deadline = Date.now() + 25_000;
+      let accepted = 0, rateLimited = 0, saturated = 0, attempts = 0, emptyBatches = 0;
+      while (accepted < TARGET && attempts < MAX_ATTEMPTS && Date.now() < deadline && emptyBatches < 6) {
+        const batch = await Promise.all(Array.from({ length: 25 }, (_v, i) =>
+          post({ mode: 'monitor', label: `flood-${attempts + i}`, severity: 'high', command: `flood ${attempts + i}`, wouldBlock: true, blocked: false })
+            .then(async r => (r.ok ? 'ok' : ((await r.json().catch(() => ({}))) as { error?: string }).error ?? `http-${r.status}`))
+            .catch(() => 'net-error')));
+        attempts += batch.length;
+        const before = accepted;
+        for (const outcome of batch) {
+          if (outcome === 'ok') accepted++;
+          else if (outcome === 'rate_limited') rateLimited++;
+          else if (outcome === 'feed_saturated') saturated++;
+        }
+        emptyBatches = accepted === before ? emptyBatches + 1 : 0;
+        await sleep(40);
+      }
+
+      const feed = await (await fetch(`${BASE}/api/enforce-log?limit=500`)).json() as { events: { label: string }[]; total: number };
+      const evicted = totalBefore + 1 /* the seed */ + accepted - feed.total;
+      if (process.env.CSEC_TEST_VERBOSE === '1') {
+        console.log(`      [flood] attempts=${attempts} accepted=${accepted} rateLimited=${rateLimited} saturated=${saturated} total=${feed.total} evicted=${evicted}`);
+      }
+
+      assert.ok(feed.events.some(e => e.label === EVIDENCE),
+        `the recorded block was evicted by ${accepted} unauthenticated appends ` +
+        `(${feed.total} entries left, ${evicted} evicted)`);
+      assert.ok(evicted <= 80,
+        `an unauthenticated flood displaced ${evicted} entries — displacement must be budgeted`);
+      assert.ok(rateLimited + saturated > 0,
+        'the flood was never refused: neither the per-source rate limit nor the saturation guard engaged');
+      // Only assertable once the feed actually reached its cap — on a slow host
+      // the rate limiter alone may keep it below, and that is not a failure.
+      if (feed.total >= 500) {
+        assert.ok(saturated > 0,
+          'the feed hit its cap and kept accepting appends: the saturation guard never engaged');
+      }
+    });
+
+    await check('the enforce feed still verifies after the flood', async () => {
+      const r = await fetch(`${BASE}/api/audit/verify`);
+      assert.strictEqual(r.status, 200);
+      const j = await r.json() as { enforce?: { ok: boolean } };
+      assert.ok(j.enforce?.ok !== false, 'the enforce chain must still verify after pruning');
+    });
+
+    await check('pressure on the enforce feed is recorded, not silent', async () => {
+      const audit = await (await fetch(`${BASE}/api/audit-log?limit=200`)).json() as { entries?: { action: string }[]; auditLog?: { action: string }[] };
+      const rows = audit.entries ?? audit.auditLog ?? [];
+      assert.ok(rows.some(e => e.action.startsWith('enforce-log.')),
+        'evicting or refusing enforcement events must leave an audit entry — silent loss is the defect');
+    });
+
+    await check('the hook can still append after the flood subsides', async () => {
+      // Fail-open matters here: refusing a flood must not permanently wedge the
+      // feed. Once the head is no longer protected evidence the hook gets in.
+      const r = await fetch(`${BASE}/api/enforce-log`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-claudesec-token': controlToken },
+        body: JSON.stringify({ mode: 'monitor', label: 'post-flood-probe', severity: 'low', command: 'ls', wouldBlock: false, blocked: false }),
+      });
+      assert.strictEqual(r.status, 200, `a credentialed append was refused (${r.status})`);
     });
   } finally {
     if (child) {
