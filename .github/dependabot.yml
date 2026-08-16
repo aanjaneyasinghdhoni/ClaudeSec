@@ -1,13 +1,47 @@
 version: 2
+
+# Routine version updates are grouped so an ordinary week opens about three pull
+# requests instead of twenty. Security updates are deliberately left ungrouped:
+# `applies-to` defaults to version-updates, so a real advisory still arrives on
+# its own, as soon as it is published, and never waits behind a batch of
+# housekeeping. Those are the ones worth reacting to.
+#
+# Majors stay ungrouped too. A major belongs to whoever reads its release notes,
+# not to a batch someone merges on a Monday.
 updates:
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      types:
+        applies-to: version-updates
+        patterns: ["@types/*"]
+        update-types: ["minor", "patch"]
+      npm:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["@types/*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # engines.node is >=22.13 and CI builds on 22.x and 24.x. Typing against a
+      # newer Node line lets tsc accept APIs that do not exist at runtime on the
+      # minimum we claim to support, which turns a compile-time guarantee into a
+      # crash on someone else's machine. Moving this major is a decision, not a
+      # weekly pull request.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      # Every action in one pull request. This is also what keeps the three
+      # codeql-action steps pinned to a single SHA, structurally, rather than by
+      # remembering to merge three PRs back to back.
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
