@@ -108,6 +108,12 @@ function userSettingsPath(): string {
  * Does this settings file carry a PreToolUse entry that runs our hook?
  * Fail-safe: a missing / unreadable / malformed file, or any unexpected shape,
  * counts as "not present" and never throws.
+ *
+ * Honesty requirement: an entry only counts as VALIDLY registered when its
+ * `type` is exactly 'command' AND the command runs our hook. Claude Code only
+ * executes hook entries of type 'command'; an entry with any other `type` (a
+ * typo, a future hook kind, etc.) never runs, so reporting it as installed would
+ * be a false green — the dashboard would claim blocking that can't happen.
  */
 function settingsHasOurHook(file: string): boolean {
   let parsed: unknown;
@@ -122,8 +128,11 @@ function settingsHasOurHook(file: string): boolean {
     const hooks = (entry as { hooks?: unknown })?.hooks;
     if (!Array.isArray(hooks)) continue;
     for (const h of hooks) {
+      const type = (h as { type?: unknown })?.type;
       const cmd = (h as { command?: unknown })?.command;
-      if (typeof cmd === 'string' && cmd.includes(HOOK_FILENAME)) return true;
+      if (type === 'command' && typeof cmd === 'string' && cmd.includes(HOOK_FILENAME)) {
+        return true;
+      }
     }
   }
   return false;

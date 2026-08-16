@@ -1,13 +1,29 @@
-import React, { useState, useEffect, useCallback } from 'react';
+/**
+ * WebhookDeliverySection — the webhook delivery log, in Settings.
+ *
+ * Every attempt at the configured webhook URL lands here: status, HTTP code,
+ * latency, retry count. It follows the same dense-list pattern as the alert
+ * log (see `src/AlertsTab.tsx`, the reference implementation) but embedded in
+ * a `Section` card rather than owning a full tab, so it is narrower and its
+ * own scroll is modest — at most 50 rows.
+ *
+ * The measured fact that shaped this rebuild: the `webhook_deliveries` table
+ * has had zero rows across 76 days of real use on this install. For most
+ * people who ever open this panel, the empty state below *is* the shipping
+ * state — so it has to read as "ready and waiting", not "broken", which is
+ * why it spells out what lands here and how to make the first row appear.
+ */
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  CheckCircle2,
-  XCircle,
-  RotateCw,
-  Trash2,
-  RefreshCw,
-  Loader2,
-  Clock,
+  CheckCircle2, XCircle, RotateCw, Trash2, RefreshCw, Loader2, Clock, Webhook,
 } from 'lucide-react';
+import {
+  DataTable, type DataColumn,
+  SeverityBadge, normalizeSeverity,
+  EmptyState, ErrorState,
+  Toolbar, ToolButton, ToolbarTitle,
+} from './components/data';
+import { apiSend, reportApiFailure } from './lib/api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,50 +47,37 @@ interface DeliveryRow {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatRelativeTime(iso: string): string {
+/** Exported for the unit test — pure, no clock injection needed at call sites. */
+export function formatRelativeTime(iso: string): string {
   try {
     const delta = Date.now() - new Date(iso).getTime();
-    if (delta < 60_000)        return `${Math.round(delta / 1000)}s ago`;
-    if (delta < 3_600_000)     return `${Math.round(delta / 60_000)}m ago`;
-    if (delta < 86_400_000)    return `${Math.round(delta / 3_600_000)}h ago`;
+    if (delta < 60_000)     return `${Math.round(delta / 1000)}s ago`;
+    if (delta < 3_600_000)  return `${Math.round(delta / 60_000)}m ago`;
+    if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)}h ago`;
     return new Date(iso).toLocaleDateString();
   } catch { return '—'; }
 }
 
-const SEVERITY_CLS: Record<string, string> = {
-  critical: 'bg-rose-900/60 text-rose-200 border-rose-500 animate-pulse',
-  high:   'bg-red-900/60 text-red-300 border-red-700',
-  medium: 'bg-orange-900/60 text-orange-300 border-orange-700',
-  low:    'bg-yellow-900/60 text-yellow-300 border-yellow-700',
-  none:   'bg-green-900/60 text-green-300 border-green-700',
+// Delivery status is independent of the alert severity that triggered it — a
+// LOW-severity alert can still fail to deliver. Each gets its own icon and
+// word so the meaning survives without the colour, same rule as severity.
+const STATUS_META: Record<DeliveryRow['status'], { label: string; color: string; Icon: typeof Clock; spin?: boolean }> = {
+  success:  { label: 'Delivered', color: 'var(--cs-ok)',        Icon: CheckCircle2 },
+  failed:   { label: 'Failed',    color: 'var(--cs-danger)',    Icon: XCircle },
+  retrying: { label: 'Retrying',  color: 'var(--cs-warn)',      Icon: RotateCw, spin: true },
+  pending:  { label: 'Pending',   color: 'var(--cs-text-faint)', Icon: Clock },
 };
 
-function SeverityBadge({ severity }: { severity: string }) {
-  const cls = SEVERITY_CLS[severity.toLowerCase()] ?? SEVERITY_CLS['none'];
-  const label = severity.toUpperCase() === 'NONE' ? 'OK' : severity.toUpperCase();
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 text-xs font-semibold rounded border ${cls}`}>
-      {label}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Status icon
-// ---------------------------------------------------------------------------
-
 function StatusIcon({ status }: { status: DeliveryRow['status'] }) {
-  if (status === 'success') {
-    return <CheckCircle2 className="w-4 h-4 text-green-400" />;
-  }
-  if (status === 'failed') {
-    return <XCircle className="w-4 h-4 text-red-400" />;
-  }
-  if (status === 'pending') {
-    return <Clock className="w-4 h-4" style={{ color: 'var(--cs-text-faint)' }} />;
-  }
-  // retrying
-  return <RotateCw className="w-4 h-4 text-yellow-400 animate-spin" />;
+  const meta = STATUS_META[status] ?? STATUS_META.pending;
+  const { Icon } = meta;
+  return (
+    <Icon
+      className={`w-3.5 h-3.5 ${meta.spin ? 'animate-spin' : ''}`}
+      style={{ color: meta.color }}
+      aria-hidden="true"
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -82,38 +85,64 @@ function StatusIcon({ status }: { status: DeliveryRow['status'] }) {
 // ---------------------------------------------------------------------------
 
 export function WebhookDeliverySection() {
-  const [rows,          setRows]          = useState<DeliveryRow[]>([]);
-  const [loading,       setLoading]       = useState(false);
-  const [retryingId,    setRetryingId]    = useState<number | null>(null);
-  const [clearing,      setClearing]      = useState(false);
+  const [rows,        setRows]        = useState<DeliveryRow[]>([]);
+  const [total,        setTotal]      = useState(0);
+  // `loading` gates the skeleton and only applies to the first fetch — a
+  // manual refresh reuses `refreshing` so the table doesn't flash back to a
+  // skeleton every time someone clicks the button.
+  const [loading,      setLoading]    = useState(true);
+  const [refreshing,   setRefreshing] = useState(false);
+  const [loadError,    setLoadError]  = useState<string | null>(null);
+  const [retryingId,   setRetryingId] = useState<number | null>(null);
+  const [clearing,     setClearing]   = useState(false);
+  // A row with a delivery error can be expanded in place to read the full
+  // message — the roving-tabindex equivalent of the old "Show delivery
+  // errors" <details> block, but scoped to the row it belongs to.
+  const [expandedId,   setExpandedId] = useState<number | null>(null);
 
-  const fetchDeliveries = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/webhook-deliveries?limit=50');
-      if (res.ok) {
-        const json = await res.json();
-        const data: DeliveryRow[] = Array.isArray(json) ? json : (json.deliveries ?? []);
+  const fetchDeliveries = useCallback((isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    fetch('/api/webhook-deliveries?limit=50')
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((json: { deliveries?: DeliveryRow[]; total?: number } | DeliveryRow[]) => {
+        const data = Array.isArray(json) ? json : (json.deliveries ?? []);
         setRows(data);
-      }
-    } catch {
-      // silently fail — table stays empty
-    } finally {
-      setLoading(false);
-    }
+        setTotal(Array.isArray(json) ? data.length : (json.total ?? data.length));
+        setLoadError(null);
+      })
+      // A settings panel that silently shows an empty table on a real fetch
+      // failure reads as "webhooks are unused" when the truth is "the view
+      // is broken" — those are different messages and the operator needs to
+      // be able to tell them apart.
+      .catch((e: Error) => setLoadError(e.message || 'Request failed'))
+      .finally(() => { setLoading(false); setRefreshing(false); });
   }, []);
 
   useEffect(() => {
     fetchDeliveries();
   }, [fetchDeliveries]);
 
+  // Escape collapses an expanded error row, same affordance as closing a
+  // drawer elsewhere in the app.
+  useEffect(() => {
+    if (expandedId == null) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpandedId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expandedId]);
+
   const handleRetry = useCallback(async (id: number) => {
     setRetryingId(id);
     try {
-      await fetch(`/api/webhook-deliveries/${id}/retry`, { method: 'POST' });
-      await fetchDeliveries();
-    } catch {
-      // silently fail
+      await apiSend(`/api/webhook-deliveries/${id}/retry`, 'POST');
+      fetchDeliveries();
+    } catch (err: unknown) {
+      // A retry that never reached the server looks identical to one that ran
+      // and failed again, so say which it was.
+      reportApiFailure(err, 'Failed to retry delivery');
     } finally {
       setRetryingId(null);
     }
@@ -123,175 +152,166 @@ export function WebhookDeliverySection() {
     if (!window.confirm('Clear all webhook delivery history? This cannot be undone.')) return;
     setClearing(true);
     try {
-      await fetch('/api/webhook-deliveries', { method: 'DELETE' });
+      // Empty the table only once the server confirms it emptied the history —
+      // a blank list is otherwise indistinguishable from a successful clear.
+      await apiSend('/api/webhook-deliveries', 'DELETE');
       setRows([]);
-    } catch {
-      // silently fail
+      setTotal(0);
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to clear delivery history');
     } finally {
       setClearing(false);
     }
   }, []);
 
-  return (
-    <div className="space-y-3">
-      {/* Toolbar row */}
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-400">
-          {rows.length > 0
-            ? `Showing ${rows.length} most recent deliveries`
-            : 'No webhook deliveries yet'}
-        </p>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={fetchDeliveries}
-            disabled={loading}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 text-xs rounded-lg transition-colors"
-            title="Refresh"
+  // ── Columns ──────────────────────────────────────────────────────────────
+  // Narrower set than the alert log's, because this table lives inside a
+  // 640px settings card rather than owning the screen. Status, rule and
+  // severity survive at every width; HTTP/latency/attempts are furniture that
+  // drops first.
+  const columns: DataColumn<DeliveryRow>[] = [
+    {
+      id: 'status', header: '', width: '24px',
+      cell: d => <span title={STATUS_META[d.status]?.label ?? d.status}><StatusIcon status={d.status} /></span>,
+    },
+    {
+      id: 'rule', header: 'Rule', width: 'minmax(0,1.3fr)',
+      cell: d => (
+        <span className="flex flex-col min-w-0 py-0.5">
+          <span
+            className="truncate"
+            title={d.ruleLabel}
+            style={{ color: 'var(--cs-text-body)', fontWeight: 'var(--cs-weight-medium)' }}
           >
-            {loading
-              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              : <RefreshCw className="w-3.5 h-3.5" />}
-            Refresh
-          </button>
-
-          {rows.length > 0 && (
+            {d.ruleLabel}
+          </span>
+          <span className="cs-mono truncate" title={d.urlPreview} style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-2xs)' }}>
+            {d.urlPreview}
+          </span>
+        </span>
+      ),
+    },
+    {
+      id: 'severity', header: 'Severity', width: '100px',
+      cell: d => <SeverityBadge severity={normalizeSeverity(d.severity)} />,
+    },
+    {
+      id: 'http', header: 'HTTP', width: '46px', hideBelow: 'xl', align: 'end', mono: true,
+      cell: d => d.httpCode != null
+        ? <span style={{ color: d.httpCode >= 200 && d.httpCode < 300 ? 'var(--cs-ok)' : 'var(--cs-danger)' }}>{d.httpCode}</span>
+        : <span style={{ color: 'var(--cs-text-faint)' }}>—</span>,
+    },
+    {
+      id: 'latency', header: 'Latency', width: '64px', hideBelow: 'xl', align: 'end', mono: true,
+      cell: d => <span>{d.latencyMs != null ? `${d.latencyMs}ms` : '—'}</span>,
+    },
+    {
+      id: 'attempts', header: 'Tries', width: '48px', hideBelow: '2xl', align: 'end', mono: true,
+      cell: d => <span>{d.attempts}</span>,
+    },
+    {
+      id: 'time', header: 'Time', width: '72px', hideBelow: 'xl', mono: true,
+      cell: d => (
+        <span title={new Date(d.lastAttemptAt ?? d.createdAt).toLocaleString()}>
+          {formatRelativeTime(d.lastAttemptAt ?? d.createdAt)}
+        </span>
+      ),
+    },
+    {
+      id: 'retry', header: '', width: '28px', align: 'end',
+      cell: d => (
+        <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+          {d.status === 'failed' && (
             <button
               type="button"
-              onClick={handleClearAll}
-              disabled={clearing}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-900/40 hover:bg-red-900/70 disabled:opacity-40 disabled:cursor-not-allowed text-red-300 text-xs rounded-lg border border-red-800 transition-colors"
+              onClick={() => handleRetry(d.id)}
+              disabled={retryingId === d.id}
+              title="Retry delivery"
+              className="p-1 rounded transition-colors disabled:opacity-50"
+              style={{ color: 'var(--cs-text-faint)' }}
             >
-              {clearing
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                : <Trash2 className="w-3.5 h-3.5" />}
-              Clear All
+              {retryingId === d.id
+                ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                : <RotateCw className="w-3 h-3" aria-hidden="true" />}
             </button>
           )}
-        </div>
+        </span>
+      ),
+    },
+  ];
+
+  const renderDetail = (d: DeliveryRow) => {
+    if (!d.error || expandedId !== d.id) return null;
+    return (
+      <div style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-danger)', lineHeight: 'var(--cs-leading-normal)' }}>
+        {d.error}
       </div>
+    );
+  };
 
-      {/* Table */}
-      {rows.length === 0 && !loading ? (
-        <div className="flex flex-col items-center gap-2 py-10 text-slate-500">
-          <RefreshCw className="w-7 h-7 opacity-30" />
-          <p className="text-sm">No webhook deliveries yet</p>
+  const staleWarning = loadError && rows.length > 0;
+
+  return (
+    <div className="rounded-lg overflow-hidden" style={{ background: 'var(--cs-bg-sunken)' }}>
+      <Toolbar>
+        <ToolbarTitle
+          icon={<Webhook className="w-3.5 h-3.5" />}
+          count={rows.length > 0 ? `${rows.length}${total > rows.length ? `/${total}` : ''}` : undefined}
+          countTitle={`Showing ${rows.length} of ${total} deliveries`}
+        >
+          Deliveries
+        </ToolbarTitle>
+        {staleWarning && (
+          <span
+            role="status"
+            title={`Last refresh failed (${loadError}). The list below is what was last loaded successfully.`}
+            style={{ color: 'var(--cs-sev-medium-fg)', fontSize: 'var(--cs-text-xs)' }}
+          >
+            Stale
+          </span>
+        )}
+        <div className="flex items-center gap-1 ml-auto">
+          <ToolButton onClick={() => fetchDeliveries(true)} disabled={refreshing} title="Refresh">
+            {refreshing
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
+            Refresh
+          </ToolButton>
+          {rows.length > 0 && (
+            <ToolButton danger onClick={handleClearAll} disabled={clearing} title="Delete every delivery record — cannot be undone">
+              {clearing
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                : <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />}
+              Clear
+            </ToolButton>
+          )}
         </div>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full text-sm border-collapse">
-            <thead className="bg-slate-800/60 border-b border-slate-800">
-              <tr>
-                {['Status', 'Rule', 'Severity', 'HTTP', 'Latency', 'Attempts', 'Time'].map(h => (
-                  <th
-                    key={h}
-                    className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap"
-                  >
-                    {h}
-                  </th>
-                ))}
-                {/* retry action column — no header label */}
-                <th className="px-3 py-2 w-8" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(row => (
-                <tr
-                  key={row.id}
-                  className="border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors"
-                >
-                  {/* Status */}
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    <span title={row.error ?? row.status}>
-                      <StatusIcon status={row.status} />
-                    </span>
-                  </td>
+      </Toolbar>
 
-                  {/* Rule */}
-                  <td className="px-3 py-2.5 max-w-[160px]">
-                    <span className="block truncate text-xs text-slate-200" title={row.ruleLabel}>
-                      {row.ruleLabel}
-                    </span>
-                    <span className="block truncate text-xs text-slate-500 mt-0.5" title={row.urlPreview}>
-                      {row.urlPreview}
-                    </span>
-                  </td>
-
-                  {/* Severity */}
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    <SeverityBadge severity={row.severity} />
-                  </td>
-
-                  {/* HTTP code */}
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    {row.httpCode != null ? (
-                      <span
-                        className={`text-xs font-mono ${
-                          row.httpCode >= 200 && row.httpCode < 300
-                            ? 'text-green-400'
-                            : 'text-red-400'
-                        }`}
-                      >
-                        {row.httpCode}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-slate-600">—</span>
-                    )}
-                  </td>
-
-                  {/* Latency */}
-                  <td className="px-3 py-2.5 whitespace-nowrap text-xs font-mono text-slate-400">
-                    {row.latencyMs != null ? `${row.latencyMs}ms` : '—'}
-                  </td>
-
-                  {/* Attempts */}
-                  <td className="px-3 py-2.5 whitespace-nowrap text-xs text-slate-400 text-center">
-                    {row.attempts}
-                  </td>
-
-                  {/* Time */}
-                  <td className="px-3 py-2.5 whitespace-nowrap text-xs text-slate-500">
-                    {formatRelativeTime(row.lastAttemptAt ?? row.createdAt)}
-                  </td>
-
-                  {/* Retry action */}
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    {row.status === 'failed' && (
-                      <button
-                        type="button"
-                        onClick={() => handleRetry(row.id)}
-                        disabled={retryingId === row.id}
-                        title="Retry delivery"
-                        className="flex items-center justify-center w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-400 hover:text-slate-200 transition-colors"
-                      >
-                        {retryingId === row.id
-                          ? <Loader2 className="w-3 h-3 animate-spin" />
-                          : <RotateCw className="w-3 h-3" />}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Inline error from last row if any */}
-      {rows.some(r => r.error) && (
-        <details className="text-xs text-slate-500">
-          <summary className="cursor-pointer hover:text-slate-400 transition-colors select-none">
-            Show delivery errors
-          </summary>
-          <ul className="mt-2 space-y-1 pl-3 border-l border-slate-800">
-            {rows.filter(r => r.error).map(r => (
-              <li key={r.id} className="text-red-400/80">
-                <span className="text-slate-500 mr-1">#{r.id}</span>{r.error}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      <DataTable
+        rows={rows}
+        columns={columns}
+        rowKey={d => d.id}
+        label="Webhook deliveries"
+        minWidth={360}
+        severity={d => normalizeSeverity(d.severity)}
+        onActivate={d => setExpandedId(prev => prev === d.id ? null : d.id)}
+        renderDetail={renderDetail}
+        loading={loading}
+        error={loadError && rows.length === 0 ? (
+          <ErrorState
+            description={`The delivery log did not respond (${loadError}). Webhook delivery itself is unaffected — this is only the view.`}
+            onRetry={() => { setLoading(true); fetchDeliveries(); }}
+          />
+        ) : undefined}
+        empty={(
+          <EmptyState
+            icon={<Webhook className="w-6 h-6" aria-hidden="true" />}
+            title="No deliveries yet"
+            description="This fills in the moment your webhook receives its first alert — every attempt lands here with its status, HTTP code, latency and retry count, success or failure. A good first webhook is any HTTPS endpoint that returns 2xx quickly, like a Slack incoming webhook. Configure one above, then use its “Send test” button — the delivery appears here within a second."
+          />
+        )}
+      />
     </div>
   );
 }

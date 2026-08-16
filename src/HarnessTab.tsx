@@ -1,12 +1,34 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { Activity } from 'lucide-react';
+/**
+ * HarnessTab — one stat tile per agent that has ever talked to this instance.
+ *
+ * This is the only surface in the app that is not a list. There are a handful
+ * of harnesses, each with a number worth reading at a glance, so the shape is a
+ * tile: one big metric, a couple of supporting figures, and the severity spine
+ * down the leading edge carrying the worst thing that agent has done. That
+ * makes the row of tiles readable as a single line of colour, exactly like the
+ * lists elsewhere — which is the point of the spine.
+ *
+ * Every tile is also the filter control for its agent, so choosing "show me
+ * only Codex" is one click on the thing you were already looking at rather than
+ * a separate control somewhere else.
+ */
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Activity, Filter, X } from 'lucide-react';
 import { socket } from './socket';
 import { formatTokens } from './lib/format';
+import type { Severity } from './shared/types';
+import {
+  SeveritySpine, SEVERITY_META, severityText,
+  EmptyState, ErrorState,
+} from './components/data';
+import { Skeleton } from './components/ui/skeleton';
 
 // ---------------------------------------------------------------------------
 // Constants — redefined inline (do not import from App.tsx)
 // ---------------------------------------------------------------------------
 
+// Identity, not risk. Agents keep a fixed hue outside the severity ramp so no
+// agent's brand colour can ever be mistaken for a threat level.
 const HARNESS_COLORS: Record<string, string> = {
   'claude-code': '#f97316',
   'copilot':     '#22c55e',
@@ -62,112 +84,222 @@ function relativeTime(iso: string): string {
 }
 
 function harnessColor(harness: string): string {
-  return HARNESS_COLORS[harness] ?? HARNESS_COLORS['unknown'];
+  return HARNESS_COLORS[harness] ?? HARNESS_COLORS.unknown;
 }
 
 function harnessName(harness: string): string {
   return HARNESS_NAMES[harness] ?? harness;
 }
 
-// ---------------------------------------------------------------------------
-// HarnessCard
-// ---------------------------------------------------------------------------
-
-interface CardProps {
-  stats: HarnessStats;
-  isActive: boolean;
-  onFilter: () => void;
-  key?: React.Key;
+/** The worst level this agent has produced — what its spine is coloured by. */
+function worstSeverity(s: HarnessStats): Severity {
+  if (s.threatHigh > 0)   return 'high';
+  if (s.threatMedium > 0) return 'medium';
+  if (s.threatLow > 0)    return 'low';
+  return 'none';
 }
 
-function HarnessCard({ stats, isActive, onFilter }: CardProps) {
-  const color = harnessColor(stats.harness);
-  const name  = harnessName(stats.harness);
+/**
+ * A count at one severity level. The glyph and the word travel with the colour,
+ * so the level survives greyscale — the same contract the badge in a table row
+ * keeps.
+ */
+function ThreatCount({ severity, count }: { severity: Severity; count: number }) {
+  const { label, Icon, meaning } = SEVERITY_META[severity];
+  return (
+    <span
+      className="inline-flex items-center gap-1"
+      title={`${count} ${label.toLowerCase()}-severity detections — ${meaning}`}
+    >
+      <Icon className="w-3 h-3 shrink-0" style={{ color: `var(--cs-sev-${severity})` }} aria-hidden="true" />
+      <span className="cs-mono tabular-nums" style={{ color: severityText(severity), fontSize: 'var(--cs-text-xs)' }}>
+        {count.toLocaleString()}
+      </span>
+      <span
+        className="uppercase"
+        style={{
+          color: 'var(--cs-text-faint)',
+          fontSize: 'var(--cs-text-2xs)',
+          letterSpacing: 'var(--cs-tracking-wide)',
+        }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
+/** A supporting figure under the hero metric. */
+function SubStat({ value, label, title }: { value: string; label: string; title?: string }) {
+  return (
+    <span className="flex flex-col" title={title}>
+      <span
+        className="cs-mono tabular-nums"
+        style={{ color: 'var(--cs-text-body)', fontSize: 'var(--cs-text-base)', fontWeight: 'var(--cs-weight-medium)' }}
+      >
+        {value}
+      </span>
+      <span
+        className="uppercase"
+        style={{
+          color: 'var(--cs-text-faint)',
+          fontSize: 'var(--cs-text-2xs)',
+          letterSpacing: 'var(--cs-tracking-wide)',
+        }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The tile
+// ---------------------------------------------------------------------------
+
+function HarnessTile({
+  stats,
+  isActive,
+  tabbable,
+  onActivate,
+  onFocus,
+  onKeyDown,
+}: {
+  stats: HarnessStats;
+  isActive: boolean;
+  tabbable: boolean;
+  onActivate: () => void;
+  onFocus: () => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
+}) {
+  const sev  = worstSeverity(stats);
+  const name = harnessName(stats.harness);
+  const hasThreats = stats.threatHigh > 0 || stats.threatMedium > 0 || stats.threatLow > 0;
+  const hasTokens  = stats.tokensIn > 0 || stats.tokensOut > 0;
 
   return (
     <div
-      className={`rounded-xl p-4 space-y-3 transition-all duration-150 ${
-        isActive
-          ? ''
-          : 'hover:border-slate-700'
-      }`}
-      style={isActive
-        ? { background: 'var(--cs-bg-surface)', border: '1px solid rgba(var(--cs-accent-rgb),0.4)', boxShadow: '0 0 0 2px rgba(var(--cs-accent-rgb),0.2)' }
-        : { background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-border)' }
-      }
+      data-tile
+      role="button"
+      aria-pressed={isActive}
+      tabIndex={tabbable ? 0 : -1}
+      onClick={onActivate}
+      onFocus={onFocus}
+      onKeyDown={onKeyDown}
+      title={isActive ? `Showing only ${name} — activate to clear` : `Show only ${name} in the timeline`}
+      className="flex items-stretch gap-3 rounded-lg p-3 cursor-pointer transition-colors hover:bg-[var(--cs-bg-raised)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--cs-accent)]"
+      style={{
+        background: 'var(--cs-bg-surface)',
+        // Selection is chrome, so it is the accent — never a severity colour.
+        boxShadow: isActive ? 'inset 0 0 0 1px var(--cs-accent-line)' : undefined,
+      }}
     >
-      {/* Header row */}
-      <div className="flex items-center gap-2">
-        <span
-          className="w-2.5 h-2.5 rounded-full shrink-0"
-          style={{ backgroundColor: color }}
-        />
-        <span className="text-sm font-semibold text-slate-200 flex-1 truncate">{name}</span>
-        <button
-          type="button"
-          onClick={onFilter}
-          className={`text-xs px-2 py-0.5 rounded-md border transition-colors ${
-            isActive
-              ? ''
-              : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-300'
-          }`}
-          style={isActive
-            ? { background: 'rgba(var(--cs-accent-rgb),0.15)', borderColor: 'rgba(var(--cs-accent-rgb),0.4)', color: 'rgba(var(--cs-accent-rgb),0.85)' }
-            : { background: 'rgba(var(--cs-accent-rgb),0.1)', color: 'var(--cs-accent)', border: '1px solid rgba(var(--cs-accent-rgb),0.2)' }
-          }
+      <SeveritySpine severity={sev} />
+
+      <div className="flex-1 min-w-0 flex flex-col gap-2">
+        {/* Who */}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ background: harnessColor(stats.harness) }}
+            aria-hidden="true"
+          />
+          <span
+            className="truncate"
+            style={{ color: 'var(--cs-text-strong)', fontSize: 'var(--cs-text-base)', fontWeight: 'var(--cs-weight-semibold)' }}
+          >
+            {name}
+          </span>
+          {isActive && (
+            <span
+              className="ml-auto inline-flex items-center gap-1 shrink-0"
+              style={{ color: 'var(--cs-accent)', fontSize: 'var(--cs-text-2xs)', letterSpacing: 'var(--cs-tracking-wide)' }}
+            >
+              <Filter className="w-3 h-3" aria-hidden="true" /> FILTERED
+            </span>
+          )}
+        </div>
+
+        {/* The hero metric, and the figures that qualify it. */}
+        <div className="flex items-end gap-4 flex-wrap">
+          <span className="flex flex-col">
+            <span
+              className="tabular-nums"
+              title={`${stats.spanCount.toLocaleString()} spans recorded`}
+              style={{
+                fontFamily: 'var(--cs-font-display)',
+                fontSize: 'var(--cs-text-2xl)',
+                fontWeight: 'var(--cs-weight-bold)',
+                letterSpacing: 'var(--cs-tracking-tight)',
+                lineHeight: 'var(--cs-leading-tight)',
+                color: 'var(--cs-text-strong)',
+              }}
+            >
+              {stats.spanCount.toLocaleString()}
+            </span>
+            <span
+              className="uppercase"
+              style={{
+                color: 'var(--cs-text-faint)',
+                fontSize: 'var(--cs-text-2xs)',
+                letterSpacing: 'var(--cs-tracking-wide)',
+              }}
+            >
+              Spans
+            </span>
+          </span>
+
+          <SubStat
+            value={stats.sessionCount.toLocaleString()}
+            label="Sessions"
+            title={`${stats.sessionCount.toLocaleString()} distinct sessions`}
+          />
+
+          {hasTokens && (
+            <>
+              <SubStat
+                value={`↑ ${formatTokens(stats.tokensIn)}`}
+                label="Tokens in"
+                title={`${stats.tokensIn.toLocaleString()} tokens in`}
+              />
+              <SubStat
+                value={`↓ ${formatTokens(stats.tokensOut)}`}
+                label="Tokens out"
+                title={`${stats.tokensOut.toLocaleString()} tokens out`}
+              />
+            </>
+          )}
+        </div>
+
+        {/* What it tripped. Only levels with a non-zero count appear, so a quiet
+            agent's tile stays quiet rather than showing three zeroes. */}
+        {hasThreats && (
+          <div className="flex items-center gap-3 flex-wrap">
+            {stats.threatHigh   > 0 && <ThreatCount severity="high"   count={stats.threatHigh} />}
+            {stats.threatMedium > 0 && <ThreatCount severity="medium" count={stats.threatMedium} />}
+            {stats.threatLow    > 0 && <ThreatCount severity="low"    count={stats.threatLow} />}
+          </div>
+        )}
+
+        <p
+          className="mt-auto"
+          title={stats.lastSeen ? new Date(stats.lastSeen).toLocaleString() : undefined}
+          style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-xs)' }}
         >
-          {isActive ? 'Filtered' : 'Filter'}
-        </button>
-      </div>
-
-      {/* Span count (big) + session count */}
-      <div className="flex items-end gap-3">
-        <div>
-          <p className="text-2xl font-bold text-slate-100 leading-none">
-            {stats.spanCount.toLocaleString()}
-          </p>
-          <p className="text-xs text-slate-500 mt-0.5">spans</p>
-        </div>
-        <div className="pb-0.5">
-          <p className="text-sm font-medium text-slate-300">{stats.sessionCount.toLocaleString()}</p>
-          <p className="text-xs text-slate-500">sessions</p>
-        </div>
-      </div>
-
-      {/* Threat badges — only non-zero */}
-      {(stats.threatHigh > 0 || stats.threatMedium > 0 || stats.threatLow > 0) && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {stats.threatHigh > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-xs font-mono uppercase bg-red-900/40 text-red-300 border border-red-700/40">
-              HIGH {stats.threatHigh}
-            </span>
-          )}
-          {stats.threatMedium > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-xs font-mono uppercase bg-orange-900/40 text-orange-300 border border-orange-700/40">
-              MED {stats.threatMedium}
-            </span>
-          )}
-          {stats.threatLow > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-xs font-mono uppercase bg-yellow-900/40 text-yellow-300 border border-yellow-700/40">
-              LOW {stats.threatLow}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Token bar — compact display, exact value in tooltip */}
-      {(stats.tokensIn > 0 || stats.tokensOut > 0) && (
-        <p className="text-[11px] font-mono text-slate-400">
-          <span title={`${stats.tokensIn.toLocaleString()} tokens in`}>↑ {formatTokens(stats.tokensIn)}</span>
-          &nbsp;&nbsp;
-          <span title={`${stats.tokensOut.toLocaleString()} tokens out`}>↓ {formatTokens(stats.tokensOut)}</span>
+          Last seen {relativeTime(stats.lastSeen)}
         </p>
-      )}
+      </div>
+    </div>
+  );
+}
 
-      {/* Last seen */}
-      <p className="text-xs text-slate-600">
-        Last seen: <span className="text-slate-500">{relativeTime(stats.lastSeen)}</span>
-      </p>
+/** A tile-shaped skeleton, so nothing jumps when the real numbers land. */
+function TileSkeleton() {
+  return (
+    <div className="rounded-lg p-3 space-y-3" style={{ background: 'var(--cs-bg-surface)' }} aria-hidden="true">
+      <Skeleton className="h-3 w-32" />
+      <Skeleton className="h-7 w-24" />
+      <Skeleton className="h-2.5 w-40" />
     </div>
   );
 }
@@ -178,15 +310,26 @@ function HarnessCard({ stats, isActive, onFilter }: CardProps) {
 
 export function HarnessTab({ onFilterHarness, activeFilter }: Props): React.ReactElement {
   const [harnesses, setHarnesses] = useState<HarnessStats[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [focused,   setFocused]   = useState<string | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   const fetchHarnesses = useCallback(() => {
     fetch('/api/harnesses')
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((d: { harnesses: HarnessStats[] }) => {
         const sorted = [...(d.harnesses ?? [])].sort((a, b) => b.spanCount - a.spanCount);
         setHarnesses(sorted);
+        setLoadError(null);
       })
-      .catch(() => {});
+      // "No agents" and "we could not ask" look identical on an empty grid, and
+      // they mean very different things when you are watching for activity.
+      .catch((e: Error) => setLoadError(e.message || 'Request failed'))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -199,51 +342,109 @@ export function HarnessTab({ onFilterHarness, activeFilter }: Props): React.Reac
     onFilterHarness(activeFilter === harness ? null : harness);
   };
 
-  return (
-    <div className="flex-1 overflow-auto p-5 min-h-0" style={{ background: 'var(--cs-bg-primary)' }}>
-      <div className="max-w-5xl mx-auto space-y-4">
+  // The grid is one tab stop and the arrow keys walk it, matching the row
+  // contract the lists elsewhere keep.
+  const moveFocus = (from: HTMLElement, delta: number | 'first' | 'last') => {
+    const all = Array.from(gridRef.current?.querySelectorAll<HTMLElement>('[data-tile]') ?? []);
+    if (all.length === 0) return;
+    const here = all.indexOf(from);
+    const next =
+      delta === 'first' ? 0 :
+      delta === 'last'  ? all.length - 1 :
+      Math.min(all.length - 1, Math.max(0, here + delta));
+    all[next]?.focus();
+  };
 
-        {/* Header */}
-        <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5" style={{ color: 'var(--cs-accent)' }} />
-          <h2 className="text-sm font-bold text-slate-200">Agent Harnesses</h2>
-          <span className="ml-auto text-xs font-mono text-slate-500">
-            {harnesses.length} harness{harnesses.length !== 1 ? 'es' : ''} detected
+  const onTileKeyDown = (e: React.KeyboardEvent<HTMLDivElement>, harness: string) => {
+    if (e.target !== e.currentTarget) return;
+    switch (e.key) {
+      case 'Enter':
+      case ' ':
+        e.preventDefault(); handleFilter(harness); break;
+      case 'ArrowRight':
+      case 'ArrowDown': e.preventDefault(); moveFocus(e.currentTarget, 1); break;
+      case 'ArrowLeft':
+      case 'ArrowUp':   e.preventDefault(); moveFocus(e.currentTarget, -1); break;
+      case 'Home':      e.preventDefault(); moveFocus(e.currentTarget, 'first'); break;
+      case 'End':       e.preventDefault(); moveFocus(e.currentTarget, 'last'); break;
+      default: break;
+    }
+  };
+
+  const firstKey = harnesses[0]?.harness ?? null;
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 min-w-0" style={{ background: 'var(--cs-bg-canvas)' }}>
+
+      {/* ── Toolbar ──────────────────────────────────────────────────────── */}
+      <div
+        className="flex items-center gap-2 xl:gap-3 px-3 py-1.5 shrink-0 flex-wrap"
+        style={{ background: 'var(--cs-bg-surface)', borderBottom: '1px solid var(--cs-rule)' }}
+      >
+        <div className="flex items-center gap-2 shrink-0">
+          <Activity className="w-3.5 h-3.5" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />
+          <h2 style={{ fontSize: 'var(--cs-text-base)', fontWeight: 'var(--cs-weight-semibold)', color: 'var(--cs-text-strong)' }}>
+            Agent harnesses
+          </h2>
+          <span
+            className="cs-mono"
+            title={`${harnesses.length} agents have reported activity`}
+            style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-xs)' }}
+          >
+            {harnesses.length}
           </span>
-          {activeFilter && (
-            <button
-              type="button"
-              onClick={() => onFilterHarness(null)}
-              className="text-xs px-2 py-0.5 rounded-md border transition-colors"
-              style={{ background: 'rgba(var(--cs-accent-rgb),0.12)', borderColor: 'rgba(var(--cs-accent-rgb),0.3)', color: 'rgba(var(--cs-accent-rgb),0.85)' }}
-            >
-              Clear filter
-            </button>
-          )}
         </div>
 
-        {/* Cards grid */}
-        {harnesses.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <Activity className="w-10 h-10 text-slate-700 mb-3" />
-            <p className="text-slate-500 text-sm">No agent activity recorded yet.</p>
-            <p className="text-slate-600 text-xs mt-1">
-              Connect an agent harness and send OTLP traces to see stats here.
-            </p>
+        {activeFilter && (
+          <button
+            type="button"
+            onClick={() => onFilterHarness(null)}
+            className="ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors"
+            style={{ background: 'var(--cs-accent-soft)', color: 'var(--cs-accent)', fontSize: 'var(--cs-text-xs)' }}
+            title={`Stop filtering the timeline by ${harnessName(activeFilter)}`}
+          >
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
+            Clear filter
+          </button>
+        )}
+      </div>
+
+      {/* ── Tiles ────────────────────────────────────────────────────────── */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        {loading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4 gap-3">
+            {[0, 1, 2].map(i => <TileSkeleton key={i} />)}
           </div>
+        ) : loadError ? (
+          <ErrorState
+            title="Could not read agent activity"
+            description={`The harness summary did not respond (${loadError}). Recording is unaffected — this is only the view.`}
+            onRetry={() => { setLoading(true); fetchHarnesses(); }}
+          />
+        ) : harnesses.length === 0 ? (
+          <EmptyState
+            icon={<Activity className="w-6 h-6" aria-hidden="true" />}
+            title="No agent activity recorded"
+            description="A tile appears here the first time an agent produces a span — from a local transcript, or from any harness pointed at this instance over OTLP."
+          />
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div
+            ref={gridRef}
+            className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4 gap-3"
+          >
             {harnesses.map(h => (
-              <HarnessCard
+              <HarnessTile
                 key={h.harness}
                 stats={h}
                 isActive={activeFilter === h.harness}
-                onFilter={() => handleFilter(h.harness)}
+                tabbable={(focused ?? firstKey) === h.harness}
+                onActivate={() => handleFilter(h.harness)}
+                onFocus={() => setFocused(h.harness)}
+                onKeyDown={e => onTileKeyDown(e, h.harness)}
               />
             ))}
           </div>
         )}
-
       </div>
     </div>
   );

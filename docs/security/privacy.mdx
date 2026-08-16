@@ -7,12 +7,19 @@ ClaudeSec sees your agents' commands, prompts, and code. It is built so none of 
 
 ## Local-first guarantees
 
-- **Loopback only** — the server binds `127.0.0.1` by default. Set `CLAUDESEC_HOST=0.0.0.0` only if you deliberately want LAN access, and only on a trusted network (ClaudeSec is unauthenticated by design).
-- **No egress** — nothing is sent anywhere unless you opt in. There are three optional outbound paths, all off unless set:
-  - `OTEL_FORWARD_URL` — forwards received OTLP traces to an upstream collector. SSRF-guarded (private and loopback ranges blocked).
+- **Loopback only** — the server binds `127.0.0.1` by default and refuses to bind a non-loopback host at all unless `CLAUDESEC_TOKEN` is set (or you explicitly opt out with `CLAUDESEC_TRUST_LOCAL=1`). Set `CLAUDESEC_HOST=0.0.0.0` only if you deliberately want LAN access, always with a token, and only on a trusted network — a bearer token is not a substitute for TLS or network segmentation.
+- **Mutations need a paired browser** — reads over loopback are open, so the dashboard is usable the moment it starts. Anything that *changes* configuration (the enforcement mode, custom rules, settings) needs a control token. A loopback connection carries no user or process identity, so no HTTP request can prove it came from your browser rather than from another process running as you; the token is therefore never issued in answer to a request. It is a pairing key stored `0600` at `~/.claudesec/hooks/control-token`, and `claudesec open` hands it to the browser once on the URL, which the server swaps for an `HttpOnly`, `SameSite=Strict` cookie. Scripts can present the key directly as a bearer token or in the `x-claudesec-token` header. This does not defeat a process running as you, which can read that file; see [Enforcement](/security/enforcement) on the same-user ceiling.
+- **No egress** — nothing is sent anywhere unless you opt in. There are four optional outbound paths, all off unless set:
+  - `OTEL_FORWARD_URL` — forwards received OTLP traces to an upstream collector. SSRF-guarded (private and loopback ranges blocked). The forwarded batch is scrubbed with the same rules as the stored copy.
   - `CLAUDESEC_WEBHOOK_URL` — delivers alerts to a Slack / Discord / generic JSON endpoint. SSRF-guarded (private and loopback ranges blocked).
   - `CLAUDESEC_JUDGE_URL` — the optional [LLM-as-judge](/how-to/local-llm). SSRF-guarded for non-loopback URLs; loopback is allowed so the judge can run fully on-device (the recommended no-egress setup).
-- **Owner-only database** — `spans.db` is created with `0600` permissions (owner read/write only).
+  - `CLAUDESEC_ANCHOR_METHOD=tsa|ots` — audit anchoring. Sends the audit anchor's digest to an independent RFC 3161 Time-Stamp Authority or an OpenTimestamps calendar, so the time the record was sealed cannot be backdated by whoever controls this machine. SSRF-guarded.
+
+<Note>
+  Anchoring is the only outbound path whose whole job is to talk to a third party you did not choose, so it is worth being exact about what it reveals. **Only a 32-byte SHA-256 hash leaves the machine:** never span content, commands, file paths, repository names, or timestamps of your activity. A notary that received every anchor you ever sent would learn that this install exists, roughly how often it seals its audit record, and nothing else about what it recorded. That is why the privacy cost is close to zero. It is still off by default, because an outbound call you did not ask for is not something a local-first tool should make. Two limits to know before you rely on it: the TSA certificate chain is **not** validated, and an OpenTimestamps `receipted` status means a calendar acknowledged the digest, not that Bitcoin confirmed it. The raw receipts are kept so `openssl ts -verify` and the official `ots` client can do the layers ClaudeSec does not.
+</Note>
+- **SSRF guard on agent fetches** — when the [enforcement hook](/security/enforcement#ssrf-on-fetch) is installed, a Claude Code `WebFetch` to a cloud-metadata or link-local address (`169.254.169.254`, `fe80::/10`, the GCP metadata hostnames) is blocked in **either** mode, and loopback / private (RFC1918) ranges are blocked in `enforce` (opt out with `CLAUDESEC_ALLOW_LOCAL_FETCH=1`). The hook matches the literal host, so a public name that resolves to an internal IP (DNS rebinding) is not caught there — the server-side guard above, which DNS-resolves every host, is the backstop for the paths it controls.
+- **Owner-only database** — `spans.db` (under `~/.claudesec`) is created with `0600` permissions (owner read/write only). Its periodic binary backups in `~/.claudesec/backups/` are written `0600` too.
 - **Username scrubbing** — process command lines and OS usernames are masked (`/Users/***`, `user: ***`) before being shown or exported.
 
 ## Secret scrubbing (on by default)
@@ -51,4 +58,4 @@ Reads of credential-adjacent paths — `.env`, `~/.ssh/`, `id_rsa`, `*.pem`, `/e
 
 ## Data retention
 
-Spans are pruned by count (`CLAUDESEC_MAX_SPANS`, default 50,000) and age (`CLAUDESEC_RETENTION_DAYS`, default 30). You can prune manually from the Cost screen's Database Health panel or `POST /api/db-stats/prune`.
+Spans are pruned by age (`CLAUDESEC_RETENTION_DAYS`, default 183 — ~6 months, the EU AI Act minimum log-retention floor) and by count (`CLAUDESEC_MAX_SPANS`, default 1,000,000). Count-based pruning never evicts data still inside the retention window, so the age floor always takes precedence — which is why the ceiling has to be large enough to hold the window, and why the two are set together as a [retention profile](/explanation/retention). You can prune manually from the Cost screen's Database Health panel or `POST /api/db-stats/prune`.

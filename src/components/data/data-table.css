@@ -1,0 +1,227 @@
+/* Dense data-table primitives.
+ *
+ * This is the style layer behind <DataTable>. It is deliberately plain CSS
+ * rather than Tailwind utilities, for three reasons:
+ *
+ *   1. Row height, the severity spine and the column tracks all key off the
+ *      `--cs-*` tokens and off per-row state (`data-severity`, `data-muted`).
+ *      A token-driven cascade is shorter, and far easier to keep honest, than
+ *      a utility string repeated on every row.
+ *   2. `content-visibility` and `contain-intrinsic-size` have to sit on the row
+ *      element and need the *current* density to compute a placeholder height.
+ *      A custom property does that; a static utility class cannot.
+ *   3. The tier widths (1280 / 1440 / 1920) are written once here, so a column
+ *      can declare "hide me below 1440" without every caller re-deriving the
+ *      numbers.
+ *
+ * Nothing below hard-codes a colour: every value resolves to a token from
+ * tokens.css, so all four themes and every accent follow for free.
+ *
+ * Specificity note — the selectors are written as `.cs-dt .cs-dt-row…` rather
+ * than `.cs-dt-row…` on purpose. tokens.css paints `[data-severity]` at (0,1,0)
+ * and this file is injected by the bundler, whose ordering relative to
+ * index.css is not something a component should have to depend on. Keeping
+ * every rule here at (0,2,0) or above makes the outcome deterministic.
+ */
+
+/* ── Root ──────────────────────────────────────────────────────────────────
+   The caller sets --cs-dt-cols-{base,xl,2xl,3xl} inline; each tier falls back
+   to the tier below, so a table whose columns never change only sets base. */
+.cs-dt {
+  --cs-dt-cols: var(--cs-dt-cols-base);
+  --cs-dt-row-h: var(--cs-row-compact);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  /* Measured at runtime — see useOwnScrollHeight. A ceiling rather than a
+     height, so a shell that already bounds the tab keeps control. */
+  max-height: var(--cs-dt-max-h, none);
+}
+
+@media (min-width: 1280px) {
+  .cs-dt { --cs-dt-cols: var(--cs-dt-cols-xl, var(--cs-dt-cols-base)); }
+}
+@media (min-width: 1440px) {
+  .cs-dt { --cs-dt-cols: var(--cs-dt-cols-2xl, var(--cs-dt-cols-xl, var(--cs-dt-cols-base))); }
+}
+@media (min-width: 1920px) {
+  .cs-dt { --cs-dt-cols: var(--cs-dt-cols-3xl, var(--cs-dt-cols-2xl, var(--cs-dt-cols-xl, var(--cs-dt-cols-base)))); }
+}
+
+/* Density is chosen per surface and never mixed within one surface. */
+.cs-dt[data-density='compact'] { --cs-dt-row-h: var(--cs-row-compact); }
+.cs-dt[data-density='default'] { --cs-dt-row-h: var(--cs-row-default); }
+.cs-dt[data-density='comfy']   { --cs-dt-row-h: var(--cs-row-comfy);   }
+
+/* ── Scroll container ──────────────────────────────────────────────────────
+   Wide content scrolls inside the table, never in the page body. The inner
+   track carries the minimum width, so narrow viewports get a scrollbar here
+   instead of columns collapsing into unreadable stacks. */
+.cs-dt .cs-dt-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.cs-dt .cs-dt-track {
+  min-width: var(--cs-dt-min-width, 640px);
+}
+
+/* Empty / error / loading render as a sibling of the scroll region rather than
+   inside it, so the state fills the space the rows would have occupied instead
+   of sitting in a short strip under the header. The column headers stay put in
+   all three states, which keeps the table from appearing to vanish. */
+.cs-dt[data-state] .cs-dt-scroll { flex: 0 0 auto; }
+
+.cs-dt .cs-dt-state {
+  flex: 1;
+  /* The floor matters: whether the table owns its scroll container or inherits
+     one from the page shell, a state message should never collapse into a thin
+     strip under the header. */
+  min-height: min(60vh, 420px);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+/* ── Rows ──────────────────────────────────────────────────────────────────
+   Every row — header included — is a grid on the same track list. That is what
+   keeps the columns, and the severity spine, aligned down the whole list
+   without a <table> element. */
+.cs-dt .cs-dt-row {
+  display: grid;
+  grid-template-columns: var(--cs-dt-cols);
+  align-items: center;
+  column-gap: var(--cs-space-3);
+  min-height: var(--cs-dt-row-h);
+  padding-inline: var(--cs-space-3);
+  border-bottom: 1px solid var(--cs-rule);
+  transition: background-color var(--cs-motion-instant) var(--cs-ease-out);
+}
+
+/* ── The severity spine ────────────────────────────────────────────────────
+   The signature element: a 3px bar on the leading edge of every row that
+   carries a severity, aligned down the whole list so a screen can be triaged
+   without reading a word. Rows and headers that carry no severity still
+   reserve the 3px, so nothing shifts sideways.
+
+   Colour never travels alone — the badge in the row pairs this bar with a
+   glyph and a word, so the row survives greyscale and colour-vision
+   deficiency (see <SeverityBadge>). */
+.cs-dt .cs-dt-row,
+.cs-dt .cs-dt-detail {
+  border-left: var(--cs-spine-width) solid var(--cs-dt-spine, transparent);
+}
+
+.cs-dt [data-severity='none']     { --cs-dt-spine: var(--cs-sev-none);     }
+.cs-dt [data-severity='low']      { --cs-dt-spine: var(--cs-sev-low);      }
+.cs-dt [data-severity='medium']   { --cs-dt-spine: var(--cs-sev-medium);   }
+.cs-dt [data-severity='high']     { --cs-dt-spine: var(--cs-sev-high);     }
+.cs-dt [data-severity='critical'] { --cs-dt-spine: var(--cs-sev-critical); }
+
+/* Only high and critical earn a background wash. Tinting every row would spend
+   the whole colour budget on noise and leave nothing for the real signal. */
+.cs-dt .cs-dt-row[data-severity='high']     { background: var(--cs-sev-high-bg);     }
+.cs-dt .cs-dt-row[data-severity='critical'] { background: var(--cs-sev-critical-bg); }
+
+/* Skipping layout and paint for off-screen rows is what keeps a few thousand
+   alerts cheap without virtualizing. The rows stay in the DOM, so Ctrl-F, the
+   sticky header and screen readers all keep working. `auto` in
+   contain-intrinsic-size makes the browser remember each row's real height
+   once rendered, so the scrollbar stops jumping as you scroll. */
+.cs-dt .cs-dt-body .cs-dt-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--cs-dt-row-h);
+}
+
+/* ── Row state ─────────────────────────────────────────────────────────────
+   Hover is a change of ground, not an outline. High and critical deepen their
+   own wash instead of losing it, so hovering never destroys the signal. */
+.cs-dt .cs-dt-row[data-interactive='true']                           { cursor: pointer; }
+.cs-dt .cs-dt-row[data-interactive='true']:hover                     { background: var(--cs-bg-raised); }
+.cs-dt .cs-dt-row[data-interactive='true'][data-severity='high']:hover     { background: var(--cs-sev-high-bg-hover);     }
+.cs-dt .cs-dt-row[data-interactive='true'][data-severity='critical']:hover { background: var(--cs-sev-critical-bg-hover); }
+
+/* Focus must be drawn *inside* the row box: `content-visibility` brings paint
+   containment with it, which clips anything outside. Deliberately no
+   background change, so a focused critical row keeps its wash. */
+.cs-dt .cs-dt-row:focus-visible {
+  outline: 2px solid var(--cs-accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+/* Already dismissed, or lingering in the undo window. Still legible — this is
+   feedback, not a disabled control. */
+.cs-dt .cs-dt-row[data-muted='true'] { opacity: 0.45; }
+
+/* ── Header ────────────────────────────────────────────────────────────────
+   Column headers are furniture; they should disappear once you know the table.
+   Native `position: sticky` is the whole reason for not virtualizing yet. */
+.cs-dt .cs-dt-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--cs-bg-surface);
+}
+
+.cs-dt .cs-dt-head .cs-dt-row {
+  min-height: var(--cs-row-compact);
+}
+
+.cs-dt .cs-dt-col-head {
+  font-size: var(--cs-text-2xs);
+  font-weight: var(--cs-weight-bold);
+  letter-spacing: var(--cs-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cs-text-faint);
+}
+
+/* ── Cells ─────────────────────────────────────────────────────────────────
+   Identifiers, repo names and timestamps are compared, not read, so they never
+   wrap. One idea per row; the truncation is intentional. */
+.cs-dt .cs-dt-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--cs-text-sm);
+  color: var(--cs-text-muted);
+}
+
+/* Right-align every number and set it in tabular mono, so columns of digits
+   line up and stop jittering between rows. */
+.cs-dt .cs-dt-cell[data-align='end'] {
+  text-align: right;
+  justify-self: end;
+}
+
+.cs-dt .cs-dt-cell[data-mono='true'] {
+  font-family: var(--cs-font-mono);
+  font-size: calc(var(--cs-text-sm) * var(--cs-mono-optical-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Responsive columns ────────────────────────────────────────────────────
+   A column declares the narrowest tier it survives at; below that it leaves
+   the flow entirely. <DataTable> emits a matching track list per tier, so the
+   grid and the cells can never disagree about how many columns exist. */
+.cs-dt .cs-dt-hb-xl,
+.cs-dt .cs-dt-hb-2xl,
+.cs-dt .cs-dt-hb-3xl { display: none; }
+
+@media (min-width: 1280px) { .cs-dt .cs-dt-hb-xl  { display: block; } }
+@media (min-width: 1440px) { .cs-dt .cs-dt-hb-2xl { display: block; } }
+@media (min-width: 1920px) { .cs-dt .cs-dt-hb-3xl { display: block; } }
+
+/* ── Detail strip ──────────────────────────────────────────────────────────
+   An expanded panel belonging to the row above it. It continues that row's
+   spine and sits on a sunken ground, so it reads as "inside" the row rather
+   than as a new one. */
+.cs-dt .cs-dt-detail {
+  padding: 0 var(--cs-space-3) var(--cs-space-2);
+  border-bottom: 1px solid var(--cs-rule);
+  background: var(--cs-bg-sunken);
+}

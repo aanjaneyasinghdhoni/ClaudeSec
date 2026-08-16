@@ -1,0 +1,283 @@
+---
+title: "OWASP Agentic Threat Mapping"
+description: "How ClaudeSec's detection rules and enforcement floors map to OWASP's agentic-AI and LLM security guidance."
+---
+
+This page maps ClaudeSec's built-in capabilities to the two primary OWASP frameworks that
+cover AI coding agents. It is a reference for threat modelling and defence-in-depth planning
+— not a compliance claim or certification.
+
+**ClaudeSec detects threats. It does not eliminate them.** Where a capability blocks rather
+than alerts, that is noted explicitly, along with its known limits.
+
+---
+
+## OWASP reference documents
+
+Two OWASP documents are directly relevant to AI coding agents:
+
+1. **OWASP Top 10 for LLM Applications 2025**
+   Published November 2024. Covers the ten highest-impact risks for LLM-backed applications,
+   from prompt injection through unbounded consumption.
+   [https://genai.owasp.org/resource/owasp-top-10-for-llm-applications-2025/](https://genai.owasp.org/resource/owasp-top-10-for-llm-applications-2025/)
+
+2. **OWASP Top 10 for Agentic Applications 2026** (ASI01–ASI10)
+   Published December 2025 by the OWASP Agentic Security Initiative. The first framework
+   designed specifically for autonomous, tool-using agents that plan and execute across
+   multi-step workflows.
+   [https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
+
+A companion guide, **Agentic AI – Threats and Mitigations** (OWASP Agentic Security Initiative,
+February 2025), provides a threat-model-based reference that complements the Top 10.
+[https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/](https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/)
+
+---
+
+## Mapping: OWASP Top 10 for Agentic Applications 2026
+
+### ASI01 — Agent Goal Hijack
+
+An attacker seizes control of an agent's decision-making through a poisoned input — a malicious
+repository file, an injected tool response, or a compromised prompt — causing the agent to
+pursue attacker-chosen goals instead of the user's.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| Prompt injection rules: `ignore previous instructions`, `disregard your system`, `you are now DAN` | DETECTS (HIGH severity alert) |
+| Hook blocks HIGH-severity tool calls containing these patterns | BLOCKS in enforce mode |
+| Catastrophic floor blocks `curl URL \| bash` / `wget URL \| bash` one-liners that install attacker payloads | BLOCKS in both modes (hook installed) |
+| Real-world case: CVE-2025-59536 — malicious `.claude/settings.json` hooks executing before trust prompt | Detected via Bash-command matching if the hook is installed before project open; fully blocked in enforce mode |
+
+**Honest limits:** ClaudeSec cannot inspect the *content* of a model's reasoning or the text
+of a prompt that never surfaces in a tool call. Detection fires on tool-call attributes; a
+purely conversational hijack that never executes a tool is invisible to ClaudeSec.
+
+---
+
+### ASI02 — Tool Misuse and Exploitation
+
+An agent is manipulated into using its available tools in unintended ways — running destructive
+shell commands, exfiltrating data through legitimate file-write or network tools, or abusing
+privileged tool access.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| `rm -rf /` (incl. `--no-preserve-root`) and recursive wipes of system trees (`/etc`, `/boot`, `/usr`, `/var`, `~`) with developer carve-outs (`/usr/local`, macOS `/var/folders` & `/var/tmp`) | BLOCKS always (catastrophic floor) |
+| `mkfs.*` filesystem format, `dd of=/dev/…` / `> /dev/sda` raw-device overwrite, Windows `format`/`diskpart`/`bcdedit`/`del /f /q /s`/`rd /s`/`vssadmin delete shadows` | BLOCKS always |
+| Fork bomb patterns | BLOCKS always |
+| Reverse shells via `/dev/tcp`, `/dev/udp`, or netcat (`nc -e`/`nc -c`) | BLOCKS always |
+| SQL `DROP TABLE/DATABASE/SCHEMA`, `TRUNCATE TABLE` | DETECTS (HIGH) / BLOCKS in enforce mode |
+| `eval(`, `exec(` injection patterns | DETECTS (HIGH) / BLOCKS in enforce mode |
+| `chmod [0-7]*7[0-7]*` world-accessible permissions | DETECTS (LOW) |
+| `sudo` privilege escalation | DETECTS (LOW) |
+
+---
+
+### ASI03 — Agent Identity and Privilege Abuse
+
+Stolen or misused agent credentials allow an attacker to impersonate the agent or escalate
+privilege within the system it has access to.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| AWS access key `AKIA[0-9A-Z]{16}` present in any span | DETECTS (HIGH) |
+| GitHub PAT `ghp_[A-Za-z0-9]{36}` detected | DETECTS (HIGH) |
+| OpenAI / Stripe secret key `sk-[A-Za-z0-9]{20,}` detected | DETECTS (HIGH) |
+| SSH directory `~/.ssh/` access | DETECTS (HIGH) |
+| macOS Keychain `security find-generic-password` | DETECTS (MEDIUM) |
+| Secret scrubbing redacts credential shapes before storage | DEFENCE (best-effort — reduces the risk of ClaudeSec itself persisting a live key; it recognizes known secret *shapes*, not every possible one) |
+| Real-world case: CVE-2026-21852 — `ANTHROPIC_BASE_URL` env-var override exfiltrating API keys before trust prompt | DETECTS as environment-variable access / env-override; the SSRF guard blocks redirection to private/loopback/metadata hosts on the operator-configured outbound paths, and (with the hook installed) the SSRF-on-fetch floor blocks a `WebFetch` to a cloud-metadata / internal host |
+
+**Honest limits:** ClaudeSec detects credential *patterns* in span text. A credential that is
+passed in a way that never appears in a tool-call attribute (e.g. injected into a subprocess
+environment without logging) will not be caught.
+
+---
+
+### ASI04 — Agentic Supply Chain Compromise
+
+Third-party packages, MCP servers, or repository configurations introduce malicious code or
+redirect the agent's behaviour.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| `pip install --index-url` custom PyPI index (dependency confusion / typosquatting) | DETECTS (HIGH) |
+| `npm install --registry` custom npm registry override | DETECTS (HIGH) |
+| `git clone … && bash` clone-and-execute | DETECTS (HIGH) / BLOCKS in enforce mode |
+| `npm install --global` global package install | DETECTS (LOW) |
+| `pip install` any package | DETECTS (LOW) |
+| MCP-scan tab surfaces unexpected MCP servers and their tool exposure | VISIBILITY |
+
+**Honest limits:** ClaudeSec does not verify package hashes, inspect compiled artifacts, or
+audit MCP server implementations. Supply-chain detection is based on suspicious *invocation
+patterns*, not content inspection.
+
+---
+
+### ASI05 — Unexpected Code Execution
+
+An agent executes arbitrary or attacker-supplied code through `eval`, `exec`, dynamic
+subprocess spawning, or by being tricked into running a remote payload.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| `curl URL \| (ba)?sh` / `wget URL \| (ba)?sh` | BLOCKS always (catastrophic floor) |
+| `eval(` dynamic code execution | DETECTS (HIGH) / BLOCKS in enforce mode |
+| `exec(` process spawning | DETECTS (HIGH) / BLOCKS in enforce mode |
+| `python3 -c 'import …'` one-liner execution | DETECTS (MEDIUM) |
+| `base64 -d` / `atob(` decode patterns (common in staged payloads) | DETECTS (MEDIUM) |
+
+---
+
+### ASI06 — Memory and Context Poisoning
+
+Malicious content injected into the agent's memory store, RAG index, or long-context window
+corrupts future decisions.
+
+**ClaudeSec coverage**
+
+ClaudeSec does not inspect in-memory vector stores or RAG pipelines directly. However:
+
+| Capability | Type |
+|---|---|
+| Prompt injection rules fire if poisoned content surfaces in a tool-call | DETECTS (HIGH) |
+| Timeline and span history give a forensic record of what inputs preceded an anomalous decision | VISIBILITY / AUDIT |
+
+**Honest limits:** This is a significant gap for memory-augmented agents. ClaudeSec's detection
+surface is the tool-call layer, not the model's internal context or a connected vector DB.
+
+---
+
+### ASI07 — Insecure Inter-Agent Communication
+
+In multi-agent systems, an orchestrator or sub-agent sends unvalidated, attacker-influenced
+messages to peer agents.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| Orchestration tab visualises agent-to-agent call graphs and highlights anomalous cross-agent patterns | VISIBILITY |
+| MCP enforcement proxy gates `tools/call` at the wire level for any MCP-speaking agent, applying the **same** floors as the Claude Code hook (catastrophic, self-protection, protected paths, live-secret, SSRF) — a behavioral parity test pins proxy verdicts to the hook's | BLOCKS in enforce mode (cloud-metadata SSRF in either mode) |
+| The proxy extracts the **raw command** from a command-shaped `tools/call` (not the serialized JSON blob), so the catastrophic floor's boundary-anchored patterns fire on a cross-agent `rm -rf /` exactly as they do on the hook | BLOCKS in enforce mode |
+| Prompt injection rules fire on the content of inter-agent messages that surface in tool calls | DETECTS (HIGH) |
+
+**Honest limits:** The MCP proxy intercepts calls the agent makes *through* ClaudeSec's proxy.
+Direct agent-to-agent traffic that bypasses the proxy is not visible.
+
+---
+
+### ASI08 — Cascading Agent Failures
+
+A failure in one agent propagates to dependent agents, causing runaway execution, resource
+exhaustion, or data corruption across a pipeline.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| Fork-bomb patterns | BLOCKS always |
+| Orchestration timeline surfaces runaway call sequences and latency spikes | VISIBILITY |
+| Cost and token-count tracking lets you spot anomalous consumption | VISIBILITY |
+| `CLAUDESEC_MAX_SPANS` and `CLAUDESEC_RETENTION_DAYS` cap unbounded data growth | DEFENCE |
+
+**Honest limits:** ClaudeSec does not impose rate limits or circuit-breakers on agent execution.
+Cascading-failure prevention requires controls at the orchestration layer.
+
+---
+
+### ASI09 — Human-Agent Trust Exploitation
+
+Attackers exploit the user's tendency to over-trust agent outputs or confirmations, bypassing
+human oversight through deception or UI redressing.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| Enforce tab shows the *effective* mode and hook-registration state honestly — no false green when nothing can actually block | TRANSPARENCY |
+| Alerts and would-block feed provide a live record of what the agent attempted, independently of what the agent reports to the user | AUDIT |
+| Session labels and bookmarks let a reviewer annotate and flag sessions for follow-up | AUDIT |
+
+**Honest limits:** ClaudeSec observes and records what the agent *does*. It cannot prevent a
+user from ignoring alerts or misinterpreting what they see.
+
+---
+
+### ASI10 — Rogue Agents
+
+An agent acts entirely outside its intended scope — contacting unauthorised endpoints, spawning
+sub-processes, or persisting beyond its session — without the user's knowledge.
+
+**ClaudeSec coverage**
+
+| Capability | Type |
+|---|---|
+| SSRF guard blocks outbound requests to private/loopback/metadata ranges on the optional egress paths (server-side, DNS-resolving — defeats rebinding) | BLOCKS (server-side) |
+| SSRF-on-fetch floor blocks a Claude Code `WebFetch` **and** any fetch-shaped MCP `tools/call` through the proxy to cloud-metadata/link-local (either mode) or private/loopback ranges (enforce) — literal-host match, so DNS rebinding is a known gap | BLOCKS (hook installed / via proxy) |
+| Exfiltration rules: secrets/env piped to `curl`/`wget`/`nc`/`scp`/`rsync` | BLOCKS always (catastrophic floor, two high-precision patterns) / DETECTS (CRITICAL) |
+| Netcat file transfer to remote host | DETECTS (CRITICAL) |
+| Process tab surfaces all running agent processes by PID | VISIBILITY |
+| `spans.db` provides a persistent audit log of every tool call, independent of the agent's own logs; the spans ledger, the operator audit log and the enforcement block-feed are hash-chained under an Ed25519-signed tail anchor (tampering is detectable, not prevented; verifiable via `GET /api/audit/verify`) | AUDIT |
+
+---
+
+## Mapping: OWASP Top 10 for LLM Applications 2025
+
+The LLM Top 10 covers the broader LLM application surface. The entries most directly relevant
+to AI coding agents are mapped below.
+
+| OWASP ID | Category | ClaudeSec coverage |
+|---|---|---|
+| LLM01:2025 | Prompt Injection | HIGH-severity rules for classic injection phrases; hook blocks in enforce mode. Conversational injection that never reaches a tool call is not visible. |
+| LLM02:2025 | Sensitive Information Disclosure | 673 rules detect credential patterns in tool-call spans; secret scrubbing redacts known shapes at storage. |
+| LLM03:2025 | Supply Chain | Custom index/registry override rules (HIGH); MCP-scan surfaces unverified MCP servers. |
+| LLM05:2025 | Improper Output Handling | `eval(` / `exec(` detection catches cases where model output is executed without sanitisation. |
+| LLM06:2025 | Excessive Agency | Enforcement hook limits what high-severity tool calls can execute; protected paths provide a per-user floor. Scope is Claude Code and MCP-proxied agents only. |
+| LLM07:2025 | System Prompt Leakage | Flagged if the agent reads files containing prompt text and those reads appear in span attributes. |
+| LLM10:2025 | Unbounded Consumption | Cost and token tracking; `CLAUDESEC_MAX_SPANS` retention cap. |
+
+---
+
+## What ClaudeSec does not cover
+
+Being specific about gaps is as important as describing what works:
+
+- **Model-layer attacks** (data poisoning, embedding manipulation, LLM04/LLM08) — ClaudeSec
+  has no visibility into model weights, training pipelines, or vector stores.
+- **Purely conversational threats** — if an attack never triggers a tool call, ClaudeSec
+  cannot see it.
+- **Non-Claude-Code agents via the hook** — the PreToolUse hook is Claude-Code-specific. Other
+  agents can only be gated via the MCP enforcement proxy, and only if they are wired through it.
+- **OS-level sandbox** — the hook and proxy fail open. They raise the bar; they do not replace
+  a proper sandboxed execution environment.
+- **A same-user (same-UID) attacker** — ClaudeSec defends against a *misbehaving agent*, not a
+  hostile process running as your own account. Such a process could flip the enforcement mode or
+  clear user-added protected paths (the always-on floors still hold), recompute the audit chain to
+  forge a consistent history, or truncate its newest rows. See
+  [Enforcement → Limitations & threat model](/security/enforcement#limitations-threat-model).
+- **Third-party audit** — ClaudeSec has not undergone an independent security review. The
+  detection library is maintained by one person.
+
+---
+
+## Further reading
+
+- [Security Rules](/security/rules) — full built-in rule catalogue with severity definitions
+- [Enforcement](/security/enforcement) — PreToolUse hook and MCP enforcement proxy, with an
+  honest account of what they can and cannot block
+- [Privacy & Security](/security/privacy) — data handling, secret scrubbing, and local-first
+  guarantees
+- [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
+- [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/resource/owasp-top-10-for-llm-applications-2025/)
+- [Agentic AI – Threats and Mitigations](https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/) (OWASP ASI, Feb 2025)

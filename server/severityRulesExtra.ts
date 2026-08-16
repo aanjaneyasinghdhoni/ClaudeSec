@@ -23,9 +23,30 @@ export interface ExtraRule {
 }
 
 export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
-  // Destructive filesystem & data destruction
-  { pattern: /rm\s+-rf\s+\/(?:etc|var|usr|bin|lib|sbin|boot|sys|opt|srv)\b/i,           severity: 'high',   label: 'rm -rf on critical system directory' },
-  { pattern: /rm\s+-rf\s+\/(?:home|root|Users)\b/i,                                      severity: 'high',   label: 'rm -rf on home/root directory' },
+  // Destructive filesystem & data destruction.
+  // The system roots split into two kinds, because a deep path under them means
+  // opposite things. `/etc`, `/boot`, `/sys` and the two binary dirs hold config
+  // and executables: deleting any subtree of them breaks the machine, so they
+  // stay dangerous at every depth. `/var`, `/usr`, `/lib`, `/opt` and `/srv` hold
+  // caches and content, and their deep paths are where routine cleanup lives —
+  // `rm -rf /var/lib/apt/lists/*` and `rm -rf /var/cache/apk/*` end almost every
+  // Debian and Alpine image build, and `rm -rf /usr/share/doc` is the standard
+  // slimming line. The old `\b` after the directory name matched at the following
+  // slash, so all three fired at high, and high bakes to `action: block` — the
+  // rule was refusing the build step. Those roots now fire only when they ARE the
+  // target, plus the second-level trees under `/usr` and `/var` that are as fatal
+  // as the root itself (`/usr/bin`, `/var/lib`, …) when named whole. An optional
+  // quote is allowed on the left, so `rm -rf "/var"` no longer slips past.
+  { pattern: /\brm\s+-rf\s+['"]?(?:\/(?:etc|boot|sys|bin|sbin)\b|\/(?:usr|var)(?:\/(?:bin|sbin|lib|lib64|libexec|local|include|log|db|spool))?\/?(?=$|[\s;&|>)'"])|\/(?:lib|opt|srv)\/?(?=$|[\s;&|>)'"]))/im, severity: 'high',   label: 'rm -rf on critical system directory' },
+  // The same `\b` bug the rule above was fixed for, in the home roots. `\b`
+  // matched at the slash that FOLLOWS the directory name, so every path under a
+  // home tree counted as wiping the home tree: fifteen would-be denials in local
+  // history, and all fifteen were `rm -rf /Users/<me>/<project>/node_modules`,
+  // `…/dist` or a scratch directory — the most routine cleanup a developer
+  // performs. The target must now BE `/Users`, `/home` or `/root`, or a single
+  // named home inside one (`/Users/dev`, `/home/ci`, `/Users/*`), and must end
+  // there: at end of line, a shell separator, a closing quote or a glob.
+  { pattern: /\brm\s+-rf\s+['"]?\/(?:home|root|Users)(?:\/[^\/\s;&|>'"]{1,64})?\/?(?=$|[\s;&|>)'"])/im, severity: 'high',   label: 'rm -rf on home/root directory' },
   { pattern: /rm\s+-rf\s+\/tmp\b/i,                                                       severity: 'medium', label: 'rm -rf on /tmp directory' },
   { pattern: /rm\s+-rf\s+\/dev\b/i,                                                       severity: 'high',   label: 'rm -rf on /dev directory' },
   { pattern: /rm\s+-rf\s+\/proc\b/i,                                                      severity: 'high',   label: 'rm -rf on /proc pseudo-filesystem' },
@@ -57,23 +78,59 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /fallocate\s+.*--length\s+0\s+\/(?:etc|var|home)\//i,                        severity: 'high',   label: 'fallocate truncate on system file' },
   { pattern: /secure-delete\s+\/(?:etc|var|home|root)\//i,                                severity: 'high',   label: 'secure-delete on system path' },
   // Database destruction & dump
-  { pattern: /DROP\s+DATABASE\s+\w/i,                                                     severity: 'high',   label: 'SQL DROP DATABASE statement' },
-  { pattern: /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?\w/i,                                    severity: 'high',   label: 'SQL DROP TABLE (with optional IF EXISTS)' },
-  { pattern: /DROP\s+SCHEMA\s+(?:IF\s+EXISTS\s+)?\w/i,                                   severity: 'high',   label: 'SQL DROP SCHEMA statement' },
+  // These four, and the Cassandra keyspace rule further down, are the same
+  // unanchored keyword matchers that detection.ts demoted to the alert tier —
+  // see the note beside `SQL destructive operation` there. They have to move
+  // together: the enforcement hook blocks on ANY rule that bakes to
+  // `action: block`, so leaving a duplicate here at `high` would simply
+  // re-block everything the core demotion was meant to stop refusing —
+  // demoting one of a pair achieves nothing. The act still blocks, through
+  // `SQL destructive statement executed through a database client`, its piped
+  // and heredoc siblings below, and the `psql`/`mysql` inline rules.
+  { pattern: /DROP\s+DATABASE\s+\w/i,                                                     severity: 'medium', label: 'SQL DROP DATABASE statement' },
+  { pattern: /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?\w/i,                                    severity: 'medium', label: 'SQL DROP TABLE (with optional IF EXISTS)' },
+  { pattern: /DROP\s+SCHEMA\s+(?:IF\s+EXISTS\s+)?\w/i,                                   severity: 'medium', label: 'SQL DROP SCHEMA statement' },
   { pattern: /DELETE\s+FROM\s+\w+\s+WHERE\s+1\s*=\s*1/i,                                 severity: 'high',   label: 'SQL DELETE with always-true WHERE (full wipe)' },
   { pattern: /DELETE\s+FROM\s+\w+\s+WHERE\s+['"1]1['"1]?\s*=\s*['"1]1/i,                severity: 'high',   label: 'SQL injection-style DELETE all rows' },
   { pattern: /UPDATE\s+\w+\s+SET\s+\w+\s*=\s*.*WHERE\s+1\s*=\s*1/i,                     severity: 'high',   label: 'SQL UPDATE with always-true WHERE (full wipe)' },
   { pattern: /TRUNCATE\s+(?:TABLE\s+)?\w+\s+(?:CASCADE|RESTART)/i,                       severity: 'high',   label: 'SQL TRUNCATE with CASCADE or RESTART' },
-  { pattern: /DROP\s+TABLE\s+.*CASCADE/i,                                                  severity: 'high',   label: 'SQL DROP TABLE CASCADE' },
+  { pattern: /DROP\s+TABLE\s+.*CASCADE/i,                                                  severity: 'medium', label: 'SQL DROP TABLE CASCADE' },
   { pattern: /ALTER\s+TABLE\s+\w+\s+DROP\s+CONSTRAINT/i,                                  severity: 'medium', label: 'SQL DROP CONSTRAINT on table' },
   { pattern: /mysqldump\s+.*\|\s*(?:curl|wget|nc|ncat)\b/i,                               severity: 'high',   label: 'mysqldump piped to network transfer' },
   { pattern: /pg_dump\s+.*\|\s*(?:curl|wget|nc|ncat)\b/i,                                 severity: 'high',   label: 'pg_dump piped to network transfer' },
   { pattern: /sqlite3\s+.*\.dump\s*\|\s*(?:curl|wget|nc)/i,                               severity: 'high',   label: 'SQLite dump piped to network' },
   { pattern: /mysqldump\s+.*-h\s+\S/i,                                                    severity: 'medium', label: 'mysqldump to remote host' },
-  { pattern: /pg_dump\s+.*-h\s+\S/i,                                                      severity: 'medium', label: 'pg_dump to remote host' },
+  // `-h localhost` is how nearly every local backup script is written, so the
+  // host argument is the whole signal: only a NON-loopback target means the dump
+  // is leaving this machine.
+  { pattern: /pg_dump\s+[^\n]{0,120}-h\s+(?!localhost\b|127\.0\.0\.1\b|0\.0\.0\.0\b|::1\b)\S/i, severity: 'medium', label: 'pg_dump to remote host' },
   { pattern: /mysql\s+.*-e\s+["']DROP\s+DATABASE/i,                                       severity: 'high',   label: 'mysql CLI inline DROP DATABASE' },
   { pattern: /psql\s+.*-c\s+["']DROP\s+DATABASE/i,                                        severity: 'high',   label: 'psql CLI inline DROP DATABASE' },
   { pattern: /psql\s+.*-c\s+["']TRUNCATE/i,                                               severity: 'high',   label: 'psql CLI inline TRUNCATE' },
+  // The two shapes detection.ts's `SQL destructive statement executed through a
+  // database client` structurally cannot reach — see the note beside it. Same
+  // act, same tier; only the plumbing between the statement and the client is
+  // different, and both carry the same act-versus-mention guards (no `%` before
+  // the keyword, so a `LIKE '%DROP TABLE%'` audit query stays a mention; DELETE
+  // only in its unrestricted, whole-table form, so scoped cleanup stays allowed).
+  //
+  // Piped: the client is on the RIGHT of the statement, so the same-line rule
+  // reads past it and finds nothing. The pipe must be a real shell pipe with
+  // whitespace in front of it, which is what separates `echo "DROP TABLE x;" |
+  // psql` from `grep -E "drop table\|truncate\|psql"` — a BRE alternation writes
+  // `\|` with no space, and both of local history's would-be denials here were
+  // exactly that grep.
+  { pattern: /(?:^|[^\w\n%])(?:DROP\s+(?:TABLE|DATABASE|SCHEMA|KEYSPACE)\b|TRUNCATE\s+(?:TABLE\s+)?(?!ON\b|FROM\b)\w|ALTER\s+TABLE\s+[^;\n]{1,120}\bDROP\s+COLUMN\b|DELETE\s+FROM\s+[\w."\[\]`]{1,80}\s*;)[^\n]{0,200}\s\|\s*(?:sudo\s+)?(?:docker\s+(?:exec|run)\s+[^\n|]{0,120}\s)?(?:psql|mysql|mariadb|sqlite3|mongosh|clickhouse-client|cockroach|sqlcmd|pgcli|mycli)\b/i, severity: 'high', label: 'SQL destructive statement piped into a database client' },
+  // Heredoc: the statement is on a LATER line than the client, so a character
+  // class that stops at the newline can never see it — this is the one shape
+  // that has to cross the line boundary, and it earns that by requiring the
+  // heredoc operator itself on the client's own line. `<<'SQL'` beside a
+  // database client is not something a grep or a commit message produces; it is
+  // a session being fed a script. The body window is bounded (no unbounded
+  // `[\s\S]*`), so a heredoc that merely CONTAINS a client name further down —
+  // a shell script being written to disk, say — does not qualify: the client
+  // has to introduce the heredoc, not appear inside it.
+  { pattern: /(?:^|[^\w|-])(?:psql|mysql|mariadb|sqlite3|mongosh|clickhouse-client|cockroach|sqlcmd|pgcli|mycli)\b[^\n]{0,200}<<-?\s*['"]?\w{1,20}['"]?[^\n]{0,60}[\s\S]{0,600}?[^\w%](?:DROP\s+(?:TABLE|DATABASE|SCHEMA|KEYSPACE)\b|TRUNCATE\s+(?:TABLE\s+)?(?!ON\b|FROM\b)\w|ALTER\s+TABLE\s+[^;\n]{1,120}\bDROP\s+COLUMN\b|DELETE\s+FROM\s+[\w."\[\]`]{1,80}\s*;)/i, severity: 'high', label: 'SQL destructive statement fed to a database client by heredoc' },
   { pattern: /mongo\s+.*dropDatabase\s*\(/i,                                               severity: 'high',   label: 'MongoDB dropDatabase() call' },
   { pattern: /db\.dropDatabase\s*\(/i,                                                     severity: 'high',   label: 'MongoDB db.dropDatabase() in shell/code' },
   { pattern: /db\.getCollection\s*\(.*\)\.drop\s*\(/i,                                    severity: 'high',   label: 'MongoDB collection.drop() call' },
@@ -84,7 +141,7 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /\.flushDb\s*\(/i,                                                            severity: 'high',   label: 'Redis FLUSHDB via client library' },
   { pattern: /dynamo.*deleteTable\s*\(/i,                                                  severity: 'high',   label: 'DynamoDB deleteTable() call' },
   { pattern: /elasticsearch.*deleteIndex\s*\(/i,                                           severity: 'medium', label: 'Elasticsearch deleteIndex() call' },
-  { pattern: /DROP\s+KEYSPACE\s+\w/i,                                                     severity: 'high',   label: 'Cassandra DROP KEYSPACE' },
+  { pattern: /DROP\s+KEYSPACE\s+\w/i,                                                     severity: 'medium', label: 'Cassandra DROP KEYSPACE' },
   { pattern: /DELETE\s+FROM\s+\w+\s+WHERE\s+id\s+(?:IN|NOT\s+IN)\s*\(\s*SELECT/i,        severity: 'medium', label: 'SQL mass DELETE via subquery' },
   { pattern: /influx\s+.*delete\s+.*--bucket/i,                                           severity: 'high',   label: 'InfluxDB bucket delete via CLI' },
   { pattern: /pg_dumpall\s+.*\|\s*(?:curl|wget|nc|ncat)\b/i,                              severity: 'high',   label: 'pg_dumpall piped to network transfer' },
@@ -94,15 +151,26 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /curl\s+[^|;&\n]*\|\s*bash\b/i, severity: 'high', label: 'curl pipe to bash' },
   { pattern: /wget\s+[^|;&\n]*\|\s*(?:ba)?sh/i, severity: 'high', label: 'wget pipe to shell' },
   { pattern: /wget\s+[^|;&\n]*\|\s*bash\b/i, severity: 'high', label: 'wget pipe to bash' },
-  { pattern: /curl\s+[^|;&\n]*\|\s*python3?/i, severity: 'high', label: 'curl pipe to python' },
-  { pattern: /wget\s+[^|;&\n]*\|\s*python3?/i, severity: 'high', label: 'wget pipe to python' },
+  // The same stdin-is-the-program test detection.ts applies to `curl … | python`
+  // — see the long note there — and mandatory here for the same first-wins
+  // reason as the SQL block above: these are broader duplicates of the core
+  // rules, so tightening only the core would have handed every released match
+  // straight back to these. Node gets the equivalent treatment: `-e` / `-p`
+  // supply the program, and `curl … | node -e '…JSON.parse(d)…'` was ten of the
+  // ten `curl pipe to node` matches in local history. An inline program that can
+  // still execute what it reads (`eval`, `Function(`, `child_process`, `vm`)
+  // keeps firing.
+  { pattern: /curl\s+[^|;&\n]*\|\s*python\d*(?:\.\d+)?\b(?![^\n|;&]{0,120}\s-{1,2}m\s*(?:json(?:\.tool)?|base64|csv|gzip|bz2|lzma|zipfile|tarfile|hashlib|pprint|tomllib|calendar)\b)(?![^\n|;&]{0,120}\s-{1,2}c\b(?![^\n]{0,240}(?:\bexec\b|\beval\b|\bcompile\b|__import__|os\.system|os\.popen|subprocess|runpy|importlib|pickle|marshal|pty\.spawn)))/i, severity: 'high', label: 'curl pipe to python' },
+  { pattern: /wget\s+[^|;&\n]*\|\s*python\d*(?:\.\d+)?\b(?![^\n|;&]{0,120}\s-{1,2}m\s*(?:json(?:\.tool)?|base64|csv|gzip|bz2|lzma|zipfile|tarfile|hashlib|pprint|tomllib|calendar)\b)(?![^\n|;&]{0,120}\s-{1,2}c\b(?![^\n]{0,240}(?:\bexec\b|\beval\b|\bcompile\b|__import__|os\.system|os\.popen|subprocess|runpy|importlib|pickle|marshal|pty\.spawn)))/i, severity: 'high', label: 'wget pipe to python' },
   { pattern: /curl\s+[^|;&\n]*\|\s*perl\b/i, severity: 'high', label: 'curl pipe to perl' },
   { pattern: /curl\s+[^|;&\n]*\|\s*ruby\b/i, severity: 'high', label: 'curl pipe to ruby' },
-  { pattern: /curl\s+[^|;&\n]*\|\s*node\b/i, severity: 'high', label: 'curl pipe to node' },
+  { pattern: /curl\s+[^|;&\n]*\|\s*node\b(?![^\n|;&]{0,120}\s-{1,2}(?:e|p|eval|print)\b(?![^\n]{0,240}(?:\beval\b|\bFunction\s*\(|child_process|\bvm\.|execSync|spawnSync)))/i, severity: 'high', label: 'curl pipe to node' },
   { pattern: /wget\s+[^|;&\n]*\|\s*perl\b/i, severity: 'high', label: 'wget pipe to perl' },
-  { pattern: /wget\s+[^|;&\n]*\|\s*node\b/i, severity: 'high', label: 'wget pipe to node' },
+  { pattern: /wget\s+[^|;&\n]*\|\s*node\b(?![^\n|;&]{0,120}\s-{1,2}(?:e|p|eval|print)\b(?![^\n]{0,240}(?:\beval\b|\bFunction\s*\(|child_process|\bvm\.|execSync|spawnSync)))/i, severity: 'high', label: 'wget pipe to node' },
   { pattern: /curl\s+-[A-Za-z]*[oO][A-Za-z]*\s+\S+\s+http[s]?:\/\//i, severity: 'high', label: 'curl download to file from URL' },
-  { pattern: /wget\s+-[A-Za-z]*O\s+\S+\s+http[s]?:\/\//i, severity: 'high', label: 'wget download to file from URL' },
+  // `-O -` writes to stdout, the documented way to pipe a key/installer into a
+  // reader; only a real output FILE means an artifact is being staged on disk.
+  { pattern: /wget\s+-[A-Za-z]*O\s+(?!-\s)\S+\s+http[s]?:\/\//i, severity: 'high', label: 'wget download to file from URL' },
   { pattern: /git\s+clone\s+http[s]?:\/\/[^&;\n]+&&\s*(?:\.\/|bash\s|sh\s)/i, severity: 'high', label: 'git clone then execute' },
   { pattern: /git\s+clone\s+http[s]?:\/\/[^&;\n]+;\s*(?:\.\/|bash\s|sh\s)/i, severity: 'high', label: 'git clone semicolon execute' },
   { pattern: /Invoke-WebRequest\s+[^|;&\n]*\|\s*Invoke-Expression/i, severity: 'high', label: 'PowerShell IWR pipe to IEX' },
@@ -226,7 +294,9 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // Category: Credential & secret theft
   // ─────────────────────────────────────────────────────────────────────────────
   // SSH private key file reads (specific key names not already caught)
-  { pattern: /\bcat\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key read via cat' },
+  // The `.pub` half of a keypair is public by design — printing it is the normal
+  // way to hand a key to a server, so only the private half counts as a read.
+  { pattern: /\bcat\b[^\n]{0,60}\.ssh\/id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)\b/i, severity: 'high', label: 'SSH private key read via cat' },
   { pattern: /\bcp\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key copy' },
   { pattern: /\bscp\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'critical', label: 'SSH private key remote copy' },
   { pattern: /\bbase64\b[^\n]{0,60}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)\b/, severity: 'high', label: 'SSH private key base64 encoding' },
@@ -256,7 +326,9 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   // netrc (not fully covered — existing rule matches .netrc path; add exfil form)
   { pattern: /\b(cat|base64|strings|curl)\b[^\n]{0,40}\/?(home\/[^/\s]+\/)?\.netrc\b/i, severity: 'high', label: 'netrc credentials file exfil' },
   // kubeconfig alternative paths / env-based theft
-  { pattern: /kubectl\s+config\s+(view|export)\b/i, severity: 'high', label: 'kubectl config view (credential dump)' },
+  // kubectl redacts every credential from `config view` unless `--raw` is given,
+  // so the bare form is a harmless "which cluster am I on" and only --raw dumps.
+  { pattern: /kubectl\s+config\s+view\b[^\n]{0,120}--raw\b/i, severity: 'high', label: 'kubectl config view (credential dump)' },
   { pattern: /\b(cat|base64|cp|curl)\b[^\n]{0,60}\.kube\/config\b/i, severity: 'high', label: 'kubeconfig file direct read/copy' },
   // High-signal secret formats in exfil context
   { pattern: /AKIA[0-9A-Z]{16}[^\n]{0,120}(curl|wget|nc|POST|exfil)/i, severity: 'critical', label: 'AWS AKIA key in exfil context' },
@@ -265,7 +337,9 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /xoxp-[A-Za-z0-9-]{40,}/i, severity: 'high', label: 'Slack user OAuth token detected' },
   { pattern: /-----BEGIN OPENSSH PRIVATE KEY-----/, severity: 'high', label: 'OpenSSH private key block detected' },
   { pattern: /sq0csp-[A-Za-z0-9_-]{40,}/i, severity: 'high', label: 'Square OAuth secret detected' },
-  { pattern: /AC[0-9a-f]{32}/, severity: 'high', label: 'Twilio Account SID detected' },
+  // An Account SID is a public account identifier that ships in client config and
+  // URLs — it authenticates nothing on its own, so it is an FYI, not a leak.
+  { pattern: /AC[0-9a-f]{32}/, severity: 'low', label: 'Twilio Account SID detected' },
   { pattern: /SK[0-9a-f]{32}/, severity: 'high', label: 'Twilio API key detected' },
   // ─────────────────────────────────────────────────────────────────────────────
   // Category: Cloud metadata SSRF & cloud-account abuse
@@ -281,9 +355,12 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /wget\b[^\n]{0,60}169\.254\.169\.254/i, severity: 'high', label: 'wget to IMDS endpoint' },
   { pattern: /http:\/\/169\.254\.169\.254\/latest\/meta-data/i, severity: 'high', label: 'AWS IMDS metadata path fetched' },
   { pattern: /http:\/\/169\.254\.169\.254\/latest\/dynamic\/instance-identity/i, severity: 'high', label: 'AWS IMDS instance identity document fetched' },
-  // AWS CLI account/identity enumeration
-  { pattern: /aws\s+sts\s+get-caller-identity/i, severity: 'high', label: 'AWS STS get-caller-identity (account enum)' },
-  { pattern: /aws\s+iam\s+list-(users|roles|groups|policies|access-keys)\b/i, severity: 'high', label: 'AWS IAM enumeration' },
+  // AWS CLI account/identity enumeration.
+  // get-caller-identity is the AWS `whoami` and list-* is read-only: both are
+  // routine reconnaissance a developer runs constantly. Kept for the timeline,
+  // tiered low so they do not crowd out the mutating calls just below.
+  { pattern: /aws\s+sts\s+get-caller-identity/i, severity: 'low', label: 'AWS STS get-caller-identity (account enum)' },
+  { pattern: /aws\s+iam\s+list-(users|roles|groups|policies|access-keys)\b/i, severity: 'low', label: 'AWS IAM enumeration' },
   { pattern: /aws\s+iam\s+create-access-key/i, severity: 'high', label: 'AWS IAM access key creation' },
   { pattern: /aws\s+iam\s+attach-(user|role|group)-policy/i, severity: 'high', label: 'AWS IAM policy attachment' },
   { pattern: /aws\s+sts\s+assume-role\b/i, severity: 'high', label: 'AWS STS assume-role (privilege escalation)' },
@@ -292,17 +369,22 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /aws\s+ec2\s+describe-(instances|security-groups|vpcs|subnets)\b/i, severity: 'medium', label: 'AWS EC2 infrastructure enumeration' },
   { pattern: /aws\s+s3\s+cp\b[^\n]{0,80}(s3:\/\/|http)/i, severity: 'medium', label: 'AWS S3 copy (potential exfil)' },
   // GCP CLI abuse
-  { pattern: /gcloud\s+auth\s+print-access-token/i, severity: 'high', label: 'GCP access token printed to stdout' },
+  // Printing an access token is the documented way to authenticate a docker login
+  // against GCR/Artifact Registry, so on its own it is routine; the critical tier
+  // still catches the token being paired with a network sink.
+  { pattern: /gcloud\s+auth\s+print-access-token/i, severity: 'low', label: 'GCP access token printed to stdout' },
   { pattern: /gcloud\s+auth\s+print-identity-token/i, severity: 'high', label: 'GCP identity token printed to stdout' },
   { pattern: /gcloud\s+iam\s+service-accounts\s+(keys\s+create|list)\b/i, severity: 'high', label: 'GCP service account key creation/list' },
   { pattern: /gcloud\s+projects\s+list\b/i, severity: 'medium', label: 'GCP project enumeration' },
   { pattern: /gcloud\s+compute\s+instances\s+list\b/i, severity: 'medium', label: 'GCP compute instance enumeration' },
-  // Azure CLI abuse
-  { pattern: /az\s+account\s+get-access-token/i, severity: 'high', label: 'Azure access token retrieved via az cli' },
-  { pattern: /az\s+ad\s+(user|group|sp)\s+list\b/i, severity: 'high', label: 'Azure AD identity enumeration' },
+  // Azure CLI. The read-only calls (token print, directory enumeration, reading a
+  // vault secret a developer is already entitled to, blob I/O) are everyday work
+  // and sit low; `role assignment create` GRANTS access and stays high.
+  { pattern: /az\s+account\s+get-access-token/i, severity: 'low', label: 'Azure access token retrieved via az cli' },
+  { pattern: /az\s+ad\s+(user|group|sp)\s+list\b/i, severity: 'low', label: 'Azure AD identity enumeration' },
   { pattern: /az\s+role\s+assignment\s+(create|list)\b/i, severity: 'high', label: 'Azure role assignment manipulation' },
-  { pattern: /az\s+keyvault\s+secret\s+(show|list|download)\b/i, severity: 'high', label: 'Azure Key Vault secret access' },
-  { pattern: /az\s+storage\s+(blob|account)\s+(upload|download|list)\b/i, severity: 'medium', label: 'Azure storage access (potential exfil)' },
+  { pattern: /az\s+keyvault\s+secret\s+(show|list|download)\b/i, severity: 'low', label: 'Azure Key Vault secret access' },
+  { pattern: /az\s+storage\s+(blob|account)\s+(upload|download|list)\b/i, severity: 'low', label: 'Azure storage access (potential exfil)' },
   // Generic SSRF probes to internal metadata ranges
   { pattern: /http:\/\/192\.168\.\d{1,3}\.\d{1,3}\/[^\s]{0,80}(metadata|credential|token|iam)/i, severity: 'medium', label: 'RFC-1918 metadata SSRF probe' },
   { pattern: /http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}\/[^\s]{0,80}(metadata|credential|token|iam)/i, severity: 'medium', label: 'RFC-1918 10.x metadata SSRF probe' },
@@ -346,7 +428,10 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /docker\s+run\s+[^\n]*--volume\s+\/:\//i, severity: 'high', label: 'docker run --volume mounting host root' },
   { pattern: /\/var\/run\/docker\.sock/i, severity: 'high', label: 'Docker socket access or mount (/var/run/docker.sock)' },
   { pattern: /docker\s+run\s+[^\n]*-v\s+\/var\/run\/docker\.sock/i, severity: 'high', label: 'docker run mounting Docker socket into container' },
-  { pattern: /kubectl\s+exec\s+[^\n]*--\s*(?:bash|sh|\/bin\/sh|\/bin\/bash)\b/i, severity: 'high', label: 'kubectl exec spawning shell in pod' },
+  // Shelling into your own pod is the single most-typed kubectl command in normal
+  // debugging; it is worth recording but not worth an alert on its own. The
+  // higher-tier variants below still cover exec into kube-system.
+  { pattern: /kubectl\s+exec\s+[^\n]*--\s*(?:bash|sh|\/bin\/sh|\/bin\/bash)\b/i, severity: 'low', label: 'kubectl exec spawning shell in pod' },
   { pattern: /kubectl\s+exec\s+-it?\s+[^\n]*--\s*(?:bash|sh)\b/i, severity: 'high', label: 'kubectl exec interactive shell in pod' },
   { pattern: /nsenter\s+(?:-t\s+1|--target\s+1)/i, severity: 'high', label: 'nsenter targeting PID 1 (container escape)' },
   { pattern: /docker\s+run\s+[^\n]*--cap-add[=\s]+SYS_ADMIN/i, severity: 'high', label: 'docker run adding SYS_ADMIN capability' },
@@ -362,7 +447,10 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /kubectl\s+create\s+(?:role|clusterrole)\s+[^\s]+\s+--verb[=\s]+\*/i, severity: 'high', label: 'kubectl creating role with wildcard verbs' },
   { pattern: /docker\s+run\s+[^\n]*--ipc[=\s]+host/i, severity: 'medium', label: 'docker run with host IPC namespace' },
   { pattern: /mount\s+-t\s+proc\s+[^\s]+\s+\/proc\b/i, severity: 'high', label: 'Mounting /proc from inside container' },
-  { pattern: /kubectl\s+apply\s+-f\s+https?:\/\/(?!raw\.githubusercontent\.com\/kubernetes\/)/i, severity: 'medium', label: 'kubectl apply from non-official remote URL' },
+  // Applying a manifest straight from a URL is how nearly every add-on documents
+  // its install (cert-manager, ingress-nginx, Contour …), so the allowlist covers
+  // the release hosts those docs actually point at; anything else is unvetted.
+  { pattern: /kubectl\s+apply\s+-f\s+https?:\/\/(?!(?:raw\.githubusercontent\.com|github\.com|objects\.githubusercontent\.com|[a-z0-9-]+\.k8s\.io|storage\.googleapis\.com|charts\.[a-z0-9.-]+)\/)/i, severity: 'medium', label: 'kubectl apply from non-official remote URL' },
   { pattern: /kubectl\s+run\s+[^\n]*--image[=\s]+[^\s]*\s+--command\s+--\s*(?:sh|bash)/i, severity: 'high', label: 'kubectl run ad-hoc pod spawning shell' },
   { pattern: /docker\s+run\s+[^\n]*-v\s+\/etc[:/]/i, severity: 'high', label: 'docker run mounting host /etc directory' },
   { pattern: /docker\s+run\s+[^\n]*-v\s+\/root[:/]/i, severity: 'high', label: 'docker run mounting host /root directory' },
@@ -370,14 +458,19 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /docker\s+run\s+[^\n]*--security-opt[=\s]+apparmor[=:]unconfined/i, severity: 'high', label: 'docker run with AppArmor unconfined' },
   { pattern: /kubectl\s+exec\s+[^\n]*-n\s+kube-system/i, severity: 'high', label: 'kubectl exec into kube-system namespace pod' },
   { pattern: /curl\s+[^\s]*kubernetes\.default\.svc/i, severity: 'high', label: 'Accessing Kubernetes API server from inside pod' },
-  { pattern: /KUBERNETES_SERVICE_HOST|KUBERNETES_PORT_443_TCP/i, severity: 'medium', label: 'Referencing Kubernetes in-cluster API env vars' },
+  // Every in-cluster client library reads these env vars, so the bare name is
+  // ordinary application code. Reaching the API server through them by hand is
+  // the part worth flagging, hence the required fetch verb.
+  { pattern: /(?:curl|wget|fetch|nc)\s[^\n]{0,120}KUBERNETES_(?:SERVICE_HOST|PORT_443_TCP)/i, severity: 'medium', label: 'Referencing Kubernetes in-cluster API env vars' },
   { pattern: /docker\s+run\s+[^\n]*--cap-add[=\s]+NET_ADMIN/i, severity: 'medium', label: 'docker run adding NET_ADMIN capability' },
   { pattern: /runc\s+--root\s+\/var\/run\/docker\/runtime/i, severity: 'high', label: 'Direct runc invocation on Docker runtime root' },
   // ── DATA EXFILTRATION ──────────────────────────────────────────────────────
   // curl posting a local file to an external host
   { pattern: /curl\s+[^|]*-d\s+@[\w.\/~-]+\s+https?:\/\/(?!localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i, severity: 'high', label: 'curl POST file to external host' },
-  // curl --data-binary @file upload
-  { pattern: /curl\s+[^|]*--data-binary\s+@[\w.\/~-]+/i, severity: 'high', label: 'curl --data-binary file upload' },
+  // curl --data-binary @file upload. --data-binary is the standard way to POST a
+  // JSON/GraphQL body from a file, so the uploaded file must itself look like
+  // credential material for this to mean exfiltration.
+  { pattern: /curl\s+[^|\n]{0,160}--data-binary\s+@[\w.\/~-]{0,60}(?:\.env|\.pem\b|\.key\b|id_rsa|id_ed25519|credentials|\.ssh\/|secret|\.p12\b)/i, severity: 'high', label: 'curl --data-binary file upload' },
   // POST to pastebin
   { pattern: /curl\s+[^|]*https?:\/\/pastebin\.com\/(api|raw)/i, severity: 'high', label: 'curl POST to pastebin' },
   // POST to webhook.site
@@ -516,7 +609,10 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /\brepeat\s+everything\s+(above|before)\b/i, severity: 'high', label: 'repeat-everything-above extraction' },
   { pattern: /\[system\]/i, severity: 'medium', label: 'instruction smuggling via [system] tag' },
   { pattern: /###\s*system\s*###/i, severity: 'medium', label: 'instruction smuggling via ###system### tag' },
-  { pattern: /<system>/i, severity: 'medium', label: 'instruction smuggling via <system> tag' },
+  // A bare <system> tag is ordinary prompt scaffolding and appears throughout
+  // documentation and test fixtures; the smuggling signal is an override verb
+  // riding inside the tag.
+  { pattern: /<system>[^\n]{0,200}(?:ignore|disregard|override|reveal|forget|you are now|new instructions|do anything now)/i, severity: 'medium', label: 'instruction smuggling via <system> tag' },
   { pattern: /do\s+anything\s+now\b/i, severity: 'high', label: 'DAN "do anything now" jailbreak' },
   { pattern: /bypass\s+your\s+safety\s+(filters|guidelines|restrictions|training)/i, severity: 'high', label: 'bypass-safety-filters jailbreak' },
   { pattern: /send\s+(the\s+)?(entire\s+)?conversation\s+to\s+https?:\/\//i, severity: 'high', label: 'exfiltration-via-injection: send conversation' },
@@ -539,7 +635,13 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /visudo|\/etc\/sudoers\.d\//i, severity: 'high', label: 'sudoers file modification' },
   { pattern: /ALL\s*=\s*\(ALL\)\s*NOPASSWD\s*:\s*ALL/i, severity: 'high', label: 'sudoers full NOPASSWD privilege grant' },
   { pattern: /echo\s+.+>>\s*\/etc\/sudoers\b/i, severity: 'high', label: 'direct sudoers file append' },
-  { pattern: /crontab\s+-[^l]/i, severity: 'high', label: 'crontab modification (non-list)' },
+  // `crontab -l` is the read-only listing and must stay quiet, including when it
+  // is piped. Everything else installs or edits a schedule — including the
+  // scripted `… | crontab -` stdin form and `crontab <file>`. The bare-dash
+  // branch uses a lookahead rather than `\s*$`: `$` is not multiline here, so a
+  // greedy `\s*` swallowed the newline and missed `| crontab -` when another
+  // command followed on the next line.
+  { pattern: /crontab\s+(?:-[^l\s]\S*|-(?=\s|$)|[~.\/]\S*)/i, severity: 'high', label: 'crontab modification (non-list)' },
   { pattern: /echo\s+.+>>\s*\/etc\/cron\./i, severity: 'high', label: 'cron file append for persistence' },
   { pattern: /echo\s+.+>>\s*\/var\/spool\/cron\//i, severity: 'high', label: 'cron spool append for persistence' },
   { pattern: /systemctl\s+enable\s+\S+\s*&&\s*systemctl\s+start/i, severity: 'medium', label: 'systemd service enable+start (persistence)' },
@@ -551,10 +653,20 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /chmod\s+(g\+s|[0-9]*[0-9][2-3][0-9][0-9])\s+\S+/i, severity: 'medium', label: 'setgid bit set on file' },
   { pattern: /\bLD_PRELOAD\s*=\s*[^\s]/i, severity: 'high', label: 'LD_PRELOAD shared-library injection' },
   { pattern: /\binsmod\s+\S+\.ko\b/i, severity: 'high', label: 'kernel module loaded via insmod' },
-  { pattern: /\bmodprobe\s+(?!--remove|--show|-r\b)\S+/i, severity: 'medium', label: 'suspicious kernel module load via modprobe' },
-  { pattern: /echo\s+.+>>\s*~?\/\.bashrc\b/i, severity: 'high', label: '.bashrc backdoor append' },
-  { pattern: /echo\s+.+>>\s*~?\/\.bash_profile\b/i, severity: 'high', label: '.bash_profile backdoor append' },
-  { pattern: /echo\s+.+>>\s*~?\/\.profile\b/i, severity: 'high', label: '.profile backdoor append' },
+  // Loading a stock in-tree module is standard host prep (`modprobe br_netfilter`
+  // is required on every Kubernetes node), unlike insmod against a loose .ko.
+  { pattern: /\bmodprobe\s+(?!--remove|--show|-r\b)\S+/i, severity: 'low', label: 'suspicious kernel module load via modprobe' },
+  // Appending to a login shell rc file is how tools install themselves — PATH and
+  // init-hook exports are the overwhelmingly common case. What distinguishes a
+  // backdoor is a network or exec primitive inside the line being persisted, so
+  // the payload must carry one to reach this tier. Plain appends are still
+  // recorded by the writer-agnostic rule further below.
+  // `nc`/`ncat` carry a left word boundary: without it the bare `nc\s` matches
+  // inside ordinary words (`resync `, `sync `), so a harmless alias append would
+  // be reported as a backdoor.
+  { pattern: /echo\s+[^\n]{0,200}?(?:curl\s|wget\s|\bnc\s|\bncat\s|\/dev\/tcp|base64\s+(?:-d|--decode)|bash\s+-i|sh\s+-i|python[0-9]?\s+-c|perl\s+-e)[^\n]{0,200}?>>\s*~?\/\.bashrc\b/i, severity: 'high', label: '.bashrc backdoor append' },
+  { pattern: /echo\s+[^\n]{0,200}?(?:curl\s|wget\s|\bnc\s|\bncat\s|\/dev\/tcp|base64\s+(?:-d|--decode)|bash\s+-i|sh\s+-i|python[0-9]?\s+-c|perl\s+-e)[^\n]{0,200}?>>\s*~?\/\.bash_profile\b/i, severity: 'high', label: '.bash_profile backdoor append' },
+  { pattern: /echo\s+[^\n]{0,200}?(?:curl\s|wget\s|\bnc\s|\bncat\s|\/dev\/tcp|base64\s+(?:-d|--decode)|bash\s+-i|sh\s+-i|python[0-9]?\s+-c|perl\s+-e)[^\n]{0,200}?>>\s*~?\/\.profile\b/i, severity: 'high', label: '.profile backdoor append' },
   { pattern: /launchctl\s+load\s+\S+\.plist/i, severity: 'high', label: 'launchd plist loaded for persistence (macOS)' },
   { pattern: /cp\s+\S+\s+~?\/Library\/LaunchAgents\//i, severity: 'high', label: 'LaunchAgent plist dropped (macOS persistence)' },
   { pattern: /cp\s+\S+\s+\/Library\/LaunchDaemons\//i, severity: 'high', label: 'LaunchDaemon plist dropped (macOS persistence)' },
@@ -562,10 +674,79 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /chmod\s+4[0-9]{3}\s+\S+/i, severity: 'high', label: 'setuid octal chmod (e.g., 4755)' },
   { pattern: /\/etc\/init\.d\/\S+\s+(enable|start)|update-rc\.d\s+\S+\s+enable/i, severity: 'medium', label: 'SysV init service persistence' },
   { pattern: /at\s+now\s+<<\s*EOF/i, severity: 'medium', label: 'at-job scheduled command (persistence)' },
-  { pattern: /echo\s+.+>>\s*~?\/\.zshrc\b/i, severity: 'high', label: '.zshrc backdoor append' },
+  { pattern: /echo\s+[^\n]{0,200}?(?:curl\s|wget\s|nc\s|ncat\s|\/dev\/tcp|base64\s+(?:-d|--decode)|bash\s+-i|sh\s+-i|python[0-9]?\s+-c|perl\s+-e)[^\n]{0,200}?>>\s*~?\/\.zshrc\b/i, severity: 'high', label: '.zshrc backdoor append' },
+  // Writer-agnostic companion to the three rules above: `echo` is only one way to
+  // append to a startup file — `cat payload >> ~/.bashrc` and
+  // `tee -a ~/.bashrc < payload` achieve the same persistence and were invisible.
+  // Any write to a login-shell startup file is worth a timeline entry, so this
+  // one keys on the TARGET rather than the payload and sits a tier lower; the
+  // rules above still escalate when the appended line carries a live payload.
+  { pattern: /(?:>>\s*|\btee\s+(?:-a|--append)\s+)['"]?[^\s'"|;&]{0,60}(?:\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|kshrc)\b|config\.fish\b|\/profile\.d\/|\/etc\/(?:profile|bashrc|zshrc|zshenv)\b)/i, severity: 'medium', label: 'shell startup file written (persistence surface)' },
   { pattern: /\bptrace\b.*PTRACE_ATTACH/i, severity: 'high', label: 'ptrace ATTACH (process injection)' },
   { pattern: /\/proc\/[0-9]+\/mem\b/i, severity: 'high', label: 'direct /proc/PID/mem access (process memory write)' },
   { pattern: /echo\s+.+>>\s*\/root\/\.ssh\/authorized_keys/i, severity: 'high', label: 'root SSH authorized_keys append' },
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Category: ClaudeSec self-protection (the monitor's own control plane)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // A security tool that cannot notice being switched off has a hole underneath
+  // everything else it claims. The PreToolUse hook refuses these writes before
+  // they run, but the hook only ever sees a tool call: a raw `fs.writeFile` from
+  // a script the agent launched, an edit made while CLAUDESEC_HOOKS_BYPASS was
+  // set, or a write from any process that is not the agent, all reach the disk
+  // unseen. These rules are the post-hoc half, so the attempt still lands on the
+  // timeline with an alert even when no hook was in the path.
+  //
+  // Every pattern is anchored on the WRITE, never on the filename. `settings.json`
+  // and `enforce-config.json` are named constantly in ordinary work — read,
+  // grepped, quoted in a commit message, listed in a diff — and a rule that fires
+  // on `cat .claude/settings.json` would be worse than no rule at all. So each one
+  // requires a redirect (`>`/`>>`), a mutating command (tee, rm, mv, cp, install,
+  // truncate, shred, chmod, ln …), an in-place editor (`sed -i`, `perl -pi`), or
+  // an inline interpreter script, with the control-plane path as its target.
+  //
+  // The tool-call rule leads because it is the most specific: it keys on the
+  // file_path of a Write/Edit span sitting next to a content-bearing key, which a
+  // Read span never carries.
+  { pattern: /"file_path"\s*:\s*"[^"\n]{0,160}(?:\.claude\/settings(?:\.local)?\.json|\.claude\/hooks\/|\.claudesec\/hooks\/|enforce-config\.json|rules-enforcement\.json|claudesec-enforce\.cjs)[^"\n]{0,40}"\s*,\s*"(?:content|old_string|new_string|edits|new_source)"/i, severity: 'high', label: 'ClaudeSec control-plane file written by an agent tool call' },
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}enforce-config\.json|\b(?:tee|rm|mv|cp|install|truncate|shred|unlink|chmod|chown|chattr|chflags|ln|ditto|rsync)\b[^\n;&|]{0,120}enforce-config\.json|\bsed\b[^\n;&|]{0,20}-i[^\n;&|]{0,100}enforce-config\.json|\b(?:python[0-9.]*|node|deno|perl|ruby)\b[^\n;&|]{0,30}\s-(?:c|e|pi)\b[^\n]{0,200}enforce-config\.json)/i, severity: 'high', label: 'ClaudeSec enforcement config overwritten (enforce-config.json)' },
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}rules-enforcement\.json|\b(?:tee|rm|mv|cp|install|truncate|shred|unlink|chmod|chown|chattr|chflags|ln|ditto|rsync)\b[^\n;&|]{0,120}rules-enforcement\.json|\bsed\b[^\n;&|]{0,20}-i[^\n;&|]{0,100}rules-enforcement\.json|\b(?:python[0-9.]*|node|deno|perl|ruby)\b[^\n;&|]{0,30}\s-(?:c|e|pi)\b[^\n]{0,200}rules-enforcement\.json)/i, severity: 'high', label: 'ClaudeSec rule snapshot overwritten (rules-enforcement.json)' },
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}(?:claudesec-enforce\.cjs|\.claudesec\/hooks\/|protected-paths\.json)|\b(?:tee|rm|mv|cp|install|truncate|shred|unlink|chmod|chown|chattr|chflags|ln|ditto|rsync)\b[^\n;&|]{0,120}(?:claudesec-enforce\.cjs|\.claudesec\/hooks\/|protected-paths\.json)|\bsed\b[^\n;&|]{0,20}-i[^\n;&|]{0,100}(?:claudesec-enforce\.cjs|\.claudesec\/hooks\/|protected-paths\.json)|\b(?:python[0-9.]*|node|deno|perl|ruby)\b[^\n;&|]{0,30}\s-(?:c|e|pi)\b[^\n]{0,200}(?:claudesec-enforce\.cjs|\.claudesec\/hooks\/|protected-paths\.json))/i, severity: 'high', label: 'ClaudeSec enforcement hook or artefact directory modified' },
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}\.claude\/(?:settings(?:\.local)?\.json|hooks\/)|\b(?:tee|rm|mv|cp|install|truncate|shred|unlink|chmod|chown|chattr|chflags|ln|ditto|rsync)\b[^\n;&|]{0,120}\.claude\/(?:settings(?:\.local)?\.json|hooks\/)|\bsed\b[^\n;&|]{0,20}-i[^\n;&|]{0,100}\.claude\/(?:settings(?:\.local)?\.json|hooks\/)|\b(?:python[0-9.]*|node|deno|perl|ruby)\b[^\n;&|]{0,30}\s-(?:c|e|pi)\b[^\n]{0,200}\.claude\/(?:settings(?:\.local)?\.json|hooks\/))/i, severity: 'high', label: 'Claude Code hook registration modified (.claude/settings.json)' },
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}\.claudesec\/(?:audit-key|audit-anchor\.json)|\b(?:tee|rm|mv|cp|install|truncate|shred|unlink|chmod|chown|chattr|chflags|ln|ditto|rsync)\b[^\n;&|]{0,120}\.claudesec\/(?:audit-key|audit-anchor\.json)|\bsed\b[^\n;&|]{0,20}-i[^\n;&|]{0,100}\.claudesec\/(?:audit-key|audit-anchor\.json))/i, severity: 'high', label: 'ClaudeSec audit signing key or anchor tampered with' },
+  // The launchd plist / systemd unit is what restarts the collector after a
+  // reboot; rewriting or deleting it is a durable way to keep it down.
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}|\b(?:tee|rm|mv|cp|install|truncate|shred|unlink|chmod|chown|chattr|chflags|ln|ditto|rsync|plutil|defaults)\b[^\n;&|]{0,120})(?:Launch(?:Agents|Daemons)\/[^\s/'"]{0,60}claudesec[^\s/'"]{0,30}\.plist|systemd\/[^\s/'"]{0,30}\/[^\s/'"]{0,40}claudesec[^\s/'"]{0,30}\.(?:service|timer))/i, severity: 'high', label: 'ClaudeSec service definition (launchd plist / systemd unit) modified' },
+  // Stopping the collector by label rather than by file — none of these name the
+  // unit file, and all of them end the recording just as effectively.
+  { pattern: /\b(?:launchctl\s+(?:unload|bootout|disable|remove|kill)|systemctl(?:\s+--user)?\s+(?:stop|disable|mask)|pkill\s+(?:-\S{1,8}\s+){0,3}|killall\s+(?:-\S{1,8}\s+){0,2})[^\n;&|]{0,120}claudesec/i, severity: 'high', label: 'ClaudeSec service stopped or disabled' },
+  // The tool's own teardown commands. Inside an agent session these never run:
+  // the self-protection floor refuses `claudesec uninstall-hook`, `uninstall`
+  // and `stop` in every mode, precisely so an agent cannot switch off the thing
+  // watching it. But the floor only sees what an agent submits. Run in a plain
+  // terminal — the supported, legitimate way to remove the tool — the same
+  // command left NO trace anywhere: no alert, no audit row, nothing to answer
+  // "when did enforcement stop?" with.
+  //
+  // Deliberately `medium`, not `high`. High and critical bake to `action: block`
+  // in the enforcement snapshot, and the only population this rule can still
+  // reach is the operator uninstalling software they own on a machine they
+  // control. Refusing that would be both wrong and futile — they can uninstall
+  // it without an agent in the room. The requirement here is the record, not the
+  // refusal, and `medium` puts the event in the alert feed and the audit trail
+  // where an incident timeline can find it.
+  //
+  // The subcommand must follow the binary, so `grep uninstall-hook README.md`
+  // and prose about the command stay silent; the optional runner prefix covers
+  // the ways the CLI is actually reached (`npx`, `pnpm exec`, an absolute path,
+  // or `node cli/init.mjs` straight out of a checkout).
+  { pattern: /(?:^|[\n;&|`(]\s*|\s)(?:(?:npx|bunx|sudo|node|tsx|pnpm|yarn|npm)\s+(?:exec\s+|dlx\s+|run\s+)?)?(?:[^\s;&|'"]{0,80}\/)?(?:claudesec|init\.m?[jt]s)\s+(?:uninstall-hook|uninstall|stop)\b/i, severity: 'medium', label: 'ClaudeSec enforcement uninstalled or stopped from the shell' },
+  // Enforcement disabled for a whole command via the environment. The hook records
+  // its own bypasses, but a bypass exported for a SCRIPT never reaches the hook.
+  // The lead must be a separator, a quote (a serialised `"command":"VAR=1 …"`), or
+  // export/env — never a bare space, so prose that merely documents the variable
+  // ("Bypass: CLAUDESEC_HOOKS_BYPASS=1") stays silent.
+  { pattern: /(?:^|[\n;&|"]|\bexport\s+|\benv\s+)\s*CLAUDESEC_(?:HOOKS_BYPASS|DISABLE_SCRUB)\s*=\s*1\b/, severity: 'medium', label: 'ClaudeSec enforcement or scrubbing disabled via environment' },
 
   // ── CRITICAL: active secret EXFILTRATION (credential transmitted off-machine) ──
   // A secret merely present in a file stays 'high'; these patterns each pair a
@@ -583,4 +764,93 @@ export const EXTRA_SEVERITY_RULES: ExtraRule[] = [
   { pattern: /open\s*\(\s*['"][^'"\n]{0,80}(\.env|credentials|id_rsa|\.pem)[^'"\n]{0,20}['"][^\n]{0,200}(requests\.(post|put)|urllib\.request\.urlopen|urlopen)\s*\(/i, severity: 'critical', label: 'Python reads credential file then POSTs to network' },
   { pattern: /\bcat\s+[^|\n]{0,40}\.env(\.(local|production|prod|dev|staging))?[\s'";>][^|\n]{0,20}\|\s*(curl|wget|nc|ncat)\b/i, severity: 'critical', label: '.env file read piped to network sink' },
   { pattern: /curl\s+[^|\n]{0,80}(--upload-file|-T)\s+[^|\n]{0,60}(id_(rsa|ed25519|ecdsa|dsa)|\.pem)\b/i, severity: 'critical', label: 'curl upload of SSH private key / PEM' },
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Category: staging, persistence and evasion primitives
+  // ─────────────────────────────────────────────────────────────────────────────
+  // The exfiltration rules above all describe a single step: a credential is read
+  // and transmitted in the same command. Real theft rarely looks like that. The
+  // credential is COPIED somewhere unremarkable first, and the harmless-looking
+  // copy leaves later — by which point the outbound half carries no credential
+  // shape at all and nothing here can see it. The two staging rules below close
+  // that half, and the rest of the block covers execution primitives that the
+  // engine could name but had no pattern for.
+  //
+  // Every one of these is anchored on the dangerous TARGET, never on the verb.
+  // `cp -r`, `tar` and `pkill` are among the most common commands in ordinary
+  // work — 22, 12 and 173 occurrences respectively in the local history these
+  // patterns were tuned against — so a verb-anchored rule would fire on routine
+  // builds all day and be worse than no rule at all.
+
+  // Staging, part 1: the whole credential STORE copied somewhere else. A single
+  // key file is already covered ('SSH private key file access', 'AWS credentials
+  // file read'), but the directory as a unit was not: `cp -r ~/.ssh /tmp/x` and
+  // `cp -r ~/.aws /tmp/x` both scored `none`. The path must be the complete
+  // argument — a trailing filename or a `.sshconfig`-style suffix does not match,
+  // so `cp ~/.ssh/id_rsa.pub authorized_keys` is left to the file-level rules —
+  // and a destination argument is required, so `ls`-style inspection is untouched.
+  // Blocking tier: copying an entire credential store to an unrelated path has no
+  // benign form, and the copy is what makes the later exfil unrecognisable.
+  { pattern: /\b(?:cp|mv|ditto|cpio|rsync)\b(?:\s+-{1,2}[A-Za-z][\w-]{0,14}){0,4}\s+['"]?(?:[\w.$~-]{0,40}(?:\/[\w.$-]{1,24}){0,4}\/)?\.(?:ssh|aws|gnupg|kube|azure|config\/gcloud)\/?['"]?(?=\s+\S)/i, severity: 'high', label: 'Credential store directory copied to another path' },
+
+  // Staging, part 2: the same move by archive. `tar czf keys.tgz ~/.ssh` produces
+  // one innocuous-looking file that can be uploaded hours later as a "build
+  // artefact". The archive verbs are deliberately broad (tar/zip/7z/zstd/pax)
+  // because the target carries the whole signal: over the local history every
+  // real archive command operated on `dist/`, a release tarball or a downloaded
+  // `.tgz`, and not one named a credential directory.
+  { pattern: /\b(?:tar|gtar|bsdtar|zip|7z|7za|zstd|pax)\b[^\n;&|]{0,120}?[\s'"=](?:[\w.$~-]{0,40}(?:\/[\w.$-]{1,24}){0,4}\/)?\.(?:ssh|aws|gnupg|kube|azure|config\/gcloud)(?:\/[^\s'";&|]{0,40})?(?:['"]|\s|$)/i, severity: 'high', label: 'Credential store archived into a tarball/zip' },
+
+  // A git hook is arbitrary code that the developer executes themselves on their
+  // next commit, push or checkout — persistence that needs no scheduler and no
+  // privilege. Anchored on the WRITE, because reading and linting hooks is normal
+  // (`ls -la .git/hooks/`, `bash -n .git/hooks/pre-push`, `chmod +x` on a hook you
+  // just installed all appear in ordinary work and must stay silent). The trailing
+  // `(?![\w.-])` forces the hook name to end at the match, which is what excludes
+  // git's own inert `*.sample` stubs.
+  // Alert tier, not blocking: hook installers legitimately write here, and the
+  // sequence engine already escalates 'Git hook installed then triggered' to high
+  // once a hook-executing git operation follows the write.
+  { pattern: /(?:>>?\s*['"]?[^\s'";&|]{0,120}|\b(?:tee|cp|mv|install|ln|ditto|rsync|curl|wget)\b[^\n;&|]{0,120})\.git\/hooks\/[\w-]{1,30}(?![\w.-])/i, severity: 'medium', label: 'Git hook script written (repo-local code execution)' },
+  { pattern: /"file_path"\s*:\s*"[^"\n]{0,200}\.git\/hooks\/[\w-]{1,30}"\s*,\s*"(?:content|old_string|new_string|edits|new_source)"/i, severity: 'medium', label: 'Git hook script written by an agent tool call' },
+
+  // The perl reverse shell. The bash, python, ruby and PowerShell forms were all
+  // covered; perl was only caught when the command happened to contain both
+  // "socket" and "INET" ('Perl socket reverse shell'), which the two most common
+  // payloads do not — `perl -MSocket -e '...'` and `perl -e 'use Socket; ...'`
+  // both scored `none`. Either the socket module is named on the command line, or
+  // the inline script imports it / opens a shell.
+  { pattern: /\bperl\b[^\n;|&]{0,60}(?:\s-[A-Za-z]{0,3}M(?:IO::)?Socket[\w:]{0,16}\b|\s-[A-Za-z]{0,3}[eE]\s{0,4}['"][^\n]{0,300}?(?:\buse\s+Socket\b|IO::Socket::INET|\bsockaddr_in\s*\(|\bPF_INET\b|\bexec\s*\(?\s*['"]?\/bin\/(?:ba|z|k)?sh\b))/i, severity: 'high', label: 'perl inline socket/shell one-liner (reverse shell)' },
+
+  // AppleScript is a full execution and automation surface on macOS, and none of
+  // it was covered. Three tiers, because `osascript` spans the whole range:
+  //   • `do shell script` is `sh -c` by another name — and `with administrator
+  //     privileges` is `sudo` with a system password prompt. Blocking tier.
+  //   • Driving another application, synthesising keystrokes or putting a
+  //     credential prompt on screen is how AppleScript reaches Keychain, Mail and
+  //     the browser without touching a file the engine watches. Alert tier.
+  //   • Any other inline script is audit-trail only: quitting an app by name is
+  //     ordinary automation and appears in the local history exactly that way.
+  { pattern: /\bosascript\b[^\n]{0,200}?(?:do\s+shell\s+script|with\s+administrator\s+privileges)/i, severity: 'high', label: 'AppleScript shell execution via osascript' },
+  { pattern: /\bosascript\b[^\n]{0,200}?(?:System\s+Events|\bkeystroke\s|display\s+dialog|\bkeychain\b|tell\s+application\s+['"](?:Terminal|iTerm|Mail|Messages|Safari|Google Chrome|Notes|Keychain Access))/i, severity: 'medium', label: 'AppleScript drives another app or prompts the user (osascript)' },
+  { pattern: /\bosascript\b(?:\s+-[\w-]{1,12}(?:\s+[\w.:-]{1,20})?){0,3}\s+-e\b/i, severity: 'low', label: 'Inline AppleScript executed via osascript' },
+
+  // `/proc/<pid>/environ` is the process environment — where API tokens live once
+  // a service has started. The ordinary way to read it (`env`, `printenv`) is
+  // already an alert; reaching for `/proc` instead is the evasive form of the same
+  // read, and against another PID it harvests a different process's secrets
+  // entirely. No shell workflow reads this file, so it takes the blocking tier
+  // alongside the existing `/proc/<pid>/mem` rule.
+  { pattern: /\/proc\/(?:self|thread-self|[0-9]{1,7}|\$\{?[A-Za-z_][\w]{0,20}\}?)\/environ\b/i, severity: 'high', label: 'Process environment read via /proc/<pid>/environ' },
+
+  // Killing the collector stops the recording without touching a single file the
+  // self-protection rules above watch. Those rules key on the string `claudesec`,
+  // which the process name does not have to contain: ClaudeSec's own entrypoint is
+  // `tsx server/index.ts`, and an OTLP collector is `otelcol`.
+  // Alert tier, and deliberately NOT blocking: over the local history every one of
+  // the fifteen matches was the maintainer restarting their own dev server. That
+  // is genuinely indistinguishable from an agent silencing the monitor by regex
+  // alone — the durable control is the self-protection floor, which can compare
+  // the target against the service that is actually running.
+  { pattern: /\b(?:pkill|killall|kill)\b[^\n;&|]{0,60}?(?:server\/index\.(?:ts|js|mjs|cjs)|\botelcol[\w-]{0,16}|\botel-collector\b|\bopentelemetry-collector\b)/i, severity: 'medium', label: 'Observability collector process killed by name' },
 ];

@@ -18,8 +18,17 @@
  * So this test pins the *behavioural contract* of the two prune queries against
  * a throwaway temp SQLite DB seeded with synthetic spans/sessions. The SQL below
  * is copied verbatim from server/index.ts pruneSpans() (age-based session sweep
- * + count-based oldest-by-startNano delete). If the production query changes,
- * this copy must change with it — see REFACTOR note in the summary.
+ * + count-based delete of the oldest *out-of-window* spans by startNano). If the
+ * production query changes, this copy must change with it — see REFACTOR note in
+ * the summary.
+ *
+ * ── Age floor takes precedence over the count cap (compliance) ──
+ * Count-based pruning must NEVER evict a span that is still inside the retention
+ * window. Retention is a hard floor (EU AI Act: keep 6 months); the count cap is
+ * a soft ceiling that only ever reclaims rows that are ALSO past the age cutoff.
+ * Consequence: when in-window data alone exceeds CLAUDESEC_MAX_SPANS the DB is
+ * allowed to exceed the count cap — the floor wins. Age-based pruning is what
+ * actually bounds growth.
  *
  * DB DISCIPLINE: a fresh DB is created under os.tmpdir() and deleted in a
  * finally block. The maintainer's real ~/.claudesec/spans.db is NEVER opened.
@@ -96,13 +105,23 @@ function pruneSpans(
     prunedByAge += deleted;
   }
 
-  // Count-based: keep only the most recent maxSpans spans (oldest by startNano go).
+  // Count-based: reclaim the oldest spans down to maxSpans, but NEVER evict a
+  // span still inside the retention window. The age floor (above) is a hard
+  // compliance floor; the count cap is a soft ceiling that may only reclaim rows
+  // whose own startNano is already past the cutoff. When in-window data alone
+  // exceeds maxSpans the DB is allowed to stay over the cap — the floor wins.
+  // startNano is a Unix-epoch *nanosecond* timestamp; compare numerically.
+  const cutoffNano = String((Date.now() - retentionDays * 24 * 60 * 60 * 1000) * 1e6);
   const totalSpans = (db.prepare('SELECT COUNT(*) as c FROM spans').get() as { c: number }).c;
   if (totalSpans > maxSpans) {
     const excess = totalSpans - maxSpans;
     const result = db.prepare(
-      `DELETE FROM spans WHERE rowid IN (SELECT rowid FROM spans ORDER BY startNano ASC LIMIT ?)`,
-    ).run(excess);
+      `DELETE FROM spans WHERE rowid IN (
+         SELECT rowid FROM spans
+         WHERE CAST(startNano AS INTEGER) < CAST(? AS INTEGER)
+         ORDER BY startNano ASC LIMIT ?
+       )`,
+    ).run(cutoffNano, excess);
     prunedByCount = result.changes;
   }
 
@@ -115,6 +134,12 @@ function pruneSpans(
 
 function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+// startNano is a Unix-epoch nanosecond timestamp (string). Produce realistic
+// values so the count cap's age-floor (startNano vs cutoff) can be exercised.
+function daysAgoNano(days: number): string {
+  return String((Date.now() - days * 24 * 60 * 60 * 1000) * 1e6);
 }
 
 function seedSession(db: Database.Database, traceId: string, createdAt: string): void {
@@ -131,6 +156,14 @@ function countSpans(db: Database.Database): number {
   return (db.prepare('SELECT COUNT(*) as c FROM spans').get() as { c: number }).c;
 }
 
+// Truncate all three tables between cases. Uses prepared statements (not a
+// multi-statement batch) so each table reset is an isolated, parameter-free run.
+function resetTables(db: Database.Database): void {
+  for (const t of ['spans', 'sessions', 'alerts']) {
+    db.prepare(`DELETE FROM ${t}`).run();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -140,10 +173,18 @@ const tmpFile = path.join(
   `csec-retention-${process.pid}-${Date.now()}.db`,
 );
 
+// Sandbox the home dir too: should this test ever import server/index.ts, that
+// module mirrors the enforce mode to <CLAUDESEC_HOME>/hooks/enforce-config.json
+// at load. Pointing CLAUDESEC_HOME at a throwaway temp dir guarantees the real
+// ~/.claudesec/hooks is never touched. Set before any server-side import.
+process.env.CLAUDESEC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-retention-home-'));
+const HOME_DIR = process.env.CLAUDESEC_HOME;
+
 function cleanup(): void {
   for (const f of [tmpFile, `${tmpFile}-wal`, `${tmpFile}-shm`]) {
     try { fs.rmSync(f, { force: true }); } catch {}
   }
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 }
 
 try {
@@ -176,24 +217,61 @@ try {
       assert.strictEqual(alerts, 0, 'alerts for old sessions should be deleted');
     });
 
-    // ── Count-based pruning ────────────────────────────────────────────────
-    // 10 fresh spans, cap at 4 → 6 oldest (lowest startNano) pruned.
-    db.exec('DELETE FROM spans; DELETE FROM sessions; DELETE FROM alerts;');
-    seedSession(db, 'live', daysAgoIso(0));
+    // ── Age floor wins over the count cap (compliance) ─────────────────────
+    // 10 spans, all timestamped 1 day ago — well inside a 30d window. Cap at 4.
+    // The count cap must NOT evict in-window data: prunedByCount === 0 and the
+    // DB is allowed to stay over the cap. This is the EU AI Act floor in action.
+    resetTables(db);
+    seedSession(db, 'live', daysAgoIso(1));
     for (let i = 0; i < 10; i++) {
-      // startNano lexicographically sortable: zero-padded so '2' < '10' holds.
-      seedSpan(db, `c${i}`, 'live', String(1000 + i).padStart(6, '0'));
+      seedSpan(db, `c${i}`, 'live', daysAgoNano(1));
     }
 
-    check('count prune removes the excess oldest spans', () => {
-      const { prunedByCount } = pruneSpans(db, 30, 4);
-      assert.strictEqual(prunedByCount, 6, `expected 6 excess removed, got ${prunedByCount}`);
-      assert.strictEqual(countSpans(db), 4, 'should keep exactly maxSpans');
+    check('count prune NEVER evicts spans inside the retention window', () => {
+      const { prunedByAge, prunedByCount } = pruneSpans(db, 30, 4);
+      assert.strictEqual(prunedByAge, 0, 'nothing is past the age cutoff');
+      assert.strictEqual(prunedByCount, 0, `in-window spans must survive the cap, got ${prunedByCount}`);
+      assert.strictEqual(countSpans(db), 10, 'the DB stays over the cap — the age floor wins');
     });
-    check('count prune keeps the NEWEST spans (highest startNano)', () => {
+
+    // ── Count-based pruning of OLD spans ───────────────────────────────────
+    // 10 spans all timestamped ~40 days ago (past a 30d window). Cap at 4 → the
+    // 6 oldest out-of-window spans are reclaimed, newest 4 kept. This is the
+    // count cap doing its real job: trimming aged overflow that the session
+    // sweep didn't cover, without ever touching in-window data.
+    resetTables(db);
+    for (let i = 0; i < 10; i++) {
+      // Strictly increasing nanos so "oldest" is well-defined. All > 30 days old.
+      seedSpan(db, `o${i}`, 'gone', daysAgoNano(40 - i * 0.1));
+    }
+
+    check('count prune reclaims the excess OLDEST out-of-window spans', () => {
+      const { prunedByCount } = pruneSpans(db, 30, 4);
+      assert.strictEqual(prunedByCount, 6, `expected 6 aged-overflow spans removed, got ${prunedByCount}`);
+      assert.strictEqual(countSpans(db), 4, 'should keep exactly maxSpans of the out-of-window data');
+    });
+    check('count prune keeps the NEWEST out-of-window spans', () => {
       const remaining = (db.prepare('SELECT spanId FROM spans ORDER BY startNano ASC').all() as { spanId: string }[])
         .map(r => r.spanId);
-      assert.deepStrictEqual(remaining, ['c6', 'c7', 'c8', 'c9'], `kept wrong spans: ${remaining.join(',')}`);
+      assert.deepStrictEqual(remaining, ['o6', 'o7', 'o8', 'o9'], `kept wrong spans: ${remaining.join(',')}`);
+    });
+
+    // ── Mixed in-window + out-of-window, over cap ──────────────────────────
+    // 6 stale (out-of-window) + 6 fresh (in-window) = 12 spans, cap at 4. Only
+    // the 6 stale are eligible; the 6 fresh are protected by the age floor. The
+    // cap wants to drop 8, but only 6 are eligible → 6 removed, DB lands at 6
+    // (all fresh), still over the cap. The floor wins.
+    resetTables(db);
+    for (let i = 0; i < 6; i++) seedSpan(db, `s${i}`, 'mix', daysAgoNano(40 - i * 0.1));
+    for (let i = 0; i < 6; i++) seedSpan(db, `f${i}`, 'mix', daysAgoNano(1));
+
+    check('count prune trims only the out-of-window tail, keeps in-window over cap', () => {
+      const { prunedByCount } = pruneSpans(db, 30, 4);
+      assert.strictEqual(prunedByCount, 6, `only the 6 stale spans are eligible, got ${prunedByCount}`);
+      assert.strictEqual(countSpans(db), 6, 'the 6 in-window spans survive even above the cap');
+      const remaining = (db.prepare('SELECT spanId FROM spans ORDER BY spanId ASC').all() as { spanId: string }[])
+        .map(r => r.spanId);
+      assert.deepStrictEqual(remaining, ['f0', 'f1', 'f2', 'f3', 'f4', 'f5'], `wrong survivors: ${remaining.join(',')}`);
     });
 
     // ── No-op cases ────────────────────────────────────────────────────────

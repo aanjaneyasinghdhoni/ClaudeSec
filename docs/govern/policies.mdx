@@ -1,0 +1,137 @@
+---
+title: "Governance"
+description: "Twelve plain-language policies evaluated against your own alert and enforcement history — Held, Violated, or Not provable."
+icon: "clipboard-check"
+---
+
+## What this is
+
+Every other part of ClaudeSec answers "what happened." **Govern** answers a different question:
+"is this install actually upholding the handful of things I'd tell an auditor it does?" It takes
+12 plain-English sentences — *"agents must not read credential stores," "no destructive commands
+against the system or its data"* — and evaluates each one against evidence that already exists in
+your database: alerts, the enforcement block-feed, rule overrides, suppressions, and the audit
+log. Nothing here is a new detector or a new enforcement point. It's a reading of what the rest
+of the product already recorded.
+
+<Note>
+  There is no aggregate score and no percentage across the twelve policies, on purpose. An average
+  would hide a catastrophic-floor gap behind a noisy low-severity rule. Read each row on its own.
+</Note>
+
+---
+
+## The three-word status
+
+Every policy reads one of three ways — never a score:
+
+| Status | What it means |
+|---|---|
+| **Held** | Nothing ClaudeSec observed matched a rule ClaudeSec had enabled, inside the window ClaudeSec still holds |
+| **Violated** | At least one alert or enforcement block matched this policy's backing rules in the window |
+| **Not provable** | The policy cannot honestly be called Held or Violated — see below |
+
+**"Held" is not "it did not happen."** It means *nothing this install was watching for, and able to
+see, was seen*. Four independent gaps can each make a policy read Held while the underlying
+activity still occurred: an agent that never emitted telemetry to ClaudeSec is invisible; a rule
+that's disabled or suppressed can't match; the opt-in enforcement hook can be uninstalled without
+anything recording that it happened; and retention prunes older evidence, so a violation before
+the window opened leaves no trace inside it.
+
+**"Not provable" is the load-bearing status.** It's what keeps this page from being the kind of
+compliance dashboard that shows green because it simply wasn't looking. A policy reads Not
+provable when one of its backing rules is disabled or suppressed, when the policy needs the
+opt-in enforcement hook to block and the hook isn't installed or its registration can't be
+determined, or when the retained data doesn't cover the full window being asked about. A genuine
+match always outranks these caveats — a violation found inside a partially-covered window is
+still reported as Violated, with the coverage gap disclosed alongside it.
+
+---
+
+## The twelve policies
+
+Each policy is backed by a fixed, representative (not exhaustive) list of existing rule labels,
+and carries an **enforcement class** describing whether its backing blocks on the always-on
+floor, only in `enforce` mode, or never blocks at all (detect-only):
+
+| ID | Policy | Enforcement |
+|---|---|---|
+| P1 | Agents must not read credential stores | Floor (default protected paths) |
+| P2 | Credentials must never leave this machine | Floor for the two highest-precision patterns; enforce for the rest of the critical tier |
+| P3 | No destructive commands against the system or its data | Floor for the catastrophic subset; enforce for the database-destruction tail |
+| P4 | Agents must not execute code fetched from the network | Floor for `curl \| sh` and its direct shell-pipe variants; enforce for the rest |
+| P5 | Dependencies come only from trusted registries | Enforce only — nothing here is on the always-on floor |
+| P6 | Agents must not establish persistence or escalate privilege | Enforce |
+| P7 | Agents must not open outbound control channels | Floor for `nc -e` and `/dev/tcp` reverse shells; enforce for the rest |
+| P8 | Internal networks and cloud metadata are out of bounds | Floor for a fetch to metadata/link-local; enforce for loopback/private ranges |
+| P9 | Untrusted content must not redirect the agent (prompt injection) | Detect only — never blocks |
+| P10 | Agents must not touch the security control plane | Floor — always, in either mode |
+| P11 | Recorded activity is kept for the stated window, and no longer | Configuration policy (retention), not rule-backed |
+| P12 | Recorded activity stays on this machine, with secrets redacted before storage | Configuration policy (local-only + scrubbing), not rule-backed |
+
+P11 and P12 are evaluated from configuration state (the retention profile, the scrub setting, the
+bind host, the DB file's permission bits, and the configured egress sinks) rather than from rule
+matches — they're kept visibly separate as "configuration policies" rather than folded into the
+same ten rows.
+
+P10 guards the other eleven: if it reads Violated, treat every other policy's Held status with
+proportionally less confidence, since the guard that would have proven the rest was itself
+bypassed.
+
+---
+
+## The two biggest gaps, stated up front
+
+**ClaudeSec watches the shell an agent has on this machine.** It has no visibility into the
+agent's *outputs* — whether generated code is biased, wrong, unsafe, or harmful downstream;
+whether a human reviewed it; where the underlying model came from. That's roughly the entire
+"who is affected and how" axis of ISO 42001 and NIST AI RMF. This layer covers roughly one axis
+of a two-axis standard.
+
+**NIST's GOVERN function is almost entirely untouched.** Nineteen of its twenty-one
+subcategories — accountability, roles, cross-functional collaboration, escalation, risk
+tolerance, the regulatory register — are people and paper. A runtime observer cannot write them.
+
+---
+
+## Framework coverage, honestly
+
+Measured against the same frameworks [`COMPLIANCE.md`](https://github.com/aanjaneyasinghdhoni/ClaudeSec/blob/master/COMPLIANCE.md) maps in full:
+
+| Framework | Coverage claimed |
+|---|---|
+| NIST AI RMF 1.0 subcategories | ~10 of 72 |
+| ISO/IEC 42001:2023 Annex A controls | 7 of 38 |
+| ISO/IEC 42001:2023 mandatory clauses (4–10) | **0 of 7** |
+
+This is not "ISO 42001 compliant," "NIST AI RMF certified," or "audit-ready." It's one system
+reporting on itself, mapped against the frameworks it actually touches. See
+[`COMPLIANCE.md`](https://github.com/aanjaneyasinghdhoni/ClaudeSec/blob/master/COMPLIANCE.md) for
+the full shared-responsibility model and what the deploying organization still owns.
+
+---
+
+## The evidence pack
+
+`GET /api/governance/evidence` downloads a dated snapshot: the coverage strip, all 12 policy
+statuses with their reasons, and the underlying alert / enforcement-log / audit-log rows the
+statuses were computed from, as both a summary and raw CSV. See the
+[Governance API](/api-reference/governance) for the full shape.
+
+<Note>
+  The pack carries an Ed25519 signature over its exact bytes — the same signing key
+  [`/api/audit/public-key`](/api-reference/audit-log#get-apiauditpublic-key) already exposes — so
+  a third party can verify it wasn't altered after download. Exporting never creates that key: on
+  an install that has none, the pack downloads with `verification.signed: false` and a reason
+  string, rather than minting a fresh identity at export time and claiming a signature no recorded
+  key ever anchored. Chain integrity for the underlying spans, audit log, and enforcement log is
+  independent of this and verifiable at any time via `GET /api/audit/verify`.
+</Note>
+
+## Viewing it in the dashboard
+
+Select **Govern** in the left navigation rail. The header shows the coverage strip (data window,
+mode, hook registration, chain-verify status, agents seen); each policy is a row you can expand
+for its evidence description, its "does not prove" caveats, and the framework identifiers it
+contributes to. Choose the evaluation window (days) from the same screen — it's passed through as
+`?days=` to both API endpoints.

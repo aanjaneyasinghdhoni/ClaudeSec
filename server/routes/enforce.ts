@@ -1,22 +1,10 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
-import type { RouteContext } from './context.js';
+import { CATASTROPHIC_DETECTION_LABELS } from '../detection.js';
+import type { RouteContext, EnforceLogEvent } from './context.js';
 import { resolveEffectiveMode, detectHookStatus } from '../enforceStatus.js';
 
 type EnforceAction = 'alert' | 'block';
-
-interface EnforceLogEvent {
-  ts:         number;
-  mode:       string;   // 'monitor' | 'enforce'
-  label:      string;
-  severity:   string;
-  command:    string;   // already redacted/truncated by the hook
-  wouldBlock: boolean;
-  // Whether the call was actually DENIED (catastrophic floor or enforce rule),
-  // vs. a monitor "would-block". The catastrophic floor blocks even while mode
-  // is 'monitor', so this can be true regardless of `mode` — the UI keys off it.
-  blocked:    boolean;
-}
 
 const setConfig = db.prepare(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`);
 
@@ -55,8 +43,9 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
 
   // ── Enforcement event log (PreToolUse hook feed) ──────────────────────────
   // The opt-in claudesec-enforce.cjs hook POSTs "would-block" / "blocked"
-  // events here so the dashboard can show enforcement activity. Stored in an
-  // in-memory ring buffer (no DB writes); broadcast live via socket.
+  // events here so the dashboard can show enforcement activity. Persisted to a
+  // capped SQLite table (server/enforceLogStore.ts) with a tamper-evident hash
+  // chain, so the feed survives restart; also broadcast live via socket.
   app.post('/api/enforce-log', (req, res) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const evt: EnforceLogEvent = {
@@ -140,6 +129,16 @@ export function registerEnforceRoutes(app: Express, ctx: RouteContext): void {
         if (typeof k !== 'string' || !k) continue;
         if (v !== 'alert' && v !== 'block') {
           return res.status(400).json({ error: `override for "${k}" must be "alert" or "block"` }) as any;
+        }
+        // SAFETY: catastrophic-floor rules can never be demoted to monitor-only.
+        // This mirrors the rule_overrides guard (which rejects disabling them) so
+        // the action-override surface can't be used to silence the catastrophic
+        // events the tool exists to block. Record the rejected attempt.
+        if (v === 'alert' && CATASTROPHIC_DETECTION_LABELS.has(k)) {
+          auditLog?.(req, 'enforce.override.rejected', k, { label: k, reason: 'catastrophic-floor rule' });
+          return res.status(400).json({
+            error: `"${k}" is a catastrophic-floor rule and cannot be set to monitor`,
+          }) as any;
         }
         clean[k.slice(0, 256)] = v;
       }

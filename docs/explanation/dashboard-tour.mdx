@@ -1,0 +1,60 @@
+---
+title: "Tour of the dashboard"
+description: "What each screen is for, and when to use it — Timeline, Orchestration, Repositories, Search, Heatmap, Alerts, Processes, Costs, Harnesses, and Settings."
+---
+
+The dashboard groups its screens into five categories — **Observe**, **Detect**, **Protect**, **Review**, and **Manage**. This page covers what each screen is *for* and when you'd reach for it. Every view is deep-linkable, so you can bookmark or share a URL straight to a screen.
+
+## Timeline
+
+The Timeline is your chronological feed: every span (an LLM call, a tool use, a Bash command) drawn as a colored bar in the order it happened. Bars are colored by severity, so a wall of green with one red bar tells you where to look at a glance. Start here when you want to see what an agent did, in sequence, and click into anything that stands out.
+
+## Orchestration
+
+Orchestration visualizes how your agents relate to each other — which session spawned which sub-agent, and a tool inventory across harnesses. Use it to understand a multi-agent run at a structural level rather than as a flat list.
+
+<Note>
+  The agent hierarchy is an **estimate**, not a ground truth. When no agent actually reports spawning a session, ClaudeSec groups it under a likely parent using a best-effort heuristic and labels it **"estimated."** That label means "best guess, not observed" — it is **not** an error or a problem with the run.
+</Note>
+
+## Repositories
+
+The **Repositories** rollup (on the Observe view) groups all agent activity by the git repository it ran in, so you can see at a glance what your agents did in each project. A repo filter lets you scope the whole dashboard to a single repository. The card appears once more than one repository has been detected. Reach for it when you run agents across several projects and want a per-project view instead of one merged stream.
+
+Grouping is by **git root**, which means a git worktree shows up as its own separate entry from its main checkout. See [Repository grouping](#repository-grouping-the-honest-caveat) below for the one caveat worth knowing.
+
+### Repository grouping — the honest caveat
+
+Only **newly captured** activity groups by repository. Historical spans recorded before repository tracking existed, and any agent that doesn't report a working directory, fall into a single bucket labeled:
+
+> "Unknown / pre-tracking" holds activity captured before repository tracking, or from agents that don't report a working directory.
+
+So a freshly populated "Unknown / pre-tracking" group is expected on first upgrade — it drains naturally as new activity (which does carry a working directory) comes in. It is not a bug.
+
+## Search
+
+Search is the dashboard's full-text inventory of every tool call and span — search across span names, harness, severity, reason, and attributes. It's the de-facto way to answer "did any agent ever run X?" or "show me every WebFetch." Use it when you know roughly what you're looking for and want to find every occurrence.
+
+## Heatmap
+
+The Heatmap shows threat density across a 7-day × 24-hour grid, colored from quiet to busy. Use it to spot patterns over time — a burst of threats at an odd hour, or a consistently noisy window — that a linear timeline would bury.
+
+## Alerts
+
+Alerts is the triage list: one row per rule violation, newest first. **Clicking an alert opens a detail drawer** that slides in from the right, showing the timestamp, the rule that matched, severity, the originating span, the harness, the matched text, and a link to view it in the Timeline. Use Alerts as your daily review queue; use the drawer to decide whether a hit is real and what to do about it.
+
+## Processes
+
+Processes shows the live agent processes ClaudeSec can see right now — PID, resource use, command, and recent sessions — plus inline setup hints for agents that are running but not yet sending data. Use it to confirm an agent is actually being captured, or to grab the copy-paste instructions to wire one up.
+
+## Costs
+
+Costs accounts for token usage by model and session, with an estimated dollar cost you can read against different plan assumptions (API pay-as-you-go, Pro, Max). Use it to understand where your spend is going and to set a webhook threshold that alerts you when activity crosses a severity line.
+
+## Harnesses
+
+Harnesses gives you one summary card per agent type (Claude Code, Copilot, Codex): span count, threat count, tokens, and when it was first and last seen. Click a card to filter the rest of the dashboard to that harness. Use it for a quick per-agent health and activity check.
+
+## Settings
+
+Settings is the configuration hub, and it's honest about what you can change where. **Most settings are read-only** — they're set through environment variables and shown here so you can confirm the running configuration (rate limits, the enforcement mode resolution, and similar). A **few are editable in the UI**: retention (max spans, retention days), the webhook URL and threshold, display preferences, and threshold rules. Each section is labeled so you know whether to edit it here or set an environment variable. See the [configuration reference](/reference/config) for every variable.

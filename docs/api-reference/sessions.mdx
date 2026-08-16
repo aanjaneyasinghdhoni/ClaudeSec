@@ -18,6 +18,22 @@ List sessions with aggregate stats and scores.
 | Parameter | Type | Description |
 |---|---|---|
 | `label` | string | Optional filter (`normal`, `incident`, `investigation`, `automated`, `other`) |
+| `limit` | number | Page size, `1..500`. Values above the cap are clamped to `500` |
+| `offset` | number | Rows to skip, default `0` |
+
+Paging is opt-in: omit both `limit` and `offset` and the endpoint returns every
+session, as it always has. Pass either one to get a page instead. The filter is
+applied before paging, so `total` always counts the same set the pages walk.
+
+### Response envelope
+
+| Field | Type | Description |
+|---|---|---|
+| `sessions` | array | The session rows (see below) |
+| `total` | number | Sessions matching the filter, ignoring the page |
+| `limit` | number | Page size actually applied |
+| `offset` | number | Offset actually applied |
+| `hasMore` | boolean | Whether more rows follow this page |
 
 ### Response fields (per session)
 

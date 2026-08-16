@@ -15,10 +15,104 @@ ClaudeSec is local-first and runs as a single Express server. If you run it on a
 
 ## Authentication
 
-ClaudeSec is intentionally **local-only and unauthenticated**.
+ClaudeSec is intentionally **local-first**. On loopback, **reads are open**: no token, no
+login, no bootstrap step. **Mutations require the control token**, even from `127.0.0.1`.
 
-All routes are open on the local instance. Keep the service bound to loopback
-or behind a private network boundary if you deploy it in containerized setups.
+The split exists because a TCP connection to `127.0.0.1` carries no identity. The kernel does
+not tell the listener which user or process opened the socket, so "the request came from
+loopback" says nothing about whether it came from you. The thing ClaudeSec watches is itself a
+local process with local network access, so every `/api` route being open to any local caller
+meant one `curl` could flip `enforce` back to `monitor`, disable rules, or read the audit log.
+
+### How the dashboard earns write access
+
+The dashboard is **paired once, out of band**. `claudesec open` builds
+`http://localhost:3000/?ct=<pairing-key>` and hands it to your browser. The server exchanges
+that key for an `HttpOnly`, `SameSite=Strict` cookie and immediately redirects to the same URL
+with the key stripped, so it never lands in history, a `Referer` header, or the address bar.
+
+The cookie is **not** the key. It is a domain-separated HMAC of it, which has two consequences
+worth knowing: it stays valid across restarts, so a paired tab keeps working when the service is
+bounced; and a cookie that leaks grants API access but cannot be turned back into the key, so it
+cannot be used to mint a fresh pairing link or a CLI credential.
+
+The pairing key itself lives at `~/.claudesec/hooks/control-token`, mode `0600`. That directory
+is a self-protection prefix in the enforcement floor, so the key file cannot be **overwritten**
+with an attacker-chosen value in any mode. If the file cannot be created (a read-only container,
+a CI sandbox) the server falls back to a process-lifetime random value that nothing can ever
+present, and says so at startup. Mutations then require `CLAUDESEC_TOKEN`.
+
+<Note>
+  **No HTTP request of any shape mints a token.** Earlier builds issued the mutation cookie to
+  any loopback `GET` whose headers looked like a browser's (`Sec-Fetch-Dest: document`, an HTML
+  `Accept`). Request headers are chosen by the caller, so that test certified whatever the caller
+  claimed. It was deleted rather than tightened: no header pattern can separate your browser from
+  another process on the same host.
+</Note>
+
+### What this does and does not defend against
+
+**Closed.** Obtaining mutation rights over HTTP alone. A prompt-injected agent that can only make
+HTTP calls, a page in another browser tab, and a remote caller are all shut out. Escalating a
+stolen cookie into the pairing key is also closed, because the cookie is a derivation of it.
+
+**Not closed.** A process running as the same OS user can read the key file. It is `0600` and the
+agent is the owner; only a second OS user would fix that, and nothing at this layer substitutes
+for one. What changed is the cost and the visibility: the attack is now a filesystem read of a
+path inside the self-protected control-plane directory, which detection sees, rather than one
+unremarkable HTTP request that looks like the dashboard. Anything that can read the browser's
+cookie jar, drive the browser, or read your terminal scrollback is likewise outside this
+boundary.
+
+### Presenting a credential
+
+A script that legitimately holds the pairing key can present it directly. No derivation is needed.
+The server accepts it in any of these:
+
+| Where | Form |
+|---|---|
+| `Authorization` header | `Bearer <token>` |
+| `X-Api-Key` header | `<token>` |
+| `X-Claudesec-Token` header | `<token>` |
+| `claudesec_ct` cookie | set by pairing; the browser sends it automatically |
+| `?token=` query parameter | `<token>` |
+
+`CLAUDESEC_TOKEN`, if set, is accepted at every one of those slots as well.
+
+A local mutation without an accepted credential returns `403` with a `detail` explaining how to
+pair. `POST /api/reset` additionally requires `CLAUDESEC_ALLOW_RESET=1`, which is a separate
+switch, not a credential.
+
+### Endpoints that stay open on loopback
+
+Three mutating endpoints are reachable without the control token, because their callers are
+machine clients with nowhere safe to keep one:
+
+- `POST /v1/traces`: OTLP ingest. Local agents post telemetry with no token. It is append-only
+  data, not control.
+- `POST /mcp`: the cross-agent MCP tool surface. It queries spans; it does not change config.
+- `POST /api/enforce-log`: the `PreToolUse` hook's own event feed.
+
+`/api/enforce-log` is a deliberate trade rather than an oversight. The hook runs inside the
+agent's own process tree with the agent's environment and file access, so any secret given to it
+would be readable by exactly the party the gate is meant to exclude. A "hook token" would
+authenticate nothing while reading as though it did. The containment is structural instead: the
+feed is append-only, capped at a fixed number of entries, and hash-chained. A local attacker can
+add noise and push honest entries past the cap; they cannot silently delete evidence or
+reconfigure enforcement through this route, because a removal breaks the chain and is reported by
+`GET /api/audit/verify`.
+
+### Off loopback
+
+Off loopback, everything needs `CLAUDESEC_TOKEN`, reads included. The server refuses to bind a
+non-loopback host at all unless that variable is set. The client address comes from the socket,
+not `X-Forwarded-For`, which a caller can spoof. If `CLAUDESEC_TOKEN` is unset, every
+non-loopback request to a gated route is `401`.
+
+`CLAUDESEC_TRUST_LOCAL=1` treats every connection as trusted regardless of source address,
+including for mutations. It exists for Docker, where the container sees a bridge IP rather than
+loopback, and is only safe when the host port is published to `127.0.0.1` only. See
+[Configuration reference](/reference/config#server-networking).
 
 ---
 
@@ -54,6 +148,9 @@ ClaudeSec also pushes live updates over Socket.io:
 | `annotation-update` | Span annotations changed |
 | `bookmarks-update` | Bookmarks changed |
 | `processes-update` | Process control state changed |
+| `protected-paths-update` | Protected-path list changed |
+| `enforce-config` | Enforcement mode or config changed |
+| `enforce-log` | A new enforcement decision was recorded |
 
 ---
 
@@ -71,13 +168,24 @@ Some endpoints include a `detail` field for additional context.
 
 ## Frequently used endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/traces` | OTLP ingestion |
-| `GET` | `/api/graph` | Graph data |
-| `GET` | `/api/sessions` | Session list and scores |
-| `PATCH` | `/api/sessions/:traceId` | Rename/pin/label/note updates |
-| `GET` | `/api/search` | Filtered span search |
-| `GET` | `/api/alerts` | Alert listing |
-| `PATCH` | `/api/alerts/:id` | Alert triage (`dismissed` / `fp`) |
-| `POST` | `/mcp` | MCP JSON-RPC endpoint |
+"Token" means the control token is required on loopback, as described above.
+
+| Method | Path | Purpose | Token |
+|---|---|---|---|
+| `POST` | `/v1/traces` | OTLP ingestion | no |
+| `GET` | `/api/graph` | Graph data | no |
+| `GET` | `/api/sessions` | Session list and scores | no |
+| `GET` | `/api/repos` | Per-repository rollup and health | no |
+| `PATCH` | `/api/sessions/:traceId` | Rename/pin/label/note updates | yes |
+| `GET` | `/api/search` | Filtered span search | no |
+| `GET` | `/api/alerts` | Alert listing | no |
+| `PATCH` | `/api/alerts/:id` | Alert triage (`dismissed` / `fp`) | yes |
+| `GET` | `/api/enforce/impact` | Preview what `enforce` would block | no |
+| `PUT` | `/api/enforce/config` | Change enforcement mode | yes |
+| `GET` | `/api/audit/verify` | Verify the hash chains | no |
+| `GET` | `/api/governance/evidence` | Signed evidence pack | no |
+| `POST` | `/api/enforce-log` | Hook event feed (deliberately token-free) | no |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint | no |
+
+The complete surface, with request and response shapes and the token requirement
+marked per operation, is in [`openapi.yaml`](https://github.com/aanjaneyasinghdhoni/ClaudeSec/blob/master/openapi.yaml).

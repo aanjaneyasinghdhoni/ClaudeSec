@@ -52,6 +52,12 @@ export interface RouteContext {
   addCustomRule?: (rule: CustomRule) => void;
   /** Remove a custom rule by id, returning true if one was removed (owned by index.ts). */
   removeCustomRule?: (id: string) => boolean;
+  /** Snapshot of the user's protected-path list (owned by index.ts). */
+  getProtectedPaths?: () => ProtectedPath[];
+  /** Append a protected path, persist it, and re-mirror the hook artifact (owned by index.ts). */
+  addProtectedPath?: (entry: ProtectedPath) => void;
+  /** Remove a protected path by id, returning true if one was removed (owned by index.ts). */
+  removeProtectedPath?: (id: string) => boolean;
   /** Current honeytoken list (owned by index.ts). */
   getHoneytokens?: () => string[];
   /** Persist honeytokens and rebuild scrubOptions (owned by index.ts). */
@@ -99,7 +105,7 @@ export interface RouteContext {
   enforceConfigFile?: string;
 }
 
-/** Enforcement-log event (PreToolUse hook feed; owned by index.ts). */
+/** Enforcement-log event (PreToolUse hook feed; persisted by server/enforceLogStore.ts). */
 export interface EnforceLogEvent {
   ts: number;
   mode: string;
@@ -107,6 +113,32 @@ export interface EnforceLogEvent {
   severity: string;
   command: string;
   wouldBlock: boolean;
+  // Whether the call was actually DENIED (catastrophic floor or enforce rule),
+  // vs. a monitor "would-block". The catastrophic floor blocks even in monitor
+  // mode, so this can be true regardless of `mode` — the UI keys off it.
+  blocked: boolean;
+}
+
+/**
+ * A user-added protected path: an always-on, per-user block-list entry that the
+ * PreToolUse hook enforces regardless of monitor/enforce mode (owned by
+ * index.ts; mirrored to protected-paths.json beside the installed hook).
+ */
+export interface ProtectedPath {
+  id: string;
+  /** Literal path string the hook substring-matches against (e.g. '~/.ssh/id_rsa'). */
+  path: string;
+  /**
+   * Extra match forms resolved at add time — currently the realpath of `path`
+   * when it's a symlink, so BOTH the symlink and its target are protected. The
+   * hook/server loaders fold these into the entry's matchable forms in addition
+   * to the literal/home-expanded spellings derived from `path`. Optional /
+   * absent for a non-symlinked or not-yet-existing path.
+   */
+  forms?: string[];
+  /** Human-friendly label shown in the block message + feed. */
+  label: string;
+  createdAt: string;
 }
 
 /** Custom (user-defined) severity rule (owned by index.ts; read by detectSeverity). */

@@ -7,7 +7,7 @@ import type { Category } from './CategoryNav';
 // ---------------------------------------------------------------------------
 
 export type FilterMode = 'all' | 'normal' | 'malicious';
-export type Tab        = 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'enforce' | 'mcpscan' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks';
+export type Tab        = 'timeline' | 'orchestration' | 'alerts' | 'rules' | 'enforce' | 'mcpscan' | 'costs' | 'harnesses' | 'settings' | 'heatmap' | 'search' | 'processes' | 'bookmarks' | 'governance';
 
 // Category → Tab mapping for the navigation rail
 export const CATEGORY_TABS: Record<Category, { id: Tab; icon: ReactNode; label: string; badge?: number }[]> = {
@@ -28,6 +28,9 @@ export const CATEGORY_TABS: Record<Category, { id: Tab; icon: ReactNode; label: 
   ],
   review: [
     { id: 'bookmarks', icon: null, label: 'Bookmarks' },
+  ],
+  govern: [
+    { id: 'governance', icon: null, label: 'Policies' },
   ],
   manage: [
     { id: 'harnesses', icon: null, label: 'Harnesses' },
@@ -71,7 +74,98 @@ export interface Session {
   threatCount: number;
   maxSeverityRank: number;
   harnesses: string | null;
+  repo: string | null;
   healthScore?: number;
+}
+
+// Per-repository rollup row from GET /api/repos — one per distinct git-root
+// grouping key (see server/repoIdentity.ts). The 'unknown' bucket holds activity
+// captured before repository tracking or from agents without a working dir.
+export interface Repo {
+  repo: string;
+  spanCount: number;
+  sessionCount: number;
+  harnesses: string | null;
+  threatHigh: number;
+  threatMedium: number;
+  threatLow: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  healthScore: number;
+  grade: 'A' | 'B' | 'C' | 'D' | 'F';
+}
+
+export const UNKNOWN_REPO = 'unknown';
+
+// A short, human-readable label for a repo grouping key. Git-root keys are stored
+// as full (scrubbed) paths, so we show the basename; the 'unknown' bucket gets an
+// explicit, honest label rather than the bare word.
+export function repoLabel(repo: string): string {
+  if (!repo || repo === UNKNOWN_REPO) return 'Unknown / pre-tracking';
+  const parts = repo.replace(/[/\\]+$/, '').split(/[/\\]/);
+  return parts[parts.length - 1] || repo;
+}
+
+// ---------------------------------------------------------------------------
+// Session labels
+// ---------------------------------------------------------------------------
+//
+// A session is born with a name nobody chose — server/index.ts stamps
+// "<harness> · <time>" (or the PID/import variants below) onto every new
+// trace, and with ~6,500 sessions in the same harness that timestamp is the
+// only thing that tells two of them apart. sessionDisplayLabel() swaps the
+// harness word for the repo that produced it, which is the thing an operator
+// actually wants to filter, search, and recognize by. It never touches the
+// stored `name` — a rename is real data and must win every time.
+
+// Matches every shape server/index.ts writes for an UN-renamed session:
+// "<harness> · 11:17:10 AM", "<harness> · PID 4821 (auto-detected)", and
+// "Import · 11:17:10 AM". A user rename will not match this — the moment a
+// stored name diverges from one of these three shapes, it's a real name and
+// sessionDisplayLabel() leaves it alone.
+const AUTO_SESSION_NAME_RE = /^.+ · (?:PID \d+ \(auto-detected\)|\d{1,2}:\d{2}(?::\d{2})?\s?(?:AM|PM)?)$/i;
+
+/** True when `name` still looks like the default server/index.ts assigns — i.e. nobody has renamed this session yet. */
+export function isAutoSessionName(name: string): boolean {
+  return AUTO_SESSION_NAME_RE.test(name.trim());
+}
+
+// The `repo` column on a session row is a newline-joined, de-duplicated list of
+// every git root the trace's spans carried (see the repo_agg CTE in
+// server/routes/sessions.ts) — one real session touched 26 of them in one
+// sitting. This pulls out the tracked repos, dropping the 'unknown' bucket:
+// that value means "no repo data for this span," not a repository, and
+// counting it as one would overstate how scattered a session actually was.
+export function sessionRepos(repo: string | null): string[] {
+  if (!repo) return [];
+  return repo.split('\n').filter(r => r && r !== UNKNOWN_REPO);
+}
+
+// Trimmed to "11:17 AM" — the seconds in the raw default name never
+// distinguished anything real; the repo does that job now.
+function shortSessionTime(createdAt: string): string {
+  const d = new Date(createdAt);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * The label a session row shows. A rename always wins (isAutoSessionName()
+ * guards that). Otherwise: one known repo names the session directly, several
+ * known repos are counted rather than guessed at — the aggregate query has no
+ * per-repo weight to pick a "dominant" one honestly — and no known repo (still
+ * true for part of the 'unknown' bucket left after tonight's migration) says
+ * so plainly instead of inventing one.
+ */
+export function sessionDisplayLabel(session: Pick<Session, 'name' | 'repo' | 'createdAt'>): string {
+  if (!isAutoSessionName(session.name)) return session.name;
+
+  const time = shortSessionTime(session.createdAt);
+  const repos = sessionRepos(session.repo);
+  const what = repos.length === 0 ? 'Unknown repo'
+    : repos.length === 1 ? repoLabel(repos[0])
+    : `${repos.length} repos`;
+  return time ? `${what} · ${time}` : what;
 }
 
 export const LABEL_COLORS: Record<SessionLabel, { dot: string; bg: string; text: string }> = {
@@ -107,6 +201,22 @@ export const HARNESS_NAMES: Record<string, string> = {
   'codex':       'Codex',
   'unknown':     'Unknown Agent',
 };
+
+// First (or only) harness that produced this session — session.harnesses is
+// the SQL layer's GROUP_CONCAT(DISTINCT harness), comma-joined — used to color
+// the small dot next to the label so the words freed up by dropping "Claude
+// Code" from the text don't also erase which agent this was.
+export function primarySessionHarness(harnesses: string | null): string {
+  const [first] = (harnesses ?? '').split(',').map(h => h.trim()).filter(Boolean);
+  return first ?? 'unknown';
+}
+
+/** Tooltip text for the harness dot — every distinct harness in the session, by display name. */
+export function sessionHarnessTitle(harnesses: string | null): string {
+  const ids = (harnesses ?? '').split(',').map(h => h.trim()).filter(Boolean);
+  if (ids.length === 0) return HARNESS_NAMES.unknown;
+  return ids.map(id => HARNESS_NAMES[id] ?? id).join(', ');
+}
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
   none: 'OK', low: 'LOW', medium: 'MED', high: 'HIGH', critical: 'CRIT',

@@ -35,6 +35,7 @@ import {
   loadBlockRules,
   resolveMode,
   evaluate,
+  evaluateFetch,
   redact,
   postEnforceLog,
   type CompiledRule,
@@ -61,15 +62,127 @@ interface JsonRpcMessage {
   params?: { name?: unknown; arguments?: unknown } & Record<string, unknown>;
 }
 
-/** Build the matchable text for a tools/call, identical to the hook's scheme. */
-function buildMatchText(name: string, args: unknown): string {
+// Edit-shaped tool names and the arg keys that carry file content vs the target
+// path. Mirrors the hook's EDIT_TOOLS split: for an edit call we gate on PATH +
+// ACTION (never the static content of the code being written), and check the
+// content ONLY against the minimal live-secret floor. Names are matched
+// case-insensitively so a downstream MCP server's `edit_file`/`write_file`/etc.
+// is treated the same as Claude Code's Edit/Write.
+const EDIT_TOOL_NAMES = /(?:^|[._-])(?:edit|write|multiedit|notebook_?edit|str_replace|create_file|write_file|edit_file|apply_patch)(?:$|[._-])/i;
+const EDIT_CONTENT_KEYS = ['content', 'new_string', 'new_str', 'new_source', 'text', 'body', 'patch'];
+const EDIT_PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filename', 'file'];
+
+// Command-shaped tool names (a shell-exec MCP tool) and the arg keys that carry
+// the RAW command string. The catastrophic floor patterns are anchored to a
+// command boundary (`(?:^|[\n;&|...]|&&)`) or end-of-string — wrapping the command
+// in a JSON blob (`{"command":"rm -rf /"}`) destroys those anchors, so a serialized
+// match would silently MISS `rm -rf /`, `format c:`, `del /f /q`, `rd /s`. We
+// therefore extract the raw command VALUE and run the floor against it, exactly as
+// the hook sees the Bash `command` string.
+const COMMAND_TOOL_NAMES = /(?:^|[._-])(?:bash|sh|shell|exec|run|command|cmd|terminal|run_command|execute_command|run_shell|shell_exec|process)(?:$|[._-])/i;
+const COMMAND_KEYS = ['command', 'cmd', 'script', 'shell', 'code', 'input'];
+
+// Fetch-shaped calls carry a URL under one of these arg keys (a cross-agent
+// fetch / web_fetch / http tool). They bypass the SSRF floor unless we extract
+// the URL and classify it — see evaluateFetch. Any tools/call carrying a url-style
+// arg is treated as fetch-shaped: the classifier only fires on internal/metadata
+// hosts (never a public URL), so there is no false-positive cost to the breadth.
+const FETCH_URL_KEYS = ['url', 'uri', 'href', 'link', 'endpoint'];
+
+/** Pull the first string value found under any of `keys` from an args object. */
+function firstStringArg(obj: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    if (typeof obj[k] === 'string') return obj[k] as string;
+  }
+  return '';
+}
+
+interface BuiltCall {
+  /** Text fed to the rule engine + catastrophic floor. */
+  matchText: string;
+  /** Edit body, gated ONLY by the live-secret floor — never the rule engine. */
+  editContent: string;
+  /** The file an edit targets — feeds the self-protection + protected-paths floors. */
+  targetPath: string;
+  /** A fetch URL when the call is fetch-shaped; '' otherwise. Feeds the SSRF floor. */
+  fetchUrl: string;
+}
+
+/**
+ * Build the matchable text + edit content + target path (+ fetch URL) for a
+ * tools/call, mirroring the hook.
+ *   • matchText   → for an edit-shaped call, name + PATH only; for a command-shaped
+ *     call, the RAW command string (NOT the JSON blob — the catastrophic floor's
+ *     boundary/end-of-string anchors only fire against the real command text);
+ *     otherwise the full serialized args.
+ *   • editContent → the file body an edit would write, gated ONLY by the
+ *     live-secret floor — never fed to the rule engine.
+ *   • targetPath  → ONLY the file an edit targets (path keys), so evaluate()'s
+ *     self-protection + protected-paths floors get the path. Empty otherwise.
+ *   • fetchUrl    → the URL of a fetch-shaped call (fetch/web_fetch/http/…); the
+ *     caller runs the SSRF floor against it. '' otherwise.
+ * Shape detection mirrors the hook's tool families: edit-shaped (EDIT_TOOL_NAMES),
+ * command-shaped (COMMAND_TOOL_NAMES + a command-carrying key), fetch-shaped
+ * (FETCH_TOOL_NAMES or a `url`-style key).
+ */
+function buildMatchText(name: string, args: unknown): BuiltCall {
+  const obj = args && typeof args === 'object' ? (args as Record<string, unknown>) : null;
+
+  if (obj && EDIT_TOOL_NAMES.test(name)) {
+    const pathParts: string[] = [];
+    for (const k of EDIT_PATH_KEYS) {
+      if (typeof obj[k] === 'string') pathParts.push(obj[k] as string);
+    }
+    const contentParts: string[] = [];
+    for (const k of EDIT_CONTENT_KEYS) {
+      if (typeof obj[k] === 'string') contentParts.push(obj[k] as string);
+    }
+    // MultiEdit-style nested edits: collect each edit's new content.
+    if (Array.isArray(obj.edits)) {
+      for (const e of obj.edits) {
+        if (e && typeof e === 'object') {
+          const ev = (e as Record<string, unknown>).new_string ?? (e as Record<string, unknown>).new_str;
+          if (typeof ev === 'string') contentParts.push(ev);
+        }
+      }
+    }
+    const targetPath = pathParts.join(' ');
+    return {
+      matchText: `${name} ${targetPath}`.trim(),
+      editContent: contentParts.join('\n'),
+      targetPath,
+      fetchUrl: '',
+    };
+  }
+
+  // Fetch-shaped: ANY tool carrying a `url`-style arg. Pull the URL out so the
+  // SSRF floor sees the raw target the hook sees.
+  if (obj) {
+    const url = firstStringArg(obj, FETCH_URL_KEYS);
+    if (url) {
+      return { matchText: `${name} ${url}`, editContent: '', targetPath: '', fetchUrl: url };
+    }
+  }
+
+  // Command-shaped: a shell-exec tool with a command-carrying key. Run the floor
+  // against the RAW command string so boundary/end-anchored catastrophic patterns
+  // fire exactly as they do on the hook's Bash `command`.
+  if (obj && COMMAND_TOOL_NAMES.test(name)) {
+    const cmd = firstStringArg(obj, COMMAND_KEYS);
+    if (cmd) {
+      return { matchText: cmd, editContent: '', targetPath: '', fetchUrl: '' };
+    }
+  }
+
+  // Unknown call: serialize all args as before. No edit target — the floors treat
+  // matchText as the command form.
   let argStr: string;
   try {
     argStr = JSON.stringify(args ?? {});
   } catch {
     argStr = String(args ?? '');
   }
-  return `${name} ${argStr}`;
+  return { matchText: `${name} ${argStr}`, editContent: '', targetPath: '', fetchUrl: '' };
 }
 
 /** A blocked tools/call result (isError:true + content). id echoed verbatim. */
@@ -198,10 +311,50 @@ export function startProxy(opts: ProxyOptions): ProxyHandle {
     try {
       const name = typeof msg.params?.name === 'string' ? msg.params.name : '';
       const args = msg.params?.arguments;
-      const matchText = buildMatchText(name, args);
+      const { matchText, editContent, targetPath, fetchUrl } = buildMatchText(name, args);
 
       const mode = resolveMode(); // re-resolved per call → live dashboard toggles
-      const verdict = evaluate(matchText, blockRules);
+
+      // ── SSRF-on-fetch floor (fetch-shaped calls only) ──────────────────────
+      // Classify the URL host synchronously (no DNS — see classifyFetchHost). The
+      // metadata/link-local tier is a mode-independent floor; loopback honors the
+      // CLAUDESEC_ALLOW_LOCAL_FETCH opt-out; internal blocks only in enforce. This
+      // is the SAME decision the hook makes, so a cross-agent fetch tool can no
+      // longer bypass the SSRF guard the hook applies to WebFetch.
+      if (fetchUrl) {
+        const fv = evaluateFetch(fetchUrl, mode);
+        if (fv.triggered) {
+          const ssrfLabel = `SSRF: fetch to ${fv.klass} address ${fv.host}`;
+          if (fv.block) {
+            toParent(blockedResult(msg.id, ssrfLabel));
+            log(`BLOCKED tools/call "${name}" — ${ssrfLabel}`);
+            track(postEnforceLog({
+              mode,
+              label: ssrfLabel,
+              severity: 'high',
+              command: redact(fetchUrl),
+              wouldBlock: true,
+            }));
+            return;
+          }
+          // Triggered but not blocked in this mode (e.g. internal in monitor): log a
+          // would-block, then forward.
+          log(`WOULD-BLOCK (${mode}) tools/call "${name}" — ${ssrfLabel}`);
+          track(postEnforceLog({
+            mode,
+            label: ssrfLabel,
+            severity: 'high',
+            command: redact(fetchUrl),
+            wouldBlock: true,
+          }));
+          return toChild(line);
+        }
+        // Public / unresolvable / opted-out loopback → forward (no rule engine for a
+        // fetch, mirroring the hook which short-circuits on the SSRF branch).
+        return toChild(line);
+      }
+
+      const verdict = evaluate(matchText, blockRules, editContent, targetPath);
 
       if (!verdict.triggered) return toChild(line); // clean → forward
 

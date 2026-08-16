@@ -6,8 +6,9 @@
  *   node scripts/db-query.cjs "SELECT count(*) FROM spans"
  *   node scripts/db-query.cjs "SELECT name, severity FROM spans ORDER BY startNano DESC LIMIT 20"
  *
- * Respects CLAUDESEC_DB (defaults to spans.db).
+ * Respects CLAUDESEC_DB (defaults to ~/.claudesec/spans.db).
  */
+const os = require('os');
 const path = require('path');
 const Database = require(path.join(__dirname, '..', 'node_modules', 'better-sqlite3'));
 
@@ -24,8 +25,16 @@ if (/;/.test(stripped) || !/^(?:select|with)\b/i.test(stripped)) {
   process.exit(2);
 }
 
-const dbPath = process.env.CLAUDESEC_DB || 'spans.db';
+function resolveDbPath() {
+  if (process.env.CLAUDESEC_DB) return process.env.CLAUDESEC_DB;
+  // Mirror server/db.ts: default to the owner-only ~/.claudesec/spans.db.
+  return path.join(os.homedir(), '.claudesec', 'spans.db');
+}
+const dbPath = resolveDbPath();
 const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+// Match the main DB's posture: under WAL a read can still briefly collide with an
+// in-flight writer, so wait up to 5s rather than failing fast with SQLITE_BUSY.
+db.pragma('busy_timeout = 5000');
 try {
   const rows = db.prepare(stripped).all();
   console.log(JSON.stringify(rows, null, 2));

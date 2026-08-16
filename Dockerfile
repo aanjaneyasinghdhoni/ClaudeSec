@@ -52,12 +52,40 @@ COPY src/shared/ ./src/shared/
 # Copy frontend build
 COPY --from=builder /app/dist ./dist
 
-# SQLite DB and custom rules are mounted via volume — create data dir and
-# point the app paths to /data so both survive container restarts.
-RUN mkdir -p /data \
-  && ln -sf /data/spans.db /app/spans.db \
-  && ln -sf /data/rules.json /app/rules.json \
-  && chown -R node:node /app
+# Everything that must outlive the image lives in /data, and nowhere else.
+#
+# This used to be arranged with `ln -sf /data/spans.db /app/spans.db`, which
+# worked only while the database path was a bare filename resolved against the
+# working directory. It is now an absolute path under the process's HOME — and
+# HOME in this container is /home/node, inside the WRITABLE LAYER. A layer is
+# discarded on every `docker compose pull` / rebuild, so the database, the audit
+# log and the Ed25519 key that signs the hash-chain anchor were all being thrown
+# away on upgrade while the volume held nothing but exports.
+#
+# Set as ENV in the image rather than in docker-compose.yml so a plain
+# `docker run -v claudesec-data:/data claudesec` is correct too — the persistence
+# contract belongs to the image, not to one way of starting it.
+#
+#   CLAUDESEC_DB           the SQLite ledger. /data/spans.db is exactly where
+#                          the 1.3.0 symlink put it, so an existing volume is
+#                          picked up as-is, with its history intact.
+#   CLAUDESEC_HOME         hooks/ — the audit signing key, the signed tail
+#                          anchor, the pairing key. Losing the key alone would
+#                          make every chain written before an upgrade
+#                          unverifiable, even with the database preserved.
+#   CLAUDESEC_RULES_FILE   custom rules, previously the /app/rules.json symlink.
+#   CLAUDESEC_AUTO_EXPORT_DIR  hourly JSON snapshots.
+ENV CLAUDESEC_DB=/data/spans.db
+ENV CLAUDESEC_HOME=/data/claudesec
+ENV CLAUDESEC_RULES_FILE=/data/rules.json
+ENV CLAUDESEC_AUTO_EXPORT_DIR=/data/exports
+
+RUN mkdir -p /data && chown -R node:node /app /data
+
+# Declared so `docker run` without an explicit -v still gets a real volume
+# instead of silently writing the ledger into a disposable layer. Compose
+# overrides it with the named claudesec-data volume.
+VOLUME ["/data"]
 
 EXPOSE 3000
 ENV NODE_ENV=production
@@ -67,4 +95,8 @@ ENV CLAUDESEC_HOST=0.0.0.0
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3000/api/health || exit 1
 
-CMD ["sh", "-c", "chown -R node:node /data 2>/dev/null || true; exec su-exec node node --import tsx server/index.ts"]
+# The chown runs as root on every start because a freshly-created named volume
+# (and any host directory bind-mounted in its place) belongs to root until
+# something fixes it — the server then runs as `node` and creates
+# /data/claudesec/hooks 0700 and /data/spans.db 0600 itself.
+CMD ["sh", "-c", "mkdir -p /data/claudesec /data/exports 2>/dev/null; chown -R node:node /data 2>/dev/null || true; exec su-exec node node --import tsx server/index.ts"]

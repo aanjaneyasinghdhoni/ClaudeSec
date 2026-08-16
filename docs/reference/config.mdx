@@ -17,13 +17,81 @@ All configuration is **optional** — ClaudeSec runs with sensible defaults and 
 | `CLAUDESEC_TRUST_PROXY` | — | Set `1` to trust `X-Forwarded-For` (behind a reverse proxy) |
 | `NODE_ENV` | — | `production` serves the built `dist/`; otherwise Vite dev mode |
 
+### Pairing the dashboard for mutations
+
+Reads over loopback need nothing. **Mutations** need the control token, and the server never issues
+it in response to an HTTP request — a loopback TCP connection carries no user or process identity,
+so nothing in a request can distinguish your browser from anything else running on the machine.
+
+The token is a **pairing key**: 32 random bytes, generated on first boot and stored `0600` at
+`<CLAUDESEC_HOME>/hooks/control-token`. Run `claudesec open` to launch the dashboard with the key
+attached once; the server exchanges it for an `HttpOnly`, `SameSite=Strict` cookie and redirects the
+key out of the address bar, so pairing survives restarts and never lands in browser history. Scripts
+can send the key directly as `Authorization: Bearer …` or `X-ClaudeSec-Token`. `CLAUDESEC_TOKEN`,
+if set, is accepted everywhere the pairing key is.
+
+If the key file can't be written (a read-only container), the server says so at boot and mutations
+then require `CLAUDESEC_TOKEN`. With `CLAUDESEC_TRUST_LOCAL=1` — the Docker configuration — every
+local caller may mutate, unchanged.
+
+<Warning>
+  The pairing key is `0600`, which means *owner-only* — and a local agent runs as the same owner. It
+  can therefore read the key, and reading it grants the same mutation rights the dashboard has. What
+  the pairing model removes is the ability to get those rights **over HTTP alone**; it does not
+  create a boundary between you and another process running as you. Only a separate OS user does
+  that. Never print the key, and never echo `claudesec open`'s URL into a log.
+</Warning>
+
 ## Storage & data safety
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CLAUDESEC_DB` | `spans.db` | SQLite database path. Point throwaway / test instances elsewhere to isolate them |
+| `CLAUDESEC_DB` | `~/.claudesec/spans.db` | SQLite database path (absolute; the resolved path is **logged at boot**). Point throwaway / test instances elsewhere to isolate them |
+| `CLAUDESEC_HOME` | `~/.claudesec` | ClaudeSec's state directory: the audit signing key, the signed tail anchor, the control-plane pairing key, and the installed hook's config. **Back this up with the database** — see below |
+| `CLAUDESEC_MAX_ATTR_BYTES` | `4096` | Per-attribute value cap on write, in bytes. Values above this are truncated before they're stored, broadcast, or indexed |
 | `CLAUDESEC_ALLOW_RESET` | — | Must be `1` to permit `POST /api/reset`; the destructive data-wipe is disabled by default |
 | `CLAUDESEC_SEED_DEMO` | — | Set `1` to seed an **empty** database once with synthetic demo sessions on startup. Used by the isolated demo container; never touches a database that already has data |
+| `CLAUDESEC_NO_AUTOSTART` | — | Set `1` to make importing `server/index.ts` side-effect-free — no HTTP listener, no timers, no hook-config mirror writes. Used by tests and tooling that import the module without running the server |
+
+### What lives in `CLAUDESEC_HOME`, and why you must back it up
+
+`CLAUDESEC_HOME` defaults to `~/.claudesec` and holds everything that is not the database:
+
+| Path | What it is |
+|------|------------|
+| `hooks/audit-key.ed25519.pem` | The **Ed25519 private key** that signs the audit tail anchor (`0600`) |
+| `hooks/audit-key.pub.pem` | Its public half, the same key served at `GET /api/audit/public-key` |
+| `hooks/audit-anchor.json` | The **signed tail anchor**: how many rows each chain should have, and where it ends |
+| `hooks/control-token` | The **pairing key** for dashboard mutations (`0600`) |
+| `hooks/claudesec-enforce.cjs` | The installed PreToolUse hook, plus its `enforce-config.json`, `rules-enforcement.json` and `protected-paths.json` |
+| `backups/` | Daily binary database snapshots — but note these follow `CLAUDESEC_DB`, not this variable |
+
+<Warning>
+  **Back up `CLAUDESEC_HOME` together with the database.** The hash chain cannot be verified without
+  the signing key, so a copy of `spans.db` on its own is no longer a complete backup of the record:
+  restore it without the key and every row still reads, but nothing about it can be proven. Losing
+  the anchor is nearly as bad — the chain's own boundaries live there, so without it a truncated or
+  emptied table can no longer be told apart from a short one. Keep the two together, and record the
+  key's fingerprint (`keyId`, from `GET /api/audit/verify`) somewhere off the machine as well.
+</Warning>
+
+<Note>
+  **`CLAUDESEC_HOME` does not move the database.** `CLAUDESEC_DB` resolves against your home
+  directory directly, so setting `CLAUDESEC_HOME` alone relocates the keys, the anchor and the hook
+  config but leaves `spans.db` at `~/.claudesec/spans.db`. To relocate everything, set **both**
+  `CLAUDESEC_HOME` and `CLAUDESEC_DB`. The path the server actually opens is logged at boot, so
+  check that line after any change.
+</Note>
+
+Under Docker both live on the `claudesec-data` volume: the image sets `CLAUDESEC_DB=/data/spans.db`
+and `CLAUDESEC_HOME=/data/claudesec` as `ENV`, so a plain `docker run -v claudesec-data:/data` is
+correct without a Compose file.
+
+<Warning>
+  If you replace that named volume with a **host bind mount** on macOS or Windows, the file-sharing
+  layer synthesises permissions and can silently drop the `0600` mode ClaudeSec sets on the database
+  and on the key files. A named volume is stored on the Linux VM's own filesystem and keeps them.
+</Warning>
 
 ## Enforcement
 
@@ -32,9 +100,70 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CLAUDESEC_MODE` | `monitor` | Hook mode: `monitor` logs would-blocks (default), `enforce` blocks high-severity tool calls |
-| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch) |
+| `CLAUDESEC_HOOKS_BYPASS` | — | Set `1` in the hook's environment to allow everything for one invocation (escape hatch). Best-effort recorded in the enforcement feed so the bypass is auditable, not silent |
+| `CLAUDESEC_ALLOW_LOCAL_FETCH` | — | Set `1` to let a `WebFetch` reach loopback / private (RFC1918) ranges in `enforce` mode (e.g. a local dev server). Cloud-metadata and link-local addresses stay blocked regardless. See [SSRF on fetch](/security/enforcement#ssrf-on-fetch) |
 | `CLAUDESEC_ENFORCE_CONFIG` | `enforce-config.json` | Path to the mirrored enforce-config file the hook reads (fail-open if absent) |
 | `CLAUDESEC_ENFORCE_RULES` | `rules-enforcement.json` | Path to the compiled block-rule snapshot the hook and MCP proxy evaluate against |
+| `CLAUDESEC_PROTECTED_PATHS` | `<hooksDir>/protected-paths.json` | Path to the protected-paths list the hook reads (fail-open if absent) |
+| `CLAUDESEC_HOME` | `~/.claudesec` | Where the installed hook and its rule/path artifacts live. Also holds the audit signing key and the pairing key — see [What lives in `CLAUDESEC_HOME`](#what-lives-in-claudesec-home-and-why-you-must-back-it-up) |
+| `CLAUDESEC_CLAUDE_SETTINGS` | `~/.claude/settings.json` | Path to the Claude Code settings file `claudesec install-hook` merges the PreToolUse entries into |
+
+## External audit anchoring
+
+Off by default. Timestamps the signed audit-chain anchor with an independent third party (RFC 3161
+or OpenTimestamps), so the anchor's creation time can't be backdated by whoever controls this
+host. See the [Audit Log API](/api-reference/audit-log) for what the chain and anchor do and do
+not prove.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_ANCHOR_METHOD` | — (off) | `tsa` (RFC 3161) or `ots` (OpenTimestamps). Unset = no external anchoring |
+| `CLAUDESEC_ANCHOR_TSA_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authority, used when the method is `tsa` |
+| `CLAUDESEC_ANCHOR_OTS_URL` | three independent OpenTimestamps calendar servers | Comma-separated OpenTimestamps calendar server URLs, used when the method is `ots` |
+| `CLAUDESEC_ANCHOR_INTERVAL_MS` | `900000` (15 min) | How often to re-anchor; values below `60000` are ignored |
+| `CLAUDESEC_ANCHOR_TIMEOUT_MS` | `10000` | Per-request timeout, capped at `60000` |
+
+### Where the audit signing key lives (macOS)
+
+By default the Ed25519 key that signs the audit anchor is a `0600` file at
+`<CLAUDESEC_HOME>/hooks/audit-key.ed25519.pem`. Same-owner reach applies: a local agent can read
+it, and — the part that matters more — delete it, let the service mint a replacement on restart,
+and have a fabricated history verify cleanly under the new identity.
+
+On macOS you can move the key into the **Keychain**, out of `cat`/`rm` range, with no `sudo` and no
+second account:
+
+```bash
+claudesec audit-key status              # where is it now, and what is the keyId
+claudesec audit-key to-keychain         # move it (the file is left in place)
+claudesec audit-key to-file             # move it back
+```
+
+Nothing migrates automatically. `to-keychain` reads the existing key, writes it to the Keychain,
+reads it **back out**, and proves it produces a signature that verifies against the original public
+key — all before it writes the pointer file that makes the Keychain authoritative. Any failure
+removes the Keychain item and leaves the file untouched. The key file is never deleted; pass
+`--remove-file` and it is *renamed* to `…​.pem.migrated`. Restart the service after migrating.
+
+If the Keychain later becomes unreadable (locked, item removed), the server reports the anchor as
+**unsigned** and refuses to mint a replacement — a silent new identity would make forged history
+verify perfectly. Run `claudesec audit-key to-file` to recover.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDESEC_KEYCHAIN_PATH` | — (login keychain) | Keychain file to hold the audit key. Point this at a **dedicated** keychain with its own password and an autolock if you want the key to be unreadable while locked |
+| `CLAUDESEC_KEYCHAIN_SERVICE` | `ClaudeSec audit signing key` | Keychain item service name |
+| `CLAUDESEC_KEYCHAIN_ACCOUNT` | `audit-key-ed25519` | Keychain item account name |
+
+<Warning>
+  With the default **login** keychain this relocates the key; it does not make it confidential
+  against a same-user attacker willing to run `/usr/bin/security` themselves — Keychain item ACLs
+  discriminate by application, and `security` is the application in both cases. The gain is that the
+  key is no longer a file an ordinary `rm` can remove, so the delete-then-forge-under-a-clean-key
+  path needs a deliberate, distinctive Keychain operation. For actual confidentiality, use a
+  dedicated locked keychain via `CLAUDESEC_KEYCHAIN_PATH`. Linux, Docker, and CI are unaffected —
+  the file path stays the default and this feature is never on their code path.
+</Warning>
 
 ## MCP / skill scanner
 
@@ -48,6 +177,15 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 |----------|---------|---------|
 | `CLAUDESEC_WATCH` | `1` | Local transcript watcher. `0` disables it (OTLP still works) |
 | `CLAUDESEC_BACKFILL` | `0` | `1` imports each transcript's full history on first sight, not just new lines |
+| `CLAUDESEC_LINEAGE_BACKFILL` | `0` | `1` reconstructs sub-agent lineage for spans recorded before lineage capture existed |
+
+<Note>
+  `CLAUDESEC_LINEAGE_BACKFILL` is **read-only**. It rebuilds the parent links in memory when the
+  orchestration view is queried and never rewrites a stored span — a span's `parentId` is one of
+  the fields covered by the tamper-evident hash chain, so editing it retroactively would invalidate
+  every affected signature and make an untouched history report as tampered. Spans recorded from
+  now on carry their lineage directly and need no overlay.
+</Note>
 
 ## Detection & privacy
 
@@ -62,10 +200,13 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 
 ## Retention
 
+The two variables below are set together as a [retention profile](/explanation/retention) — the
+defaults are the **Minimum** profile, a six-month window a normal workload can actually reach.
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CLAUDESEC_MAX_SPANS` | `50000` | Total span capacity before count-based pruning |
-| `CLAUDESEC_RETENTION_DAYS` | `30` | Age-based pruning threshold |
+| `CLAUDESEC_MAX_SPANS` | `1000000` | Soft span-count ceiling; reclaims only out-of-window spans above this. `0` means unbounded |
+| `CLAUDESEC_RETENTION_DAYS` | `183` | Age-based pruning threshold (~6 months, the EU AI Act minimum) — a hard floor count-pruning never crosses. `0` means unbounded |
 
 ## Performance & limits
 
@@ -75,6 +216,7 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 | `CLAUDESEC_RATE_LIMIT_BURST` | `200` | Token-bucket burst capacity |
 | `CLAUDESEC_MAX_SPANS_BATCH` | `500` | Max spans allowed per OTLP batch |
 | `CLAUDESEC_GRAPH_LIMIT` | `2000` | How many of the most-recent spans the live graph renders. Older spans are **not** deleted — they stay available via Search and Sessions. See [Data retention](/explanation/retention) |
+| `CLAUDESEC_ORCH_LIMIT` | `20000` | How many of the most-recent spans the orchestration (spawn-tree) view queries |
 
 ## Alerts & integrations
 
@@ -82,7 +224,8 @@ These configure the opt-in [Enforcement](/security/enforcement) PreToolUse hook.
 |----------|---------|---------|
 | `CLAUDESEC_WEBHOOK_URL` | — | Slack / Discord / generic JSON endpoint for alert delivery |
 | `CLAUDESEC_WEBHOOK_THRESHOLD` | `high` | Minimum severity to webhook |
-| `OTEL_FORWARD_URL` | — | Transparent OTLP proxy target (SSRF-blocked for private ranges) |
+| `OTEL_FORWARD_URL` | — | OTLP proxy target (SSRF-blocked for private ranges). The batch is forwarded in its original OTLP shape but **scrubbed** — attribute values go upstream redacted exactly as they are stored locally, unless `CLAUDESEC_DISABLE_SCRUB=1` |
+| `CLAUDESEC_AUTO_EXPORT` | — | Set `1` to enable the hourly JSON auto-export (a one-off export is also available via `POST /api/export` regardless of this setting) |
 | `CLAUDESEC_AUTO_EXPORT_DIR` | `./exports` | Directory for hourly auto-export JSON snapshots |
 
 ## Remote / CI agent telemetry (set on the *agent*, not ClaudeSec)

@@ -59,8 +59,8 @@ function withHook(): unknown {
   return {
     hooks: {
       PreToolUse: [
-        { matcher: 'Bash', hooks: [{ type: 'hook', command: 'echo unrelated' }] },
-        { matcher: 'Edit', hooks: [{ type: 'hook', command: 'node "/somewhere/.claudesec/hooks/claudesec-enforce.cjs"' }] },
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo unrelated' }] },
+        { matcher: 'Edit', hooks: [{ type: 'command', command: 'node "/somewhere/.claudesec/hooks/claudesec-enforce.cjs"' }] },
       ],
     },
   };
@@ -68,7 +68,7 @@ function withHook(): unknown {
 
 /** A settings.json with hooks, but none of them ours. */
 function withoutHook(): unknown {
-  return { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'hook', command: 'echo unrelated' }] }] } };
+  return { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo unrelated' }] }] } };
 }
 
 let caseN = 0;
@@ -193,6 +193,28 @@ function withEnv(
       assert.doesNotThrow(() => { result = detectHookStatus(projectDir); });
       assert.strictEqual(result!.installed, 'no');
       assert.deepStrictEqual(result!.scopes, []);
+    });
+  });
+}
+
+// HONESTY: an entry that runs our hook but has an invalid `type` (anything other
+// than 'command') does NOT execute in Claude Code, so it must NOT be reported as
+// installed — counting it would be a false green that promises blocking which can
+// never happen.
+{
+  const { projectDir, userSettings } = freshDirs();
+  writeJson(userSettings, {
+    hooks: {
+      PreToolUse: [
+        { matcher: 'Edit', hooks: [{ type: 'hook', command: 'node "/x/.claudesec/hooks/claudesec-enforce.cjs"' }] },
+      ],
+    },
+  });
+  withEnv({ settings: userSettings }, () => {
+    const s = detectHookStatus(projectDir);
+    check('hook: our command under a non-command type → not installed (no false green)', () => {
+      assert.strictEqual(s.installed, 'no');
+      assert.deepStrictEqual(s.scopes, []);
     });
   });
 }

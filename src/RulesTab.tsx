@@ -1,7 +1,67 @@
-import React, { useEffect, useState } from 'react';
-import { Shield, Trash2, Plus, FlaskConical, Clock, X } from 'lucide-react';
+/**
+ * RulesTab — the detection rule catalogue.
+ *
+ * Around 650 rules live here, which makes this the densest list in the app and
+ * the one that decides whether the table shell actually works. Three things
+ * follow from that count:
+ *
+ *   - The rules are the screen. The two forms this tab used to stack above the
+ *     table (add a custom rule, protect a path) cost more vertical space than
+ *     the table had rows, and both are things an operator does once a month.
+ *     They now open as dialogs from the toolbar, so the list keeps the body.
+ *   - Nothing is browsable at 650 rows without search and a severity filter, so
+ *     both are permanent, and both are applied in the client — the whole
+ *     catalogue is already in memory.
+ *   - The snooze menu has to be a portalled overlay. Rows use
+ *     `content-visibility`, which brings paint containment, so an absolutely
+ *     positioned menu inside a row is clipped at the row's edge.
+ *
+ * The per-rule Block/Monitor control is deliberately monochrome. It is on every
+ * row, and spending the severity ramp on a control that appears 650 times would
+ * leave nothing for the spine, which is the signal the eye is meant to catch.
+ * Block and Monitor are told apart by glyph, weight and ground instead.
+ */
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Shield, Trash2, Plus, FlaskConical, Clock, X, Lock, Ban, Eye, SearchX,
+  FileWarning, ShieldOff,
+} from 'lucide-react';
 import { socket } from './socket';
+import { ApiError, apiErrorMessage, apiSend, reportApiFailure } from './lib/api';
 import type { Severity } from './shared/types';
+import {
+  DataTable, type DataColumn,
+  RowDensityToggle, useRowDensity,
+  SeverityBadge, SEVERITY_ORDER, SEVERITY_META, normalizeSeverity,
+  EmptyState, ErrorState,
+  Toolbar, ToolButton, ToolbarTitle, ToolSearch,
+} from './components/data';
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger,
+} from './components/ui/dialog';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from './components/ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
+
+type EnforceAction = 'alert' | 'block';
+
+// Catastrophic-floor labels block ALWAYS and can never be demoted to monitor —
+// mirrors the server guard (server/detection.ts CATASTROPHIC_DETECTION_LABELS).
+// Kept in sync by the catastrophic-parity test gate.
+const CATASTROPHIC_LABELS: ReadonlySet<string> = new Set([
+  'Recursive root deletion',
+  'Filesystem format command',
+  'Raw disk write via dd',
+  'Remote code execution via curl',
+  'Remote code execution via wget',
+  'Bash TCP reverse shell',
+]);
+
+/** A rule's natural action from its severity: the two top tiers block in enforce. */
+function actionForSeverity(severity: string): EnforceAction {
+  return severity === 'high' || severity === 'critical' ? 'block' : 'alert';
+}
 
 interface RuleRow {
   id: string;
@@ -10,6 +70,15 @@ interface RuleRow {
   severity: Severity;
   label: string;
   builtin?: boolean;
+}
+
+type RuleListRow = RuleRow & { type: 'built-in' | 'custom' };
+
+interface ProtectedPath {
+  id: string;
+  path: string;
+  label: string;
+  createdAt?: string;
 }
 
 interface Suppression {
@@ -25,19 +94,14 @@ interface RulesResponse {
   custom: RuleRow[];
 }
 
-const SEV_BADGE: Record<string, string> = {
-  critical: 'bg-rose-900/60 text-rose-200 border border-rose-500/60 animate-pulse',
-  high:   'bg-red-900/40 text-red-300 border border-red-700/40',
-  medium: 'bg-orange-900/40 text-orange-300 border border-orange-700/40',
-  low:    'bg-yellow-900/40 text-yellow-300 border border-yellow-700/40',
-  none:   'bg-slate-800 text-slate-400',
-};
+type SeverityFilter = 'all' | Severity;
+type TypeFilter = 'all' | 'built-in' | 'custom';
 
 const SNOOZE_OPTIONS: { label: string; ms: number }[] = [
-  { label: '1 hour',  ms: 1 * 60 * 60 * 1000 },
-  { label: '4 hours', ms: 4 * 60 * 60 * 1000 },
+  { label: '1 hour',   ms: 1 * 60 * 60 * 1000 },
+  { label: '4 hours',  ms: 4 * 60 * 60 * 1000 },
   { label: '24 hours', ms: 24 * 60 * 60 * 1000 },
-  { label: '7 days',  ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: '7 days',   ms: 7 * 24 * 60 * 60 * 1000 },
 ];
 
 function formatCountdown(until: string): string {
@@ -50,13 +114,65 @@ function formatCountdown(until: string): string {
   return `${m}m`;
 }
 
+/** Shared shape for the two dialog forms, so the fields line up across both. */
+function Field({
+  label,
+  hint,
+  className = '',
+  children,
+}: {
+  label: string;
+  hint?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className={`flex flex-col gap-1 min-w-0 ${className}`}>
+      <span style={{ color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-xs)' }}>
+        {label}
+        {hint && <span style={{ color: 'var(--cs-text-faint)' }}> — {hint}</span>}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+// A form field is a well you type into, so it takes the sunken ground rather
+// than the raised one. In the light themes "raised" is only a faint tint, and a
+// field that reads as plain text on a white dialog is a field nobody fills in.
+const fieldStyle: React.CSSProperties = {
+  background: 'var(--cs-bg-sunken)',
+  color: 'var(--cs-text-body)',
+  fontSize: 'var(--cs-text-sm)',
+  borderRadius: 'var(--cs-radius-sm)',
+};
+
+const fieldClass =
+  'w-full px-2 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cs-accent)]';
+
 export function RulesTab() {
-  const [rules,        setRules]        = useState<{ builtIn: RuleRow[]; custom: RuleRow[] }>({ builtIn: [], custom: [] });
+  const [rules,        setRules]        = useState<RulesResponse>({ builtIn: [], custom: [] });
   const [suppressions, setSuppressions] = useState<Suppression[]>([]);
-  const [snoozeMenuId, setSnoozeMenuId] = useState<string | null>(null);
+  const [loading,      setLoading]      = useState(true);
+  const [loadError,    setLoadError]    = useState<string | null>(null);
   const [, setTick]  = useState(0); // force re-render for countdowns
 
-  // Form state
+  // Per-rule enforcement action overrides (Block ⇄ Monitor). Persisted in
+  // enforce-config.json via PUT /api/enforce/config; this map is { label → action }.
+  const [overrides,     setOverrides]    = useState<Record<string, EnforceAction>>({});
+  const [enforceMode,   setEnforceMode]  = useState<string>('monitor');
+  const [savingLabel,   setSavingLabel]  = useState<string | null>(null);
+
+  // Browsing state. All three are applied client-side: the whole catalogue is
+  // already in memory, so a round trip per keystroke would only add latency.
+  const [query,          setQuery]          = useState('');
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
+  const [typeFilter,     setTypeFilter]     = useState<TypeFilter>('all');
+  const [expanded,       setExpanded]       = useState<string | null>(null);
+  const [density,        setDensity]        = useRowDensity('rules');
+
+  // Custom-rule form state.
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [pattern,    setPattern]    = useState('');
   const [severity,   setSeverity]   = useState<'low' | 'medium' | 'high'>('medium');
   const [label,      setLabel]      = useState('');
@@ -65,11 +181,27 @@ export function RulesTab() {
   const [error,      setError]      = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Protected paths — the always-on block floor (distinct from regex rules).
+  const [protectedPaths, setProtectedPaths] = useState<ProtectedPath[]>([]);
+  const [ppPath,   setPpPath]   = useState('');
+  const [ppLabel,  setPpLabel]  = useState('');
+  const [ppError,  setPpError]  = useState('');
+  const [ppBusy,   setPpBusy]   = useState(false);
+
   const fetchRules = () =>
     fetch('/api/rules')
-      .then(r => r.json())
-      .then((data: RulesResponse) => setRules(data))
-      .catch(() => {});
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: RulesResponse) => {
+        setRules({ builtIn: data.builtIn ?? [], custom: data.custom ?? [] });
+        setLoadError(null);
+      })
+      // A rules screen that silently shows zero rules reads as "detection is
+      // off", which is the most alarming thing this app can say by accident.
+      .catch((e: Error) => setLoadError(e.message || 'Request failed'))
+      .finally(() => setLoading(false));
 
   const fetchSuppressions = () =>
     fetch('/api/suppressions')
@@ -77,11 +209,39 @@ export function RulesTab() {
       .then(({ suppressions: s }: { suppressions: Suppression[] }) => setSuppressions(s ?? []))
       .catch(() => {});
 
+  const fetchProtectedPaths = () =>
+    fetch('/api/protected-paths')
+      .then(r => r.json())
+      .then(({ protectedPaths: p }: { protectedPaths: ProtectedPath[] }) => setProtectedPaths(p ?? []))
+      .catch(() => {});
+
+  const fetchEnforceConfig = () =>
+    fetch('/api/enforce/config')
+      .then(r => r.json())
+      .then((c: { overrides?: Record<string, EnforceAction>; effectiveMode?: string }) => {
+        setOverrides(c.overrides ?? {});
+        setEnforceMode(c.effectiveMode ?? 'monitor');
+      })
+      .catch(() => {});
+
   useEffect(() => {
     fetchRules();
     fetchSuppressions();
-    socket.on('rules-update', () => { fetchRules(); fetchSuppressions(); });
-    return () => { socket.off('rules-update'); };
+    fetchProtectedPaths();
+    fetchEnforceConfig();
+    // Named handlers so unsubscribing removes only ours — a bare
+    // socket.off('rules-update') would also drop any other tab's listener.
+    const onRules = () => { fetchRules(); fetchSuppressions(); };
+    const onEnforceConfig = (c: { overrides?: Record<string, EnforceAction> }) =>
+      setOverrides(c.overrides ?? {});
+    socket.on('rules-update', onRules);
+    socket.on('protected-paths-update', fetchProtectedPaths);
+    socket.on('enforce-config', onEnforceConfig);
+    return () => {
+      socket.off('rules-update', onRules);
+      socket.off('protected-paths-update', fetchProtectedPaths);
+      socket.off('enforce-config', onEnforceConfig);
+    };
   }, []);
 
   // Countdown refresh every 30s
@@ -93,18 +253,24 @@ export function RulesTab() {
   const activeSuppression = (ruleId: string): Suppression | undefined =>
     suppressions.find(s => s.ruleKey === ruleId && new Date(s.suppressUntil) > new Date());
 
+  // Snoozing silences a detection rule, so a refusal that reads as success
+  // would leave the operator believing a rule is muted — or unmuted — when the
+  // opposite is true. The refetch is the source of truth for what stuck.
   const handleSnooze = async (ruleId: string, ms: number) => {
-    setSnoozeMenuId(null);
-    await fetch('/api/suppressions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ruleKey: ruleId, durationMs: ms, reason: 'manual snooze' }),
-    });
+    try {
+      await apiSend('/api/suppressions', 'POST', { ruleKey: ruleId, durationMs: ms, reason: 'manual snooze' });
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to snooze rule');
+    }
     fetchSuppressions();
   };
 
   const handleCancelSnooze = async (suppressionId: number) => {
-    await fetch(`/api/suppressions/${suppressionId}`, { method: 'DELETE' });
+    try {
+      await apiSend(`/api/suppressions/${suppressionId}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to cancel snooze');
+    }
     fetchSuppressions();
   };
 
@@ -126,240 +292,698 @@ export function RulesTab() {
     try { new RegExp(pattern); } catch { setError('Invalid regex pattern'); return; }
     setSubmitting(true);
     try {
-      const res = await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pattern: pattern.trim(), severity, label: label.trim() }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        setError(d.error ?? 'Failed to add rule');
-      } else {
-        setPattern(''); setLabel(''); setTestInput(''); setTestResult(null);
-      }
-    } catch { setError('Network error'); }
+      await apiSend('/api/rules', 'POST', { pattern: pattern.trim(), severity, label: label.trim() });
+      setPattern(''); setLabel(''); setTestInput(''); setTestResult(null);
+      setRuleDialogOpen(false);
+    } catch (err: unknown) {
+      // Leave the dialog open with the typed pattern intact.
+      setError(apiErrorMessage(err, 'Network error'));
+    }
     setSubmitting(false);
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    try {
+      await apiSend(`/api/rules/${encodeURIComponent(id)}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to delete rule');
+    }
   };
 
-  const allRules: (RuleRow & { type: 'built-in' | 'custom' })[] = [
+  // The effective action for a rule = an explicit override, else its natural
+  // (severity-derived) action. Mirrors server/enforcementSnapshot.actionForSeverity
+  // and enforceEval's override resolution.
+  const effectiveAction = (rule: RuleRow): EnforceAction =>
+    overrides[rule.label] ?? actionForSeverity(rule.severity);
+
+  // Flip a rule between Block and Monitor. The PUT replaces the whole overrides
+  // map, so we merge against the current one. We only write an override when it
+  // diverges from the rule's natural action — matching the default removes the
+  // key, keeping the persisted map minimal.
+  const handleToggleAction = async (rule: RuleRow) => {
+    if (CATASTROPHIC_LABELS.has(rule.label)) return; // locked — never demotable
+    const current = effectiveAction(rule);
+    const next: EnforceAction = current === 'block' ? 'alert' : 'block';
+    const natural = actionForSeverity(rule.severity);
+
+    const merged: Record<string, EnforceAction> = { ...overrides };
+    if (next === natural) delete merged[rule.label];
+    else merged[rule.label] = next;
+
+    // Block/Monitor is the switch that decides whether a match is stopped or
+    // merely logged, so nothing here is optimistic: the row only moves once the
+    // server has echoed the map it persisted. `savingLabel` covers the wait.
+    setSavingLabel(rule.label);
+    try {
+      const updated = await apiSend<{ overrides?: Record<string, EnforceAction> }>(
+        '/api/enforce/config', 'PUT', { overrides: merged },
+      );
+      setOverrides(updated?.overrides ?? merged);
+    } catch (err: unknown) {
+      reportApiFailure(err, `Failed to change the action for "${rule.label}"`);
+      fetchEnforceConfig(); // resync truth — the row must not show the intent
+    } finally {
+      setSavingLabel(null);
+    }
+  };
+
+  const handleAddProtectedPath = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPpError('');
+    if (!ppPath.trim()) { setPpError('A file path is required'); return; }
+    setPpBusy(true);
+    try {
+      await apiSend('/api/protected-paths', 'POST', {
+        path: ppPath.trim(),
+        label: ppLabel.trim() || undefined,
+      });
+      setPpPath(''); setPpLabel('');
+      // The socket event refreshes the list, but pull it now so the new row
+      // appears the moment the server confirms it.
+      fetchProtectedPaths();
+    } catch (err: unknown) {
+      setPpError(err instanceof ApiError && err.status === 409
+        ? 'That path is already protected.'
+        : apiErrorMessage(err, 'Network error'));
+    }
+    setPpBusy(false);
+  };
+
+  const handleDeleteProtectedPath = async (id: string) => {
+    try {
+      await apiSend(`/api/protected-paths/${encodeURIComponent(id)}`, 'DELETE');
+    } catch (err: unknown) {
+      reportApiFailure(err, 'Failed to remove protected path');
+    }
+    fetchProtectedPaths();
+  };
+
+  const allRules: RuleListRow[] = useMemo(() => [
     ...rules.builtIn.map(r => ({ ...r, type: 'built-in' as const })),
     ...rules.custom.map(r => ({ ...r, type: 'custom' as const })),
-  ];
+  ], [rules]);
 
-  return (
-    <div className="flex-1 overflow-auto p-5 min-h-0" style={{ background: 'var(--cs-bg-primary)' }} onClick={() => setSnoozeMenuId(null)}>
-      <div className="max-w-5xl mx-auto space-y-6">
+  // Live per-severity counts, so the filter row says how much is behind each
+  // option instead of making the operator click to find out.
+  const severityCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const r of allRules) {
+      const sev = normalizeSeverity(r.severity);
+      counts[sev] = (counts[sev] ?? 0) + 1;
+    }
+    return counts;
+  }, [allRules]);
 
-        {/* Header */}
-        <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5" style={{ color: 'var(--cs-accent)' }} />
-          <h2 className="text-sm font-bold text-slate-200">Threat Detection Rules</h2>
-          <span className="ml-auto text-xs font-mono text-slate-500">
-            {rules.builtIn.length} built-in · {rules.custom.length} custom
-            {suppressions.length > 0 && (
-              <span className="ml-1 text-yellow-400">· {suppressions.length} snoozed</span>
+  const visibleRules = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return allRules.filter(r => {
+      if (severityFilter !== 'all' && normalizeSeverity(r.severity) !== severityFilter) return false;
+      if (typeFilter !== 'all' && r.type !== typeFilter) return false;
+      if (!q) return true;
+      // The id and the pattern are both searchable: an operator arriving from an
+      // alert has the rule *label*, one arriving from a log has the rule *id*.
+      return r.label.toLowerCase().includes(q)
+        || r.pattern.toLowerCase().includes(q)
+        || r.id.toLowerCase().includes(q);
+    });
+  }, [allRules, query, severityFilter, typeFilter]);
+
+  const activeSnoozes = suppressions.filter(s => new Date(s.suppressUntil) > new Date()).length;
+  const isFiltered = query.trim() !== '' || severityFilter !== 'all' || typeFilter !== 'all';
+  const enforceActive = enforceMode === 'enforce';
+
+  // ── Columns ──────────────────────────────────────────────────────────────
+  // Read in the order a rule is judged: how bad, what it catches, what string
+  // it matches, and what it does about it. The pattern is the first thing to go
+  // when the viewport narrows — it is the detail you open a row for, not the
+  // thing you scan — and the machine-facing id survives only at the widest tier.
+  const columns: DataColumn<RuleListRow>[] = [
+    {
+      id: 'severity', header: 'Severity', width: '96px',
+      cell: r => <SeverityBadge severity={normalizeSeverity(r.severity)} />,
+    },
+    {
+      id: 'label', header: 'Rule', width: 'minmax(0,1.4fr)',
+      // The label is a sentence written for a human, so it is sans, and it is
+      // the one thing in the row set at full text strength.
+      cell: r => (
+        <span
+          title={r.label}
+          style={{ color: 'var(--cs-text-strong)', fontWeight: 'var(--cs-weight-medium)' }}
+        >
+          {r.label}
+        </span>
+      ),
+    },
+    {
+      id: 'pattern', header: 'Pattern', width: 'minmax(0,1.6fr)', hideBelow: 'xl', mono: true,
+      cell: r => <span title={r.pattern}>{r.pattern}</span>,
+    },
+    {
+      id: 'action', header: 'Action', width: '104px',
+      cell: r => {
+        const locked   = CATASTROPHIC_LABELS.has(r.label);
+        const action   = locked ? 'block' : effectiveAction(r);
+        const isBlock  = action === 'block';
+        const saving   = savingLabel === r.label;
+        const overrode = !locked && overrides[r.label] !== undefined;
+        const chip = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors';
+        if (locked) {
+          return (
+            <span
+              className={chip}
+              style={{
+                background: 'var(--cs-bg-raised)',
+                color: 'var(--cs-text-muted)',
+                fontSize: 'var(--cs-text-xs)',
+              }}
+              title="Catastrophic-floor rule — always blocks, in either mode, and cannot be set to monitor"
+            >
+              <Lock className="w-3 h-3" aria-hidden="true" /> Always
+            </span>
+          );
+        }
+        return (
+          <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => handleToggleAction(r)}
+              disabled={saving}
+              aria-pressed={isBlock}
+              title={isBlock
+                ? 'Blocks matching tool calls in enforce mode. Click to switch to Monitor (observe only).'
+                : 'Observes only — never blocks. Click to switch to Block (deny in enforce mode).'}
+              className={`${chip} disabled:opacity-50`}
+              style={{
+                background: isBlock ? 'var(--cs-bg-raised)' : 'transparent',
+                color: isBlock ? 'var(--cs-text-body)' : 'var(--cs-text-faint)',
+                fontWeight: isBlock ? 'var(--cs-weight-medium)' : 'var(--cs-weight-normal)',
+                fontSize: 'var(--cs-text-xs)',
+              }}
+            >
+              {isBlock ? <Ban className="w-3 h-3" aria-hidden="true" /> : <Eye className="w-3 h-3" aria-hidden="true" />}
+              {isBlock ? 'Block' : 'Monitor'}
+              {/* Accent means "you changed this", never "this is dangerous". */}
+              {overrode && (
+                <span
+                  className="w-1 h-1 rounded-full shrink-0"
+                  style={{ background: 'var(--cs-accent)' }}
+                  title="Overridden — differs from this severity's default action"
+                />
+              )}
+            </button>
+          </span>
+        );
+      },
+    },
+    {
+      id: 'type', header: 'Type', width: '78px', hideBelow: '2xl',
+      cell: r => (
+        <span style={{ color: r.type === 'custom' ? 'var(--cs-accent)' : 'var(--cs-text-faint)' }}>
+          {r.type}
+        </span>
+      ),
+    },
+    {
+      id: 'id', header: 'Rule ID', width: '132px', hideBelow: '3xl', mono: true,
+      cell: r => <span title={r.id}>{r.id}</span>,
+    },
+    {
+      id: 'snooze', header: 'Snooze', width: '76px',
+      cell: r => {
+        const supp = activeSuppression(r.id);
+        return (
+          <span
+            className="flex items-center gap-1"
+            onClick={e => e.stopPropagation()}
+            onKeyDown={e => e.stopPropagation()}
+          >
+            {supp ? (
+              <>
+                <span
+                  className="cs-mono inline-flex items-center gap-1"
+                  style={{ color: 'var(--cs-warn)', fontSize: 'var(--cs-text-xs)' }}
+                  title={`Snoozed until ${new Date(supp.suppressUntil).toLocaleString()}`}
+                >
+                  <Clock className="w-3 h-3" aria-hidden="true" />
+                  {formatCountdown(supp.suppressUntil)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCancelSnooze(supp.id)}
+                  className="p-0.5 rounded transition-colors"
+                  style={{ color: 'var(--cs-text-faint)' }}
+                  title="Cancel snooze — resume alerting on this rule"
+                >
+                  <X className="w-3 h-3" aria-hidden="true" />
+                </button>
+              </>
+            ) : (
+              // Portalled, because the row is paint-contained and would clip an
+              // in-row menu. Radix also gives Escape-to-close and arrow keys.
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  {/* Icon-only: the word repeated down 649 rows is noise, and
+                      the column header already names the control. */}
+                  <button
+                    type="button"
+                    className="p-1 rounded transition-colors"
+                    style={{ color: 'var(--cs-text-faint)' }}
+                    aria-label={`Snooze “${r.label}”`}
+                    title="Stop this rule alerting for a while"
+                  >
+                    <Clock className="w-3 h-3" aria-hidden="true" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[120px]">
+                  {SNOOZE_OPTIONS.map(opt => (
+                    <DropdownMenuItem key={opt.label} onSelect={() => handleSnooze(r.id, opt.ms)}>
+                      {opt.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </span>
-        </div>
+        );
+      },
+    },
+    {
+      id: 'delete', header: '', width: '28px', align: 'end',
+      cell: r => r.type === 'custom' ? (
+        <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+          <button
+            type="button"
+            onClick={() => handleDelete(r.id)}
+            className="p-1 rounded transition-colors"
+            style={{ color: 'var(--cs-text-faint)' }}
+            title={`Delete the custom rule “${r.label}”`}
+          >
+            <Trash2 className="w-3 h-3" aria-hidden="true" />
+          </button>
+        </span>
+      ) : null,
+    },
+  ];
 
-        {/* Add custom rule form */}
-        <form
-          onSubmit={handleSubmit}
-          className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3"
-          onClick={e => e.stopPropagation()}
+  // The expanded strip. The pattern column truncates hard at this density, and
+  // the full regex — plus its flags and its id — is the reason to open a row.
+  const renderDetail = (r: RuleListRow) => {
+    if (expanded !== r.id) return null;
+    const locked = CATASTROPHIC_LABELS.has(r.label);
+    const action = locked ? 'block' : effectiveAction(r);
+    return (
+      <div className="flex flex-col gap-1.5 py-1.5" style={{ fontSize: 'var(--cs-text-xs)' }}>
+        <code
+          className="cs-mono block px-2 py-1 rounded whitespace-pre-wrap break-all"
+          style={{ background: 'var(--cs-bg-canvas)', color: 'var(--cs-text-body)' }}
         >
-          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> Add Custom Rule
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2">
-              <label className="block text-xs text-slate-500 mb-1">Pattern (regex)</label>
-              <input
-                type="text"
-                value={pattern}
-                onChange={e => { setPattern(e.target.value); setTestResult(null); setError(''); }}
-                placeholder="e.g. curl\s+.*\|\s*(ba)?sh"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-slate-500 mb-1">Severity</label>
-              <select
-                value={severity}
-                onChange={e => setSeverity(e.target.value as 'low' | 'medium' | 'high')}
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500"
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">Label</label>
-            <input
-              type="text"
-              value={label}
-              onChange={e => setLabel(e.target.value)}
-              placeholder="e.g. Suspicious curl pipe"
-              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
-            />
-          </div>
-
-          {/* Test input */}
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">
-              Test input (optional)
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={testInput}
-                onChange={e => { setTestInput(e.target.value); setTestResult(null); }}
-                placeholder="Paste a sample span attribute value to test…"
-                className="flex-1 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
-              />
-              <button
-                type="button"
-                onClick={handleTest}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg text-xs text-slate-300 transition-colors"
-              >
-                <FlaskConical className="w-3.5 h-3.5" /> Test
-              </button>
-            </div>
-            {testResult !== null && (
-              <p className={`mt-1 text-[11px] font-mono ${testResult ? 'text-green-400' : 'text-red-400'}`}>
-                {testResult ? 'Match found' : 'No match'}
-              </p>
-            )}
-          </div>
-
-          {error && <p className="text-[11px] text-red-400 font-mono">{error}</p>}
-
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors hover:brightness-110"
-              style={{ background: 'var(--cs-accent)', color: '#fff' }}
-            >
-              <Plus className="w-3.5 h-3.5" /> Add Rule
-            </button>
-          </div>
-        </form>
-
-        {/* Rules table */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-          <table className="w-full text-xs min-w-[640px]">
-            <thead>
-              <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
-                <th className="px-4 py-2.5 text-left">Label</th>
-                <th className="px-4 py-2.5 text-left">Pattern</th>
-                <th className="px-4 py-2.5 text-left">Severity</th>
-                <th className="px-4 py-2.5 text-left whitespace-nowrap">Type</th>
-                <th className="px-4 py-2.5 text-left w-32">Snooze</th>
-                <th className="px-4 py-2.5 text-left w-10"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {allRules.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-600 text-[11px]">
-                    No rules loaded
-                  </td>
-                </tr>
-              )}
-              {allRules.map(rule => {
-                const supp = activeSuppression(rule.id);
-                const isSnoozed = !!supp;
-                return (
-                  <tr
-                    key={rule.id}
-                    className={`border-b border-slate-800/50 transition-colors ${isSnoozed ? 'opacity-60' : 'hover:bg-slate-800/30'}`}
-                  >
-                    <td className={`px-4 py-2.5 font-medium ${isSnoozed ? 'text-slate-500' : 'text-slate-200'}`}>
-                      {rule.label}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <code className="text-xs font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
-                        {rule.pattern.length > 60 ? rule.pattern.slice(0, 60) + '…' : rule.pattern}
-                      </code>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`px-1.5 py-0.5 rounded text-xs font-mono uppercase ${SEV_BADGE[rule.severity] ?? SEV_BADGE.none}`}>
-                        {rule.severity}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap">
-                      <span className={`text-xs whitespace-nowrap ${rule.type === 'built-in' ? 'text-slate-500' : ''}`} style={rule.type === 'custom' ? { color: 'var(--cs-accent)' } : undefined}>
-                        {rule.type}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5" onClick={e => e.stopPropagation()}>
-                      {isSnoozed ? (
-                        <div className="flex items-center gap-1.5">
-                          <span className="flex items-center gap-1 text-xs text-yellow-400 font-mono">
-                            <Clock className="w-3 h-3" />
-                            {formatCountdown(supp.suppressUntil)}
-                          </span>
-                          <button
-                            onClick={() => handleCancelSnooze(supp.id)}
-                            className="p-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-slate-700 transition-colors"
-                            title="Cancel snooze"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <button
-                            onClick={() => setSnoozeMenuId(snoozeMenuId === rule.id ? null : rule.id)}
-                            className="flex items-center gap-1 px-2 py-0.5 rounded text-xs text-slate-500 hover:text-yellow-400 hover:bg-slate-800 transition-colors border border-transparent hover:border-slate-700"
-                          >
-                            <Clock className="w-3 h-3" /> Snooze
-                          </button>
-                          {snoozeMenuId === rule.id && (
-                            <div className="absolute left-0 top-full mt-1 z-50 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1 min-w-[110px]">
-                              {SNOOZE_OPTIONS.map(opt => (
-                                <button
-                                  key={opt.label}
-                                  onClick={() => handleSnooze(rule.id, opt.ms)}
-                                  className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 transition-colors"
-                                >
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {rule.type === 'custom' && (
-                        <button
-                          onClick={() => handleDelete(rule.id)}
-                          className="p-1 hover:bg-slate-700 rounded text-slate-600 hover:text-red-400 transition-colors"
-                          title="Delete rule"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>{/* overflow-x-auto */}
+          /{r.pattern}/{r.flags}
+        </code>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1" style={{ color: 'var(--cs-text-faint)' }}>
+          <span className="cs-mono">{r.id}</span>
+          <span>{r.type}</span>
+          <span>
+            {locked
+              ? 'Catastrophic floor — blocks in monitor mode too.'
+              : action === 'block'
+                ? enforceActive
+                  ? 'Blocks matching tool calls now.'
+                  : 'Would block, but enforcement is set to monitor.'
+                : 'Detects and alerts only. Never blocks.'}
+          </span>
         </div>
       </div>
+    );
+  };
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 min-w-0" style={{ background: 'var(--cs-bg-canvas)' }}>
+
+      <Toolbar>
+        <ToolbarTitle
+          icon={<Shield className="w-3.5 h-3.5" />}
+          count={isFiltered ? `${visibleRules.length}/${allRules.length}` : allRules.length}
+          countTitle={`${rules.builtIn.length} built-in · ${rules.custom.length} custom${activeSnoozes ? ` · ${activeSnoozes} snoozed` : ''}`}
+        >
+          Detection rules
+        </ToolbarTitle>
+
+        {/* The standing enforcement mode. A rule set to Block does nothing at
+            all in monitor mode, so this tab cannot be honest without saying
+            which mode is live — the detail is one click away in the popover. */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors shrink-0"
+              style={{
+                background: 'var(--cs-bg-raised)',
+                color: enforceActive ? 'var(--cs-text-body)' : 'var(--cs-text-muted)',
+                fontSize: 'var(--cs-text-xs)',
+              }}
+              title="What Block and Monitor actually do"
+            >
+              {enforceActive
+                ? <Ban className="w-3 h-3" aria-hidden="true" />
+                : <Eye className="w-3 h-3" aria-hidden="true" />}
+              {enforceActive ? 'Enforce' : 'Monitor'}
+              <span className="hidden 3xl:inline">mode</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="max-w-sm"
+            style={{ fontSize: 'var(--cs-text-sm)', lineHeight: 'var(--cs-leading-normal)' }}
+          >
+            <p style={{ color: 'var(--cs-text-body)' }}>
+              The <strong>Action</strong> column decides whether a rule <strong>blocks</strong> a
+              matching tool call or only <strong>monitors</strong> it — detecting and alerting,
+              never denying.
+            </p>
+            <p className="mt-2" style={{ color: 'var(--cs-text-muted)' }}>
+              {enforceActive
+                ? 'Enforcement is set to enforce, so Block decisions are live right now.'
+                : 'Enforcement is set to monitor, so nothing here blocks yet. Change it in the Enforce tab.'}
+              {' '}Detection runs in both modes. Catastrophic-floor rules always block and cannot be changed.
+            </p>
+          </PopoverContent>
+        </Popover>
+
+        {/* Severity scale. The primary axis of this product, so it stays
+            permanently visible; each option carries its own glyph, so the level
+            is legible without the colour. Only levels that exist are offered. */}
+        <div className="flex items-center gap-0.5" role="group" aria-label="Filter by severity">
+          <ToolButton
+            active={severityFilter === 'all'}
+            aria-pressed={severityFilter === 'all'}
+            onClick={() => setSeverityFilter('all')}
+            title="All severities"
+          >
+            All
+          </ToolButton>
+          {SEVERITY_ORDER.filter(sev => (severityCounts[sev] ?? 0) > 0).map(sev => {
+            const meta = SEVERITY_META[sev];
+            const active = severityFilter === sev;
+            return (
+              <ToolButton
+                key={sev}
+                active={active}
+                aria-pressed={active}
+                onClick={() => setSeverityFilter(sev)}
+                title={`${meta.label} — ${meta.meaning} (${severityCounts[sev]} rules)`}
+              >
+                <meta.Icon className="w-3 h-3" style={{ color: `var(--cs-sev-${sev})` }} aria-hidden="true" />
+                {meta.label}
+                <span className="cs-mono hidden 2xl:inline" style={{ color: 'var(--cs-text-faint)' }}>
+                  {severityCounts[sev]}
+                </span>
+              </ToolButton>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-1 ml-auto">
+          <ToolSearch
+            value={query}
+            onChange={setQuery}
+            placeholder="Search rules…"
+            label="Search rules by label, pattern or rule id"
+            className="w-28 xl:w-32 2xl:w-48"
+          />
+          <ToolButton
+            active={typeFilter === 'custom'}
+            aria-pressed={typeFilter === 'custom'}
+            onClick={() => setTypeFilter(t => (t === 'custom' ? 'all' : 'custom'))}
+            aria-label="Show only custom rules"
+            title={typeFilter === 'custom' ? 'Show every rule' : 'Show only the rules I added'}
+          >
+            <FileWarning className="w-3.5 h-3.5" aria-hidden="true" />
+            <span className="hidden 2xl:inline">Custom</span>
+          </ToolButton>
+          <RowDensityToggle density={density} onChange={setDensity} className="mx-1" />
+
+          {/* Protected paths and the custom-rule form are both once-a-month
+              jobs. They open over the table instead of standing above it,
+              because on a 1366×768 screen they cost more rows than they are
+              worth. Radix handles Escape and the focus trap. */}
+          <Dialog>
+            <DialogTrigger asChild>
+              <ToolButton aria-label="Protected paths" title="Paths that are blocked always, in either mode">
+                <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="hidden 2xl:inline">Protected paths</span>
+                {protectedPaths.length > 0 && (
+                  <span className="cs-mono" style={{ color: 'var(--cs-text-faint)' }}>{protectedPaths.length}</span>
+                )}
+              </ToolButton>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-xl">
+              <DialogHeader>
+                <DialogTitle>Protected paths</DialogTitle>
+                <DialogDescription>
+                  Protected paths are blocked <strong>immediately and always</strong> — even in monitor
+                  mode. Any tool call that reads, writes to, or deletes one is denied before it runs.
+                  Regex rules only detect by default; in enforce mode, high- and critical-severity
+                  rules also block.
+                </DialogDescription>
+              </DialogHeader>
+
+              <form onSubmit={handleAddProtectedPath} className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <Field label="File path" className="sm:col-span-2">
+                    <input
+                      type="text"
+                      value={ppPath}
+                      onChange={e => { setPpPath(e.target.value); setPpError(''); }}
+                      placeholder="~/.ssh/id_rsa"
+                      className={`cs-mono ${fieldClass}`}
+                      style={fieldStyle}
+                    />
+                  </Field>
+                  <Field label="Label" hint="optional">
+                    <input
+                      type="text"
+                      value={ppLabel}
+                      onChange={e => setPpLabel(e.target.value)}
+                      placeholder="SSH private key"
+                      className={fieldClass}
+                      style={fieldStyle}
+                    />
+                  </Field>
+                </div>
+
+                {ppError && (
+                  <p style={{ color: 'var(--cs-sev-critical-fg)', fontSize: 'var(--cs-text-xs)' }}>{ppError}</p>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={ppBusy}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors disabled:opacity-50"
+                    style={{
+                      background: 'var(--cs-bg-raised)',
+                      color: 'var(--cs-sev-critical-fg)',
+                      fontSize: 'var(--cs-text-sm)',
+                      fontWeight: 'var(--cs-weight-medium)',
+                    }}
+                  >
+                    <Lock className="w-3.5 h-3.5" aria-hidden="true" /> Protect path
+                  </button>
+                </div>
+              </form>
+
+              {protectedPaths.length === 0 ? (
+                <p
+                  className="flex items-center gap-1.5 px-3 py-4 rounded-md"
+                  style={{ background: 'var(--cs-bg-sunken)', color: 'var(--cs-text-faint)', fontSize: 'var(--cs-text-sm)' }}
+                >
+                  <ShieldOff className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  No protected paths yet. Add the files an agent should never be able to read or
+                  overwrite — private keys, credential stores, shell profiles.
+                </p>
+              ) : (
+                <ul className="flex flex-col max-h-64 overflow-auto" aria-label="Protected paths">
+                  {protectedPaths.map(pp => (
+                    <li
+                      key={pp.id}
+                      className="flex items-center gap-2 py-1.5"
+                      style={{ borderBottom: '1px solid var(--cs-rule)' }}
+                    >
+                      <Lock className="w-3 h-3 shrink-0" style={{ color: 'var(--cs-sev-critical)' }} aria-hidden="true" />
+                      <div className="min-w-0 flex-1">
+                        {pp.label && pp.label !== pp.path && (
+                          <p className="truncate" style={{ color: 'var(--cs-text-body)', fontSize: 'var(--cs-text-sm)' }}>
+                            {pp.label}
+                          </p>
+                        )}
+                        <code className="cs-mono block break-all" style={{ color: 'var(--cs-text-muted)', fontSize: 'var(--cs-text-xs)' }}>
+                          {pp.path}
+                        </code>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteProtectedPath(pp.id)}
+                        className="p-1 rounded shrink-0 transition-colors"
+                        style={{ color: 'var(--cs-text-faint)' }}
+                        title="Stop protecting this path"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
+            <DialogTrigger asChild>
+              <ToolButton aria-label="New rule" title="Add a custom detection rule">
+                <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="hidden 2xl:inline">New rule</span>
+              </ToolButton>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-xl">
+              <DialogHeader>
+                <DialogTitle>New detection rule</DialogTitle>
+                <DialogDescription>
+                  A rule is a regular expression matched against tool arguments — commands, file
+                  paths, URLs. Test it against a sample below before saving; a pattern that matches
+                  everything produces an alert log nobody reads.
+                </DialogDescription>
+              </DialogHeader>
+
+              <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <Field label="Pattern" hint="regex" className="sm:col-span-2">
+                    <input
+                      type="text"
+                      value={pattern}
+                      onChange={e => { setPattern(e.target.value); setTestResult(null); setError(''); }}
+                      placeholder="curl\s+.*\|\s*(ba)?sh"
+                      className={`cs-mono ${fieldClass}`}
+                      style={fieldStyle}
+                    />
+                  </Field>
+                  <Field label="Severity">
+                    <select
+                      value={severity}
+                      onChange={e => setSeverity(e.target.value as 'low' | 'medium' | 'high')}
+                      className={fieldClass}
+                      style={fieldStyle}
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </Field>
+                </div>
+
+                <Field label="Label" hint="what it catches, in a sentence">
+                  <input
+                    type="text"
+                    value={label}
+                    onChange={e => setLabel(e.target.value)}
+                    placeholder="Suspicious curl pipe"
+                    className={fieldClass}
+                    style={fieldStyle}
+                  />
+                </Field>
+
+                <Field label="Test input" hint="optional">
+                  <span className="flex gap-2">
+                    <input
+                      type="text"
+                      value={testInput}
+                      onChange={e => { setTestInput(e.target.value); setTestResult(null); }}
+                      placeholder="Paste a sample span attribute value…"
+                      className="cs-mono flex-1 min-w-0 px-2 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cs-accent)]"
+                      style={fieldStyle}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleTest}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md shrink-0 transition-colors"
+                      style={{ background: 'var(--cs-bg-raised)', color: 'var(--cs-text-body)', fontSize: 'var(--cs-text-sm)' }}
+                    >
+                      <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" /> Test
+                    </button>
+                  </span>
+                </Field>
+
+                {testResult !== null && (
+                  <p
+                    role="status"
+                    className="cs-mono"
+                    style={{
+                      color: testResult ? 'var(--cs-accent)' : 'var(--cs-text-faint)',
+                      fontSize: 'var(--cs-text-xs)',
+                    }}
+                  >
+                    {testResult ? 'Match found' : 'No match'}
+                  </p>
+                )}
+
+                {error && (
+                  <p role="alert" style={{ color: 'var(--cs-sev-critical-fg)', fontSize: 'var(--cs-text-xs)' }}>
+                    {error}
+                  </p>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors disabled:opacity-50"
+                    style={{
+                      background: 'var(--cs-accent)',
+                      color: 'var(--cs-text-invert)',
+                      fontSize: 'var(--cs-text-sm)',
+                      fontWeight: 'var(--cs-weight-medium)',
+                    }}
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add rule
+                  </button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </Toolbar>
+
+      <DataTable
+        rows={visibleRules}
+        columns={columns}
+        rowKey={r => r.id}
+        label="Detection rules"
+        density={density}
+        minWidth={640}
+        severity={r => normalizeSeverity(r.severity)}
+        muted={r => !!activeSuppression(r.id)}
+        onActivate={r => setExpanded(prev => (prev === r.id ? null : r.id))}
+        renderDetail={renderDetail}
+        loading={loading}
+        error={loadError ? (
+          <ErrorState
+            description={`The rule catalogue did not load (${loadError}). Detection on the server is unaffected — this is only the view.`}
+            onRetry={() => { setLoading(true); fetchRules(); }}
+          />
+        ) : undefined}
+        empty={isFiltered ? (
+          <EmptyState
+            icon={<SearchX className="w-6 h-6" aria-hidden="true" />}
+            title="No rule matches this filter"
+            description="Nothing in the catalogue matches the current search, severity and type. Clear the search box or widen the severity scale above."
+          />
+        ) : (
+          <EmptyState
+            icon={<ShieldOff className="w-6 h-6" aria-hidden="true" />}
+            title="No rules loaded"
+            description="ClaudeSec ships with several hundred built-in detection rules, so an empty catalogue means the server returned none. Check the server log, then reload."
+          />
+        )}
+      />
     </div>
   );
 }

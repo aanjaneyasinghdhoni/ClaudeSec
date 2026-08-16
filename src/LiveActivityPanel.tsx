@@ -27,23 +27,45 @@ function timeAgo(sec: number): string {
 export function LiveActivityPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [agents, setAgents] = useState<AgentActivity[]>([]);
 
-  const fetchActivity = () => {
-    fetch('/api/live-activity')
-      .then(r => r.json())
-      .then(d => setAgents(d.agents ?? []))
-      .catch(() => {});
-  };
-
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
+    let coalesce: ReturnType<typeof setTimeout> | null = null;
+    let lastFetch = 0;
+
+    const fetchActivity = () => {
+      lastFetch = Date.now();
+      fetch('/api/live-activity')
+        .then(r => r.json())
+        .then(d => { if (!cancelled) setAgents(d.agents ?? []); })
+        .catch(() => {});
+    };
+
+    // One OTLP batch fans out into a `span-added` AND a `graph-update` per span,
+    // so a busy agent used to fire several identical refetches a second for a
+    // panel that only ever shows one row per harness. Absorb the burst into a
+    // single trailing refresh: the first event schedules it, the rest ride along.
+    const onActivity = () => {
+      if (coalesce) return;
+      coalesce = setTimeout(() => { coalesce = null; fetchActivity(); }, 800);
+    };
+
     fetchActivity();
-    const handler = () => fetchActivity();
-    socket.on('span-added', handler);
-    socket.on('graph-update', handler);
-    const timer = setInterval(fetchActivity, 5000);
+    socket.on('span-added', onActivity);
+    socket.on('graph-update', onActivity);
+
+    // The rows show relative times ("12s ago"), so the panel still needs a
+    // heartbeat when nothing is streaming — but skip the tick when socket
+    // traffic has already refreshed us, instead of fetching twice for one view.
+    const timer = setInterval(() => {
+      if (Date.now() - lastFetch >= 4000) fetchActivity();
+    }, 5000);
+
     return () => {
-      socket.off('span-added', handler);
-      socket.off('graph-update', handler);
+      cancelled = true;
+      if (coalesce) clearTimeout(coalesce);
+      socket.off('span-added', onActivity);
+      socket.off('graph-update', onActivity);
       clearInterval(timer);
     };
   }, [open]);

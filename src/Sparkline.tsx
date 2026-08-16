@@ -41,7 +41,14 @@ export function ActivitySparkline() {
   useEffect(() => {
     fetchActivity();
     socket.on('graph-update', fetchActivity);
-    return () => { socket.off('graph-update', fetchActivity); };
+    // Polling fallback: `graph-update` only fires while spans are arriving, so a
+    // page loaded during an ingestion lull would otherwise show a stale 0. Re-fetch
+    // every few seconds to keep the window fresh even when the socket is quiet.
+    const poll = setInterval(fetchActivity, 3000);
+    return () => {
+      socket.off('graph-update', fetchActivity);
+      clearInterval(poll);
+    };
   }, [fetchActivity]);
 
   const spanValues  = buckets.map(b => b.spans);

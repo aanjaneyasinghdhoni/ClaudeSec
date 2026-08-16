@@ -10,62 +10,65 @@
 @import "@fontsource-variable/jetbrains-mono/wght.css";
 @import "@fontsource-variable/space-grotesk/wght.css";
 
-/* ── Theme tokens ────────────────────────────────────────────────────────── */
-:root {
-  color-scheme: dark;
-  --cs-bg-primary:   #08090d;
-  --cs-bg-surface:   #0e1017;
-  --cs-bg-elevated:  #161820;
-  --cs-bg-subtle:    #1e2130;
-  --cs-border:       #1c1e2a;
-  --cs-border-soft:  #2a2d3e;
-  --cs-text-base:    #e8eaf0;
-  --cs-text-muted:   #8b90a0;
-  --cs-text-faint:   #7d8294;  /* >=4.5:1 on dark surfaces (primary/surface/elevated) for WCAG AA */
-  --cs-accent:       #00d4aa;
-  --cs-accent-dim:   #00d4aa33;
-  --cs-accent-rgb:   0,212,170;
-  --cs-danger:       #ff3b5c;
-  --cs-warn:         #ffb224;
-  --cs-info:         #3b9eff;
-  /* SVG theme tokens */
-  --cs-svg-grid:     #1c1e2a;
-  --cs-svg-axis:     #2a2d3e;
-  --cs-svg-text:     #7d8294;  /* >=4.5:1 on dark surfaces for WCAG AA */
-  --cs-svg-label:    #e2e8f0;
-  --cs-svg-label-muted: #8b90a0;
-  --cs-svg-track:    #0e1017;
-  --cs-svg-selected: #1c1e2a;
+/* Design tokens — the single source of truth for colour, type, space, motion
+   and the severity ramp. Everything below this line consumes them. */
+@import "./tokens.css";
 
-  --font-sans: 'DM Sans Variable', 'DM Sans', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
-  --font-display: 'Space Grotesk Variable', 'Space Grotesk', 'DM Sans Variable', 'DM Sans', system-ui, sans-serif;
+/* shadcn/ui component layer — maps shadcn's semantic variables onto the tokens
+   above so the primitives inherit the palette, theme and accent. */
+@import "./shadcn.css";
+
+/* ── Breakpoints ──────────────────────────────────────────────────────────
+   Tailwind's defaults put 1280, 1366 and 1440 in the same bucket (xl 1280,
+   2xl 1536), which is exactly the range this dashboard has to tell apart: a
+   1366×768 laptop and a 1440 desktop want different rail widths and different
+   row heights. So xl stays at 1280, 2xl moves onto 1440, and two wide tiers are
+   added for the 1920 and 2560 monitors where a persistent detail column fits. */
+@theme {
+  --breakpoint-2xl: 90rem;  /* 1440 */
+  --breakpoint-3xl: 120rem; /* 1920 */
+  --breakpoint-4xl: 160rem; /* 2560 */
 }
 
-html.light {
-  color-scheme: light;
-  --cs-bg-primary:   #f4f5f7;
-  --cs-bg-surface:   #ffffff;
-  --cs-bg-elevated:  #eceef2;
-  --cs-bg-subtle:    #dde0e8;
-  --cs-border:       #d8dbe4;
-  --cs-border-soft:  #c4c8d4;
-  --cs-text-base:    #0e1017;
-  --cs-text-muted:   #5a5e70;
-  --cs-text-faint:   #8b90a0;
-  --cs-accent:       #00a884;
-  --cs-accent-dim:   #00a88422;
-  --cs-accent-rgb:   0,168,132;
-  --cs-danger:       #dc2640;
-  --cs-warn:         #d49400;
-  --cs-info:         #2563eb;
-  --cs-svg-grid:     #d8dbe4;
-  --cs-svg-axis:     #c4c8d4;
-  --cs-svg-text:     #5a5e70;
-  --cs-svg-label:    #1e2130;
-  --cs-svg-label-muted: #5a5e70;
-  --cs-svg-track:    #eceef2;
-  --cs-svg-selected: #dde0e8;
+/* ── Shell layout scale ───────────────────────────────────────────────────
+   The shell is sized from custom properties rather than fixed utilities so a
+   single media query retunes every column at once, and so the numbers stay
+   readable next to the reasoning for them.
+
+   The binding constraint is vertical, not horizontal: a 1366×768 laptop has
+   roughly 650px of real viewport once browser chrome is gone. Header (56) +
+   filter bar (44) + status bar (28) leaves ~520px of table body, which is 18
+   rows at 28px and only 11 at 44px — so the compact row is the default from
+   xl up, and comfy is reserved for the touch tier below lg. */
+:root {
+  --cs-header-h: 3.5rem;    /* 56px, shared by the header and the sidebar offset */
+  --cs-rail-w:   11.25rem;  /* 180px — expanded icon rail                        */
+  --cs-list-w:   16rem;     /* 256px — contextual list column                    */
+  --cs-detail-w: 22.5rem;   /* 360px — detail column, only persistent at 3xl     */
+  --cs-row-h:    var(--cs-row-comfy);
+}
+@media (min-width: 64rem)  { :root { --cs-row-h: 32px; } }
+@media (min-width: 80rem)  { :root { --cs-row-h: var(--cs-row-compact); } }
+@media (min-width: 90rem)  { :root { --cs-row-h: var(--cs-row-default); } }
+@media (min-width: 120rem) { :root { --cs-rail-w: 14rem; --cs-list-w: 18rem; --cs-detail-w: 25rem; } }
+@media (min-width: 160rem) { :root { --cs-list-w: 20rem; --cs-detail-w: 25rem; } }
+
+/* The contextual list column shares one <Sidebar> with the icon rail (the
+   nested composition), which means collapsing the rail sets data-collapsible
+   ="icon" on a common ancestor. Several sidebar primitives read that to hide
+   themselves — correct for the rail, wrong for the list, whose group labels and
+   trees must stay visible while the rail is collapsed. Undo it for the list. */
+[data-cs-list] [data-sidebar="group-label"] { margin-top: 0; opacity: 1; }
+[data-cs-list] [data-sidebar="menu-sub"],
+[data-cs-list] [data-sidebar="menu-sub-button"] { display: flex; }
+
+/* Long tables stay cheap without a virtualiser: the browser skips layout and
+   paint for off-screen rows while native sticky headers, Ctrl-F and tab order
+   all keep working. `auto` on the intrinsic size lets a row remember its real
+   height once measured, so the scrollbar stops jumping. */
+.cs-rows > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--cs-row-h);
 }
 
 /* ── Light mode: background overrides ─────────────────────────────────── */
@@ -85,10 +88,19 @@ html.light .bg-slate-800\/60 { background-color: rgba(236,238,242,0.90) !importa
 html.light .bg-slate-800\/40 { background-color: rgba(236,238,242,0.75) !important; }
 html.light .bg-slate-800\/30 { background-color: rgba(236,238,242,0.60) !important; }
 html.light .bg-slate-800\/20 { background-color: rgba(236,238,242,0.50) !important; }
+/* Opaque navy panels/tooltips read as dark blocks in light mode without this. */
+html.light .bg-slate-800\/80 { background-color: rgba(236,238,242,0.96) !important; }
+html.light .bg-slate-800\/70 { background-color: rgba(236,238,242,0.92) !important; }
+html.light .bg-slate-700\/60 { background-color: rgba(221,224,232,0.85) !important; }
+/* Solid-dark toasts/badges (no opacity suffix) flip to a light tinted surface. */
+html.light .bg-red-900\/80   { background-color: rgba(254,226,226,0.92) !important; }
+html.light .bg-green-900\/80 { background-color: rgba(220,252,231,0.92) !important; }
 
 /* ── Light mode: border overrides ──────────────────────────────────────── */
 html.light .border-slate-800    { border-color: var(--cs-border)      !important; }
 html.light .border-slate-700    { border-color: var(--cs-border-soft) !important; }
+html.light .border-slate-600    { border-color: var(--cs-border-soft) !important; }
+html.light .border-slate-700\/60 { border-color: var(--cs-border-soft) !important; }
 html.light .border-slate-800\/50 { border-color: rgba(216,219,228,0.6) !important; }
 html.light .border-slate-800\/40 { border-color: rgba(216,219,228,0.5) !important; }
 
@@ -370,17 +382,17 @@ select option {
 
 /* ── Accent glow effects ─────────────────────────────────────────────── */
 .glow-teal {
-  box-shadow: 0 0 20px rgba(0, 212, 170, 0.15), 0 0 60px rgba(0, 212, 170, 0.05);
+  box-shadow: 0 0 20px rgba(var(--cs-accent-rgb), 0.15), 0 0 60px rgba(var(--cs-accent-rgb), 0.05);
 }
 .glow-danger {
-  box-shadow: 0 0 20px rgba(255, 59, 92, 0.15), 0 0 60px rgba(255, 59, 92, 0.05);
+  box-shadow: 0 0 20px rgba(var(--cs-sev-critical-rgb), 0.15), 0 0 60px rgba(var(--cs-sev-critical-rgb), 0.05);
 }
 
 /* ── Navigation pill active state ────────────────────────────────────── */
 .nav-pill-active {
-  background: linear-gradient(135deg, rgba(0, 212, 170, 0.12), rgba(0, 212, 170, 0.06));
-  border-color: rgba(0, 212, 170, 0.3);
-  color: #00d4aa;
+  background: linear-gradient(135deg, rgba(var(--cs-accent-rgb), 0.12), rgba(var(--cs-accent-rgb), 0.06));
+  border-color: rgba(var(--cs-accent-rgb), 0.3);
+  color: var(--cs-accent);
 }
 
 /* ── Grain overlay for depth ─────────────────────────────────────────── */
@@ -449,7 +461,7 @@ select option {
   100% { background-position: 200% 0; }
 }
 .text-shimmer {
-  background: linear-gradient(90deg, #00d4aa 0%, #3b9eff 25%, #00d4aa 50%, #3b9eff 75%, #00d4aa 100%);
+  background: linear-gradient(90deg, var(--cs-accent) 0%, var(--cs-sev-low) 25%, var(--cs-accent) 50%, var(--cs-sev-low) 75%, var(--cs-accent) 100%);
   background-size: 200% auto;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -464,19 +476,6 @@ select option {
   border-radius: 10px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255,255,255,0.03);
   backdrop-filter: blur(20px);
-}
-
-/* ── Session item ────────────────────────────────────────────────────── */
-.session-item {
-  transition: all 0.15s ease;
-  border-radius: 6px;
-}
-.session-item:hover {
-  background: var(--cs-bg-elevated);
-}
-.session-item.active {
-  background: linear-gradient(135deg, rgba(0, 212, 170, 0.1), rgba(0, 212, 170, 0.05));
-  border: 1px solid rgba(0, 212, 170, 0.2);
 }
 
 /* ── Custom React Flow node styling ──────────────────────────────────── */
@@ -495,15 +494,15 @@ select option {
 
 .react-flow__node-default:hover,
 .react-flow__node-input:hover {
-  border-color: rgba(0, 212, 170, 0.4) !important;
-  box-shadow: 0 4px 24px rgba(0, 212, 170, 0.1), 0 8px 32px rgba(0, 0, 0, 0.3) !important;
+  border-color: var(--cs-accent-line) !important;
+  box-shadow: 0 4px 24px rgba(var(--cs-accent-rgb), 0.1), 0 8px 32px rgba(0, 0, 0, 0.3) !important;
   transform: translateY(-1px);
 }
 
 .react-flow__node-default.selected,
 .react-flow__node-input.selected {
-  border-color: #00d4aa !important;
-  box-shadow: 0 0 0 2px rgba(0, 212, 170, 0.2), 0 4px 24px rgba(0, 212, 170, 0.15) !important;
+  border-color: var(--cs-accent) !important;
+  box-shadow: 0 0 0 2px var(--cs-accent-dim), 0 4px 24px rgba(var(--cs-accent-rgb), 0.15) !important;
 }
 
 /* Edge styling */
@@ -546,7 +545,7 @@ select option {
 
 .react-flow__controls button:hover {
   background: var(--cs-bg-elevated) !important;
-  color: #00d4aa !important;
+  color: var(--cs-accent) !important;
 }
 
 /* Mini-map */
@@ -556,100 +555,10 @@ select option {
   overflow: hidden !important;
 }
 
-/* ── Category rail button ────────────────────────────────────────────── */
-.category-btn {
-  transition: all 0.15s ease;
-}
-.category-btn:hover {
-  background: var(--cs-bg-elevated);
-  color: var(--cs-text-muted);
-}
-.category-btn:focus-visible {
-  outline: 2px solid var(--cs-accent);
-  outline-offset: 2px;
-  color: var(--cs-text-muted);
-}
-
-/* ── Sub-tab button hover ────────────────────────────────────────────── */
-.sub-tab-btn {
-  transition: all 0.15s ease;
-  border-radius: 6px;
-}
-.sub-tab-btn:hover:not(.tab-active) {
-  background: var(--cs-bg-elevated);
-  color: var(--cs-text-muted);
-}
-.sub-tab-btn:focus-visible {
-  outline: 2px solid var(--cs-accent);
-  outline-offset: 2px;
-}
-
-/* ── Sidebar section header ──────────────────────────────────────────── */
-.sidebar-section-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-family: var(--font-mono);
-  color: var(--cs-text-faint);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* ── Session row with severity border ────────────────────────────────── */
-.session-row {
-  transition: all 0.15s ease;
-  border-left: 2px solid transparent;
-  border-radius: 6px;
-}
-.session-row:hover {
-  background: var(--cs-bg-elevated);
-}
-
-/* ── Context menu (session overflow) ─────────────────────────────────── */
-.session-context-menu {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.session-row:hover .session-context-menu,
-.session-context-menu.is-open {
-  opacity: 1;
-}
-
-/* ── Header action divider ───────────────────────────────────────────── */
-.header-divider {
-  width: 1px;
-  height: 20px;
-  background: var(--cs-border);
-  margin: 0 4px;
-  flex-shrink: 0;
-}
-
 .theme-option:hover { background: var(--cs-bg-subtle); }
 
-:root[data-theme="carbon"] {
-  --cs-bg-primary:   #0b0b0c;
-  --cs-bg-surface:   #141416;
-  --cs-bg-elevated:  #1c1c1f;
-  --cs-bg-subtle:    #232327;
-  --cs-border:       #232327;
-  --cs-border-soft:  #34343a;
-  --cs-text-base:    #ededed;
-  --cs-text-muted:   #9a9aa2;
-  --cs-text-faint:   #56565e;
-  --cs-accent:       #f5a623;
-  --cs-accent-dim:   #f5a62333;
-  --cs-accent-rgb:   245,166,35;
-  --cs-svg-grid:     #232327;
-  --cs-svg-axis:     #34343a;
-  --cs-svg-track:    #141416;
-  --cs-svg-selected: #232327;
-}
+/* Carbon and Paper palettes live in tokens.css; these rules only remap the
+   literal Tailwind slate utilities that predate the token layer. */
 html[data-theme="carbon"] .bg-slate-950        { background-color: #0b0b0c !important; }
 html[data-theme="carbon"] .bg-slate-900        { background-color: #141416 !important; }
 html[data-theme="carbon"] .bg-slate-800        { background-color: #1c1c1f !important; }
@@ -662,21 +571,6 @@ html[data-theme="carbon"] .bg-slate-800\/40    { background-color: rgba(28,28,31
 html[data-theme="carbon"] .border-slate-800    { border-color: #232327 !important; }
 html[data-theme="carbon"] .border-slate-700    { border-color: #34343a !important; }
 
-html[data-theme="paper"] {
-  --cs-bg-primary:   #faf7f2;
-  --cs-bg-surface:   #fffdf9;
-  --cs-bg-elevated:  #f3efe7;
-  --cs-bg-subtle:    #ece7dc;
-  --cs-border:       #e6dfd2;
-  --cs-border-soft:  #d8cfbf;
-  --cs-accent:       #6366f1;
-  --cs-accent-dim:   #6366f122;
-  --cs-accent-rgb:   99,102,241;
-  --cs-svg-grid:     #e6dfd2;
-  --cs-svg-axis:     #d8cfbf;
-  --cs-svg-track:    #f3efe7;
-  --cs-svg-selected: #ece7dc;
-}
 html[data-theme="paper"].light .bg-slate-950   { background-color: #faf7f2 !important; }
 html[data-theme="paper"].light .bg-slate-900   { background-color: #fffdf9 !important; }
 html[data-theme="paper"].light .bg-slate-800   { background-color: #f3efe7 !important; }
@@ -883,127 +777,3 @@ html[data-theme="paper"].light .border-slate-700 { border-color: #d8cfbf !import
 .docs-card-body { color: var(--cs-text-muted); font-size: 0.85rem; }
 .docs-card-body > :first-child { margin-top: 0; }
 .docs-card-body > :last-child { margin-bottom: 0; }
-
-.cs-palette-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 14vh;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(3px);
-  animation: cs-palette-fade 0.12s ease-out;
-}
-.cs-palette {
-  width: min(640px, calc(100vw - 2rem));
-  max-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--cs-bg-surface);
-  border: 1px solid var(--cs-border);
-  border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
-  overflow: hidden;
-  animation: cs-palette-pop 0.14s ease-out;
-}
-.cs-palette-search {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.85rem 1rem;
-  border-bottom: 1px solid var(--cs-border);
-}
-.cs-palette-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--cs-text-base);
-  font-size: 0.95rem;
-}
-.cs-palette-input::placeholder { color: var(--cs-text-faint); }
-.cs-palette-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.4rem;
-}
-.cs-palette-empty {
-  padding: 1.5rem 1rem;
-  text-align: center;
-  font-size: 0.8rem;
-  color: var(--cs-text-faint);
-}
-.cs-palette-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 0.55rem 0.7rem;
-  border-radius: 9px;
-  border: 1px solid transparent;
-  background: transparent;
-  cursor: pointer;
-  transition: background 0.1s ease, border-color 0.1s ease;
-}
-.cs-palette-item[data-selected="true"] {
-  background: rgba(var(--cs-accent-rgb), 0.12);
-  border-color: rgba(var(--cs-accent-rgb), 0.35);
-}
-.cs-palette-item-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-.cs-palette-item-title {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--cs-text-base);
-}
-.cs-palette-item[data-selected="true"] .cs-palette-item-title { color: var(--cs-accent); }
-.cs-palette-item-group {
-  font-size: 0.62rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--cs-text-faint);
-  white-space: nowrap;
-}
-.cs-palette-item-sub {
-  margin-top: 0.2rem;
-  font-size: 0.74rem;
-  line-height: 1.45;
-  color: var(--cs-text-muted);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-.cs-palette-foot {
-  display: flex;
-  gap: 1.1rem;
-  padding: 0.5rem 1rem;
-  border-top: 1px solid var(--cs-border);
-  font-size: 0.68rem;
-  color: var(--cs-text-faint);
-}
-.cs-palette-foot span { display: inline-flex; align-items: center; gap: 0.35rem; }
-.cs-palette-kbd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.66rem;
-  line-height: 1;
-  padding: 0.18rem 0.34rem;
-  border-radius: 5px;
-  border: 1px solid var(--cs-border);
-  background: var(--cs-bg-elevated);
-  color: var(--cs-text-muted);
-}
-@keyframes cs-palette-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes cs-palette-pop {
-  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}

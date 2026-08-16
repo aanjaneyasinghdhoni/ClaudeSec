@@ -55,7 +55,7 @@ ClaudeSec runs as a single Node process but has two logical layers in one reposi
 
 1. The agent sends an OTLP JSON payload to `POST /v1/traces`.
 2. The **token-bucket rate limiter** allows 50 RPS with a burst of 200 per IP (configurable via `CLAUDESEC_RATE_LIMIT_RPS` and `CLAUDESEC_RATE_LIMIT_BURST`).
-3. A **circuit breaker** rejects new ingestion with `503` when the span table is at 90% of its configured maximum (default 50,000 spans).
+3. A **circuit breaker** rejects new ingestion with `503` when the span table is at 90% of its configured maximum (default 1,000,000 spans; `0` disables the ceiling). Pruning cannot free spans that are still inside the retention window, so the ceiling is sized by the retention profile to stay above the window's own volume.
 4. Each span's attributes and name are concatenated into a search string and passed to `detectSeverity()`.
 5. The span record (with severity) is written to the `spans` table. An alert row is written to `alerts` if a rule matched.
 6. A `span-added` Socket.io event is emitted per span. A `sessions-update` event is emitted once per batch.
@@ -81,9 +81,20 @@ detectSeverity(text):
 The `text` input is `JSON.stringify(span.attributes) + " " + span.name`.
 
 When a rule matches:
-- The `severity` column on the `spans` row is set to `high | medium | low`.
+- The `severity` column on the `spans` row is set to `critical | high | medium | low`.
 - An `alerts` row is inserted with the rule label and matched text.
 - A webhook delivery is fired asynchronously (if configured).
+
+### Sequence engine (stateful, multi-span)
+
+`SEVERITY_RULES` judges one span at a time. On top of it, `server/sequenceRules.ts` runs a
+**stateful sequence engine** — it remembers the last few notable actions per trace and matches
+*orderings* across them (a credential read followed by a network send, reconnaissance followed by
+exfiltration) that no single-span pattern can express. A match produces its own alert whose
+`matchedText` carries the rendered **chain** — each matched step, its span, and its timestamp, in
+order — and the chain's severity is also carried onto the span that closed it, so that span isn't
+stored as `none` while the alert next to it reads high or critical. See
+[Security Rules](/security/rules#the-sequence-engine).
 
 ### Behavioral anomaly detection
 
@@ -112,7 +123,7 @@ A threshold alert fires at most once per `window_min` minutes per session to pre
 
 ## SQLite schema
 
-All data lives in a single file (`spans.db`) created automatically on first run. The file is gitignored.
+All data lives in a single file at `~/.claudesec/spans.db`, created automatically on first run (the parent directory is created if missing). The resolved absolute path is **logged at boot**, and is overridable with `CLAUDESEC_DB`. The file is gitignored.
 
 | Table | Purpose |
 |-------|---------|
@@ -125,11 +136,39 @@ All data lives in a single file (`spans.db`) created automatically on first run.
 | `webhook_deliveries` | Log of every webhook delivery attempt (last 500 rows). |
 | `config` | Key-value store for runtime configuration (webhook URL, retention settings). |
 | `suppressions` | Active rule snoozes — rules suppressed until a given timestamp. |
-| `spans_fts` | FTS5 virtual table mirroring `spans(spanId, name, attributes)`. |
+| `operator_audit_log` | Append-only record of config-mutating actions; **hash-chained**. |
+| `enforce_log` | Persisted enforcement would-block/block feed; capped at 500 and **hash-chained**. |
+| `span_chain_tombstones` | Chain position, hashes and timestamp of every deleted span — the link a pruned span leaves behind. |
+| `spans_fts` | FTS5 external-content index over `spans(spanId, name, attributes)`. |
+
+### Durability & lifecycle
+
+- **WAL + `busy_timeout`.** The database runs in WAL mode (concurrent reads during writes); `busy_timeout = 5000` makes a momentarily-contended writer wait up to 5s for the lock rather than fail with `SQLITE_BUSY`.
+- **Graceful shutdown.** On `SIGTERM` / `SIGINT` the server stops accepting connections, checkpoints the WAL back into the main file, and closes the handle — so an abrupt stop can't leave a half-applied WAL.
+- **Online binary backups.** A consistent `.db` snapshot is written to `~/.claudesec/backups/` (`0600`, most-recent 7 retained) shortly after boot and daily thereafter, using SQLite's online backup API. This is distinct from the hourly human-readable JSON auto-export in `exports/`.
+- **Hash-chained records.** `operator_audit_log`, `enforce_log` and `spans` all carry a per-row SHA-256 hash chain; `GET /api/audit/verify` recomputes them. The boundaries a chain cannot see about itself — how many rows there should be, and where the chain should end — live in an **Ed25519-signed tail anchor** kept outside the database, so an emptied table and an empty table are different answers. Detection, never prevention; see [what it proves](/api-reference/audit-log#what-the-integrity-mechanism-actually-proves) before relying on it.
+
+### The spans chain and retention
+
+A hash chain is a statement about a complete sequence; retention deliberately destroys parts of that sequence. Delete a span from the middle and the next span's `prevHash` points at something that no longer exists — after a few months every verification would fail for entirely legitimate reasons, and "broken because retention ran" would be indistinguishable from "broken because someone deleted evidence".
+
+Re-threading the survivors (what the two small capped logs do) is not an option here: it would rewrite 269,000 hashes on every sweep and destroy the original hashes, which are the things a third party may already have been handed. Chaining per session does not help either, because the count-based prune deletes the oldest spans regardless of session.
+
+So ClaudeSec **keeps the link when it deletes the payload.** Deleting a span leaves a tombstone in `span_chain_tombstones` holding only its chain position, its hash, its predecessor's hash and when it went — around 160 bytes against roughly a kilobyte for the span itself. The chain is verified over the union of live spans and tombstones ordered by position, so it stays continuous and complete forever while the data itself is genuinely gone (which data-minimisation obligations require). Retention still deletes what it must; what it stops deleting is the proof.
+
+That inverts the failure mode into the useful one: a missing position with **no** tombstone is not "retention ran", it is an unaccounted deletion, and the verifier reports the exact position. The tombstone is evidence in the other direction too — hand it a span's content and it will say whether that is the span that used to sit there, without ever having stored the content.
+
+The tombstone is written by a SQLite trigger rather than by the pruning code, so it fires for every delete against the file — including one typed into `sqlite3`. Tombstones accumulate for the life of the install (a few megabytes per hundred thousand spans ever ingested), which is the price of a record that can still answer "was anything removed" after the data is gone.
+
+### Import-safe startup
+
+`server/index.ts` is **side-effect-free on import**: merely importing the module starts no HTTP listener, schedules no timers, and writes no hook-config mirrors. The server only autostarts — and only then derives the hook artifacts (protected-paths, rules snapshot, enforce mode) from the database — when the file is the process entry point. Set `CLAUDESEC_NO_AUTOSTART=1` to force import-only behaviour regardless of how the module is invoked.
 
 ### FTS5 full-text index
 
-`spans_fts` uses the `unicode61` tokenizer with diacritic removal. It is kept in sync via an `AFTER INSERT` trigger on the `spans` table. A one-time backfill runs on server startup to index any spans that pre-date the trigger.
+`spans_fts` uses the `unicode61` tokenizer with diacritic removal, and is declared as an **external-content** index (`content='spans'`, `content_rowid='rowid'`). It therefore stores search terms only, never a second copy of the span text — the values themselves are read back out of `spans` by rowid, which is why every index row is pinned to the rowid of the span it describes.
+
+It is kept in sync by `AFTER INSERT`, `AFTER DELETE`, and `AFTER UPDATE` triggers on `spans`, so retention pruning removes a span's indexed content along with the span itself. The delete and update triggers use FTS5 delete-command rows carrying the old values, because an external-content index cannot look up the row it is removing. A one-time, chunked, resumable rebuild runs on server startup to convert and backfill a database created before this layout.
 
 ---
 

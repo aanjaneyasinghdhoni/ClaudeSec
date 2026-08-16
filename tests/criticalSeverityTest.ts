@@ -173,16 +173,22 @@ async function runWorker(): Promise<void> {
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
   const DB_PATH = path.join(os.tmpdir(), `csec-critsev-${process.pid}-${Date.now()}.db`);
+  // Sandbox the home dir too: any code path that imports server/index.ts mirrors
+  // the enforce mode to <CLAUDESEC_HOME>/hooks/enforce-config.json at load. This
+  // override guarantees the worker can never write into the maintainer's real
+  // ~/.claudesec, even if its imports grow to pull in the server module.
+  const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-critsev-home-'));
   const cleanup = () => {
     for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
       try { fs.rmSync(f, { force: true }); } catch {}
     }
+    try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
   };
 
   const code: number = await new Promise(resolve => {
     const child = spawn(TSX_BIN, [__filename, '--worker'], {
       cwd: REPO_ROOT,
-      env: { ...process.env, CLAUDESEC_DB: DB_PATH, CLAUDESEC_WATCH: '0' },
+      env: { ...process.env, CLAUDESEC_DB: DB_PATH, CLAUDESEC_WATCH: '0', CLAUDESEC_HOME: HOME_DIR },
       stdio: 'inherit',
     });
     child.on('exit', c => resolve(c ?? 1));

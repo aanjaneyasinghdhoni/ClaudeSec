@@ -1,22 +1,8 @@
 import type { Express } from 'express';
 import { db } from '../db.js';
 import { judgeContent } from '../llmJudge.js';
-import type { Severity } from '../../src/shared/types.js';
+import type { SpanRecord } from '../types.js';
 import type { RouteContext } from './context.js';
-
-interface SpanRecord {
-  spanId: string;
-  traceId: string;
-  parentId: string;
-  name: string;
-  protocol: string;
-  reason: string;
-  severity: Severity;
-  harness: string;
-  attributes: string;
-  startNano: string;
-  endNano: string;
-}
 
 export function registerJudgeRoutes(app: Express, _ctx: RouteContext): void {
   // ── LLM-as-judge (optional, opt-in, local-first) ─────────────────────────

@@ -21,4 +21,4 @@ claudesec search "id_rsa" --harness claude-code --limit 50
 
 ## Under the hood
 
-ClaudeSec maintains an SQLite **FTS5** full-text index (`spans_fts`) mirroring `spans(spanId, name, attributes)`, kept in sync by an insert trigger. Backed by [`GET /api/search`](/api-reference/search) (and `/api/search/fts` for index-backed queries).
+ClaudeSec maintains an SQLite **FTS5** external-content index (`spans_fts`) over `spans(spanId, name, attributes)`, kept in sync by insert, delete, and update triggers, so a pruned span leaves nothing searchable behind and the index never duplicates the span text it searches. Backed by [`GET /api/search`](/api-reference/search) (and `/api/search/fts` for index-backed queries).

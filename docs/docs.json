@@ -50,7 +50,8 @@
           "security/rules",
           "security/enforcement",
           "security/mcp-scan",
-          "security/suppressions"
+          "security/suppressions",
+          "security/owasp-agentic"
         ]
       },
       {
@@ -58,6 +59,12 @@
         "pages": [
           "review/bookmarks",
           "review/session-labels"
+        ]
+      },
+      {
+        "group": "Govern",
+        "pages": [
+          "govern/policies"
         ]
       },
       {
@@ -72,6 +79,7 @@
       {
         "group": "How-to guides",
         "pages": [
+          "how-to/launch",
           "how-to/remote-agents",
           "how-to/local-llm"
         ]
@@ -80,6 +88,7 @@
         "group": "Explanation",
         "pages": [
           "architecture",
+          "explanation/dashboard-tour",
           "explanation/watcher",
           "explanation/retention"
         ]
@@ -135,7 +144,9 @@
           "api-reference/honeytokens",
           "api-reference/scrub",
           "api-reference/audit-log",
-          "api-reference/harnesses-api"
+          "api-reference/governance",
+          "api-reference/harnesses-api",
+          "api-reference/repos-api"
         ]
       },
       {

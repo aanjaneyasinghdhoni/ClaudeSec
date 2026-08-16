@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Plus, Trash2, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Loader2, Sparkles, BellRing } from 'lucide-react';
+import { apiErrorMessage, apiJson, apiSend } from './lib/api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +44,18 @@ const OPERATOR_LABELS: Record<string, string> = {
 const METRIC_OPTIONS = Object.entries(METRIC_LABELS);
 const OPERATOR_OPTIONS = Object.entries(OPERATOR_LABELS);
 
+// A worked example, not a blank form. This is what most operators actually
+// want first — a runaway session firing enough HIGH-severity detections in a
+// short window to be worth an interrupt — so the empty state can hand it over
+// as one click instead of five decisions.
+const EXAMPLE_RULE = {
+  name: 'Runaway session',
+  metric: 'high_threat_count',
+  operator: '>=',
+  value: 3,
+  windowMin: 15,
+} as const;
+
 // ---------------------------------------------------------------------------
 // Toggle switch (reused from SettingsTab style)
 // ---------------------------------------------------------------------------
@@ -61,18 +74,24 @@ function ToggleSwitch({ checked, onChange, disabled }: ToggleSwitchProps): React
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors duration-200 focus:outline-none disabled:opacity-50 ${
-        checked ? 'bg-blue-600 border-blue-600' : 'bg-slate-700 border-slate-700'
-      }`}
+      className="relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors duration-200 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cs-accent)]"
+      style={checked
+        ? { background: 'var(--cs-accent)', borderColor: 'var(--cs-accent)' }
+        : { background: 'var(--cs-bg-overlay)', borderColor: 'var(--cs-rule-strong)' }}
     >
       <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transform transition-transform duration-200 translate-y-[-1px] ${
+        className={`inline-block h-3.5 w-3.5 rounded-full shadow transform transition-transform duration-200 translate-y-[-1px] ${
           checked ? 'translate-x-[14px]' : 'translate-x-0'
         }`}
+        style={{ background: 'var(--cs-text-invert)' }}
       />
     </button>
   );
 }
+
+const inputCls = 'w-full px-3 py-1.5 rounded-lg text-xs focus:outline-none';
+const inputStyle: React.CSSProperties = { background: 'var(--cs-bg-raised)', border: '1px solid var(--cs-rule-strong)', color: 'var(--cs-text-body)' };
+const labelStyle: React.CSSProperties = { fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-faint)', textTransform: 'uppercase', letterSpacing: 'var(--cs-tracking-wide)' };
 
 // ---------------------------------------------------------------------------
 // Main component
@@ -96,31 +115,25 @@ export function ThresholdRulesSection(): React.ReactElement {
   const [busyIds, setBusyIds] = useState<Set<number>>(new Set());
 
   const fetchRules = useCallback(() => {
-    fetch('/api/threshold-rules')
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<RulesResponse>;
-      })
-      .then(d => { setRules(d.rules ?? []); setLoading(false); })
+    apiJson<RulesResponse>('/api/threshold-rules')
+      .then(d => { setRules(d.rules ?? []); setLoading(false); setError(''); })
       .catch(() => { setError('Failed to load threshold rules'); setLoading(false); });
   }, []);
 
   useEffect(() => { fetchRules(); }, [fetchRules]);
 
-  // Toggle enabled
+  // Toggle enabled. A refused toggle used to leave the switch where it was with
+  // no explanation, which reads as "the click missed" rather than "denied".
   const handleToggle = async (rule: ThresholdRule) => {
     setBusyIds(prev => new Set(prev).add(rule.id));
+    setError('');
     try {
-      const res = await fetch(`/api/threshold-rules/${rule.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: rule.enabled ? 0 : 1 }),
-      });
-      if (res.ok) {
-        setRules(prev =>
-          prev.map(r => r.id === rule.id ? { ...r, enabled: r.enabled ? 0 : 1 } : r)
-        );
-      }
+      await apiSend(`/api/threshold-rules/${rule.id}`, 'PATCH', { enabled: rule.enabled ? 0 : 1 });
+      setRules(prev =>
+        prev.map(r => r.id === rule.id ? { ...r, enabled: r.enabled ? 0 : 1 } : r)
+      );
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to update threshold rule'));
     } finally {
       setBusyIds(prev => { const s = new Set(prev); s.delete(rule.id); return s; });
     }
@@ -129,11 +142,12 @@ export function ThresholdRulesSection(): React.ReactElement {
   // Delete rule
   const handleDelete = async (id: number) => {
     setBusyIds(prev => new Set(prev).add(id));
+    setError('');
     try {
-      const res = await fetch(`/api/threshold-rules/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setRules(prev => prev.filter(r => r.id !== id));
-      }
+      await apiSend(`/api/threshold-rules/${id}`, 'DELETE');
+      setRules(prev => prev.filter(r => r.id !== id));
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to delete threshold rule'));
     } finally {
       setBusyIds(prev => { const s = new Set(prev); s.delete(id); return s; });
     }
@@ -149,65 +163,112 @@ export function ThresholdRulesSection(): React.ReactElement {
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/threshold-rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          metric,
-          operator,
-          value,
-          window_min: windowMin,
-        }),
+      await apiSend('/api/threshold-rules', 'POST', {
+        name: name.trim(),
+        metric,
+        operator,
+        value,
+        window_min: windowMin,
       });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string };
-        setFormError(d.error ?? 'Failed to add rule');
-      } else {
-        setName(''); setMetric('tokens_in'); setOperator('>');
-        setValue(0); setWindowMin(60);
-        fetchRules();
-      }
-    } catch {
-      setFormError('Network error');
+      setName(''); setMetric('tokens_in'); setOperator('>');
+      setValue(0); setWindowMin(60);
+      fetchRules();
+    } catch (err: unknown) {
+      setFormError(apiErrorMessage(err, 'Network error'));
     } finally {
       setSubmitting(false);
     }
   };
 
+  // Load the worked example straight into the form — the empty state's "try
+  // this" affordance. It only fills the fields; the operator still has to
+  // submit, so nothing is created without an explicit action.
+  const useExample = () => {
+    setName(EXAMPLE_RULE.name);
+    setMetric(EXAMPLE_RULE.metric);
+    setOperator(EXAMPLE_RULE.operator);
+    setValue(EXAMPLE_RULE.value);
+    setWindowMin(EXAMPLE_RULE.windowMin);
+    setFormError('');
+  };
+
   return (
     <div className="space-y-4 mt-3">
 
-      {/* Error loading */}
+      {/* Whatever last failed for the section — a load, a toggle, or a delete */}
       {error && (
-        <p className="text-[11px] text-red-400 font-mono">{error}</p>
+        <p className="text-[11px]" style={{ color: 'var(--cs-danger)' }} role="alert">{error}</p>
       )}
 
       {/* Loading state */}
       {loading && (
-        <div className="flex items-center gap-2 py-4 text-slate-500 text-xs">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          Loading rules…
+        <div className="space-y-2" aria-busy="true" aria-label="Loading threshold rules">
+          {[0, 1].map(i => (
+            <div key={i} className="h-9 w-full rounded-lg animate-pulse" style={{ background: 'var(--cs-bg-raised)' }} />
+          ))}
         </div>
       )}
 
       {/* Rules table */}
       {!loading && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div className="rounded-xl overflow-hidden" style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-rule)' }}>
           {rules.length === 0 ? (
-            <p className="px-4 py-6 text-center text-[12px] text-slate-600 italic">
-              No threshold rules yet. Add one below.
-            </p>
+            // threshold_rules has had zero rows across every install so far —
+            // this feature has never had a first user see it fire. The bare
+            // "no rules yet" line looked like a broken table; this instead
+            // explains the job (session-level metric alerts, not per-span
+            // rules) and hands over one concrete, good first rule to try.
+            <div className="flex flex-col items-center gap-3 px-6 py-8 text-center">
+              <BellRing className="w-6 h-6" style={{ color: 'var(--cs-text-faint)' }} aria-hidden="true" />
+              <div className="space-y-1 max-w-sm">
+                <p style={{ fontSize: 'var(--cs-text-sm)', fontWeight: 'var(--cs-weight-medium)', color: 'var(--cs-text-body)' }}>
+                  No threshold rules yet
+                </p>
+                <p style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-faint)', lineHeight: 'var(--cs-leading-normal)' }}>
+                  A threshold rule watches a <em>session</em>, not a single span — it fires when a
+                  metric like token volume or threat count crosses a value within a rolling time
+                  window, and the fired alert lands in the Alerts tab just like a detection rule.
+                  Good for catching a session that is quietly getting worse rather than tripping
+                  one bad line.
+                </p>
+              </div>
+              <div
+                className="w-full max-w-sm rounded-lg p-3 text-left"
+                style={{ background: 'var(--cs-bg-raised)', border: '1px solid var(--cs-rule)' }}
+              >
+                <p className="flex items-center gap-1.5 mb-1" style={{ fontSize: 'var(--cs-text-2xs)', color: 'var(--cs-text-faint)', textTransform: 'uppercase', letterSpacing: 'var(--cs-tracking-wide)' }}>
+                  <Sparkles className="w-3 h-3" aria-hidden="true" /> A good first rule
+                </p>
+                <p className="cs-mono" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-body)' }}>
+                  "{EXAMPLE_RULE.name}" — {METRIC_LABELS[EXAMPLE_RULE.metric]} {OPERATOR_LABELS[EXAMPLE_RULE.operator]} {EXAMPLE_RULE.value} within {EXAMPLE_RULE.windowMin}m
+                </p>
+                <p className="mt-1" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-faint)' }}>
+                  Three or more HIGH-severity detections in the same session inside 15 minutes —
+                  a pattern worth an interrupt, not just a log line.
+                </p>
+                <button
+                  type="button"
+                  onClick={useExample}
+                  className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cs-accent)]"
+                  style={{ background: 'var(--cs-accent)', color: 'var(--cs-text-invert)' }}
+                >
+                  Use this example below
+                </button>
+              </div>
+            </div>
           ) : (
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
-                  <th className="px-3 py-2.5 text-left">Name</th>
-                  <th className="px-3 py-2.5 text-left">Metric</th>
-                  <th className="px-3 py-2.5 text-left">Condition</th>
-                  <th className="px-3 py-2.5 text-left">Window</th>
-                  <th className="px-3 py-2.5 text-left">Enabled</th>
-                  <th className="px-3 py-2.5 text-left w-8" />
+                <tr style={{ borderBottom: '1px solid var(--cs-rule)' }}>
+                  {['Name', 'Metric', 'Condition', 'Window', 'Enabled', ''].map(h => (
+                    <th
+                      key={h}
+                      className={`px-3 py-2.5 text-left ${h === '' ? 'w-8' : ''}`}
+                      style={{ fontSize: 'var(--cs-text-2xs)', color: 'var(--cs-text-faint)', textTransform: 'uppercase', letterSpacing: 'var(--cs-tracking-wide)' }}
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -216,19 +277,20 @@ export function ThresholdRulesSection(): React.ReactElement {
                   return (
                     <tr
                       key={rule.id}
-                      className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors"
+                      className="transition-colors hover:bg-[var(--cs-bg-raised)]"
+                      style={{ borderBottom: '1px solid var(--cs-rule)' }}
                     >
-                      <td className="px-3 py-2 text-slate-200 font-medium max-w-[120px] truncate" title={rule.name}>
+                      <td className="px-3 py-2 font-medium max-w-[120px] truncate" style={{ color: 'var(--cs-text-body)' }} title={rule.name}>
                         {rule.name}
                       </td>
-                      <td className="px-3 py-2 text-slate-400">
+                      <td className="px-3 py-2" style={{ color: 'var(--cs-text-muted)' }}>
                         {METRIC_LABELS[rule.metric] ?? rule.metric}
                       </td>
-                      <td className="px-3 py-2 font-mono text-slate-300">
+                      <td className="px-3 py-2 cs-mono" style={{ color: 'var(--cs-text-body)' }}>
                         {OPERATOR_LABELS[rule.operator] ?? rule.operator}{' '}
-                        <span className="text-blue-300">{rule.value.toLocaleString()}</span>
+                        <span style={{ color: 'var(--cs-info)' }}>{rule.value.toLocaleString()}</span>
                       </td>
-                      <td className="px-3 py-2 text-slate-400">
+                      <td className="px-3 py-2" style={{ color: 'var(--cs-text-muted)' }}>
                         {rule.window_min}m
                       </td>
                       <td className="px-3 py-2">
@@ -243,10 +305,11 @@ export function ThresholdRulesSection(): React.ReactElement {
                           type="button"
                           onClick={() => handleDelete(rule.id)}
                           disabled={busy}
-                          className="p-1 hover:bg-slate-700 rounded text-slate-600 hover:text-red-400 transition-colors disabled:opacity-40"
+                          className="p-1 rounded transition-colors disabled:opacity-40 hover:bg-[var(--cs-bg-raised)]"
+                          style={{ color: 'var(--cs-text-faint)' }}
                           title="Delete rule"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                         </button>
                       </td>
                     </tr>
@@ -261,32 +324,35 @@ export function ThresholdRulesSection(): React.ReactElement {
       {/* Add Rule form */}
       <form
         onSubmit={handleSubmit}
-        className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3"
+        className="rounded-xl p-4 space-y-3"
+        style={{ background: 'var(--cs-bg-surface)', border: '1px solid var(--cs-rule)' }}
       >
-        <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-          <Plus className="w-3.5 h-3.5" /> Add Rule
+        <p className="flex items-center gap-1.5 font-bold" style={{ fontSize: 'var(--cs-text-xs)', color: 'var(--cs-text-muted)', textTransform: 'uppercase', letterSpacing: 'var(--cs-tracking-wide)' }}>
+          <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add rule
         </p>
 
         {/* Name */}
         <div>
-          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Name</label>
+          <label className="block mb-1" style={labelStyle}>Name</label>
           <input
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="e.g. High token alert"
-            className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
+            className={inputCls}
+            style={inputStyle}
           />
         </div>
 
         {/* Metric + Operator + Value */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           <div>
-            <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Metric</label>
+            <label className="block mb-1" style={labelStyle}>Metric</label>
             <select
               value={metric}
               onChange={e => setMetric(e.target.value)}
-              className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500"
+              className={inputCls}
+              style={inputStyle}
             >
               {METRIC_OPTIONS.map(([key, label]) => (
                 <option key={key} value={key}>{label}</option>
@@ -295,11 +361,12 @@ export function ThresholdRulesSection(): React.ReactElement {
           </div>
 
           <div>
-            <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Operator</label>
+            <label className="block mb-1" style={labelStyle}>Operator</label>
             <select
               value={operator}
               onChange={e => setOperator(e.target.value)}
-              className="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500"
+              className={inputCls}
+              style={inputStyle}
             >
               {OPERATOR_OPTIONS.map(([key, label]) => (
                 <option key={key} value={key}>{label}</option>
@@ -308,41 +375,44 @@ export function ThresholdRulesSection(): React.ReactElement {
           </div>
 
           <div>
-            <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Value</label>
+            <label className="block mb-1" style={labelStyle}>Value</label>
             <input
               type="number"
               value={value}
               onChange={e => setValue(Number(e.target.value))}
-              className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500"
+              className={inputCls}
+              style={inputStyle}
             />
           </div>
         </div>
 
         {/* Window */}
         <div className="w-1/3">
-          <label className="block text-xs text-slate-500 mb-1 uppercase tracking-wider">Window (minutes)</label>
+          <label className="block mb-1" style={labelStyle}>Window (minutes)</label>
           <input
             type="number"
             min={1}
             value={windowMin}
             onChange={e => setWindowMin(Number(e.target.value))}
-            className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500"
+            className={inputCls}
+            style={inputStyle}
           />
         </div>
 
         {formError && (
-          <p className="text-[11px] text-red-400 font-mono">{formError}</p>
+          <p className="text-[11px]" style={{ color: 'var(--cs-danger)' }}>{formError}</p>
         )}
 
         <div className="flex justify-end">
           <button
             type="submit"
             disabled={submitting}
-            className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+            className="flex items-center gap-1.5 px-4 py-1.5 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cs-accent)]"
+            style={{ background: 'var(--cs-accent)', color: 'var(--cs-text-invert)' }}
           >
             {submitting
-              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Adding…</>
-              : <><Plus className="w-3.5 h-3.5" /> Add Rule</>
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> Adding…</>
+              : <><Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add rule</>
             }
           </button>
         </div>

@@ -35,6 +35,7 @@ const TSX_BIN = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const PORT = 3203;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DB_PATH = path.join(os.tmpdir(), `csec-otlptest-${process.pid}-${Date.now()}.db`);
+const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'csec-otlpingesttest-home-'));
 
 let passed = 0;
 let failed = 0;
@@ -70,6 +71,7 @@ function cleanupDb(): void {
   for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
     try { fs.rmSync(f, { force: true }); } catch {}
   }
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 }
 
 function killTree(child: ChildProcess): void {
@@ -159,6 +161,13 @@ async function main(): Promise<void> {
       env: {
         ...process.env,
         CLAUDESEC_DB: DB_PATH,
+        // Keep the child off the operator's real ~/.claudesec: booting the
+        // server mirrors its hook artifacts (enforce-config, protected-paths,
+        // the rule snapshot, the control-plane pairing key) into CLAUDESEC_HOME.
+        CLAUDESEC_HOME: HOME_DIR,
+        // Pin both port vars — CLAUDESEC_PORT outranks PORT, so an inherited
+        // value from the host shell must not steer the test server elsewhere.
+        CLAUDESEC_PORT: String(PORT),
         PORT: String(PORT),
         CLAUDESEC_HOST: '127.0.0.1',
         CLAUDESEC_WATCH: '0',
@@ -228,14 +237,12 @@ async function main(): Promise<void> {
 
     await check('OTLP batch with garbage shape is rejected without taking the server down', async () => {
       // Structurally valid JSON, semantically junk (resourceSpans is a string,
-      // not an array). The handler does `traceData.resourceSpans?.forEach(...)`,
-      // so a non-array value throws a TypeError that Express turns into a 500.
-      // The CONTRACT this asserts is "does not 2xx and does not crash" — the
+      // not an array). This used to reach `.forEach` on a non-array and throw a
+      // TypeError that Express turned into an opaque 500; the handler now
+      // type-guards the shape and answers with an actionable 400. The
       // server-stays-alive half is proven by the follow-up valid batch below.
-      // NOTE (robustness finding, not refactored here): a cleaner handler would
-      // type-guard resourceSpans and return 400 instead of 500. See summary.
       const r = await postJson('/v1/traces', { resourceSpans: 'not-an-array', extra: 123 });
-      assert.ok(r.status >= 400, `garbage shape must not be accepted; got ${r.status}`);
+      assert.strictEqual(r.status, 400, `garbage shape should be a 400, got ${r.status}`);
     });
 
     // Missing/empty resourceSpans IS handled gracefully (optional-chaining no-op).

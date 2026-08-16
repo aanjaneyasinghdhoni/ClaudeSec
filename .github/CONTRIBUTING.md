@@ -31,7 +31,7 @@ pnpm dev
 
 The app is available at **http://localhost:3000**.
 
-`pnpm dev` runs the Express backend with Vite HMR in the foreground (no background service). To exercise the one-command install path during development, run `npx claudesec` from the repo.
+`pnpm dev` runs the Express backend with Vite HMR in the foreground (no background service). To exercise the one-command install path during development, run `node cli/init.mjs` from the repo — ClaudeSec is not published to npm, so there is no `npx` equivalent.
 
 ---
 
